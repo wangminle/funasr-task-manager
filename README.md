@@ -12,6 +12,7 @@
 - **安全认证**：API Token 认证、用户资源隔离、并发/带宽/日量三维限流
 - **可观测性**：structlog 结构化日志、Prometheus 指标暴露、Grafana 仪表盘、6 条告警规则
 - **回调通知**：Outbox 模式 + HMAC 签名，确保事件可靠投递
+- **CLI 工具**：完整命令行界面（Typer + Rich），支持一键转写、批量上传、任务管理、配置持久化，三种输出格式（table/json/text），适配自动化脚本和 AI Agent 调用
 
 ## 技术栈
 
@@ -23,6 +24,7 @@
 | ASR 对接 | WebSocket (websockets) |
 | 前端 | Vue 3 + Vite + Element Plus |
 | 监控 | Prometheus + Grafana |
+| CLI | Typer + Rich + httpx |
 | 部署 | Docker Compose |
 
 ## 快速开始
@@ -81,7 +83,7 @@ docker-compose up -d
 | POST | `/api/v1/files/upload` | 上传音频文件 |
 | GET | `/api/v1/files/{file_id}` | 查询文件元信息 |
 | POST | `/api/v1/tasks` | 创建转写任务（支持批量） |
-| GET | `/api/v1/tasks` | 任务列表（分页） |
+| GET | `/api/v1/tasks` | 任务列表（分页、状态筛选、关键词搜索） |
 | GET | `/api/v1/tasks/{task_id}` | 任务详情 |
 | POST | `/api/v1/tasks/{task_id}/cancel` | 取消任务 |
 | GET | `/api/v1/tasks/{task_id}/result` | 下载转写结果（json/txt/srt） |
@@ -89,6 +91,7 @@ docker-compose up -d
 | POST | `/api/v1/servers` | 注册 ASR 服务器 |
 | GET | `/api/v1/servers` | 服务器列表 |
 | DELETE | `/api/v1/servers/{server_id}` | 注销服务器 |
+| GET | `/api/v1/stats` | 系统统计（节点/槽位/队列/成功率） |
 | GET | `/metrics` | Prometheus 指标 |
 
 ## 项目结构
@@ -100,19 +103,56 @@ funasr-task-manager/
 ├── 3-dev/src/
 │   ├── backend/           # FastAPI 后端
 │   │   ├── app/           # 应用代码
+│   │   ├── cli/           # CLI 工具 (Typer)
 │   │   ├── alembic/       # 数据库迁移
 │   │   ├── config/        # 配置文件
 │   │   └── docker-compose.yaml
 │   └── frontend/          # Vue 3 前端
 ├── 4-tests/
 │   ├── scripts/           # 测试脚本
-│   │   ├── unit/          # 单元测试 (133 tests)
-│   │   ├── integration/   # 集成测试 (27 tests)
+│   │   ├── unit/          # 单元测试 (174 tests)
+│   │   ├── integration/   # 集成测试 (34 tests)
 │   │   ├── e2e/           # 端到端测试
 │   │   └── load/          # 压力测试 (Locust)
 │   └── reports/           # 测试报告
 └── README.md
 ```
+
+## CLI 工具
+
+CLI 提供与 Web UI 完全对等的命令行操作能力，支持脚本化和 AI Agent 集成。
+
+```bash
+cd 3-dev/src/backend
+
+# 查看帮助
+python -m cli --help
+
+# 一键转写（上传→创建任务→等待→下载结果）
+python -m cli transcribe recording.wav --language zh --format srt --output-dir ./results/
+
+# 批量转写
+python -m cli transcribe *.wav --language zh --format json --output-dir ./results/
+
+# 只提交不等待（适合异步管线）
+python -m cli transcribe recording.wav --no-wait --output json
+
+# 任务管理
+python -m cli task list --status SUCCEEDED --page 1
+python -m cli task info <task_id>
+python -m cli task result <task_id> --format srt --save output.srt
+
+# 系统状态
+python -m cli health
+python -m cli stats --output json
+
+# 配置持久化
+python -m cli config set server http://asr-server:8000
+python -m cli config set api_key my-token
+python -m cli config list
+```
+
+全局选项：`--server` / `--api-key` / `--output (table|json|text)` / `--quiet` / `--verbose`
 
 ## 测试
 

@@ -25,10 +25,15 @@ class TaskRepository:
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def list_tasks(self, user_id: str, status: str | None = None, page: int = 1, page_size: int = 20) -> tuple[list[Task], int]:
+    async def list_tasks(self, user_id: str, status: str | None = None, search: str | None = None, page: int = 1, page_size: int = 20) -> tuple[list[Task], int]:
         base = select(Task).where(Task.user_id == user_id)
         if status:
             base = base.where(Task.status == status)
+        if search:
+            pattern = f"%{search}%"
+            base = base.join(File, Task.file_id == File.file_id).where(
+                (Task.task_id.ilike(pattern)) | (File.original_name.ilike(pattern))
+            )
         count_stmt = select(func.count()).select_from(base.subquery())
         total = (await self._session.execute(count_stmt)).scalar() or 0
         stmt = base.order_by(Task.created_at.desc()).offset((page - 1) * page_size).limit(page_size)

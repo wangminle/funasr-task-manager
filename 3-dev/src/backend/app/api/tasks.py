@@ -43,9 +43,9 @@ async def create_tasks(body: TaskCreateRequest, db: DbSession, user_id: CurrentU
 
 
 @router.get("", response_model=TaskListResponse)
-async def list_tasks(db: DbSession, user_id: CurrentUser, status: str | None = Query(None), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+async def list_tasks(db: DbSession, user_id: CurrentUser, status: str | None = Query(None), search: str | None = Query(None), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
     task_repo = TaskRepository(db)
-    tasks, total = await task_repo.list_tasks(user_id, status=status, page=page, page_size=page_size)
+    tasks, total = await task_repo.list_tasks(user_id, status=status, search=search, page=page, page_size=page_size)
     return TaskListResponse(items=[TaskResponse.model_validate(t) for t in tasks], total=total, page=page, page_size=page_size)
 
 

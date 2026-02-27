@@ -51,12 +51,14 @@ def create_app() -> FastAPI:
     from app.api.tasks import router as tasks_router
     from app.api.servers import router as servers_router
     from app.api.sse import router as sse_router
+    from app.api.stats import router as stats_router
 
     app.include_router(health_router)
     app.include_router(files_router)
     app.include_router(tasks_router)
     app.include_router(servers_router)
     app.include_router(sse_router)
+    app.include_router(stats_router)
 
     return app
 
