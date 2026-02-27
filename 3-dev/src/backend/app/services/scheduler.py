@@ -175,22 +175,26 @@ class TaskScheduler:
 
         decisions: list[ScheduleDecision] = []
         for pos, task_info in enumerate(task_estimates):
-            earliest_slot = min(slots, key=lambda s: s.earliest_free)
-            srv = server_map[earliest_slot.server_id]
             dur = task_info.get("audio_duration_sec", 0) or 0
+
+            best_slot = min(
+                slots,
+                key=lambda s: s.earliest_free + self.estimate_processing_time(dur, server_map[s.server_id]),
+            )
+            srv = server_map[best_slot.server_id]
             est_duration = self.estimate_processing_time(dur, srv)
 
             decision = ScheduleDecision(
                 task_id=task_info["task_id"],
-                server_id=earliest_slot.server_id,
-                slot_index=earliest_slot.slot_index,
-                estimated_start=earliest_slot.earliest_free,
+                server_id=best_slot.server_id,
+                slot_index=best_slot.slot_index,
+                estimated_start=best_slot.earliest_free,
                 estimated_duration=est_duration,
-                estimated_finish=earliest_slot.earliest_free + est_duration,
+                estimated_finish=best_slot.earliest_free + est_duration,
                 queue_position=pos + 1,
             )
             decisions.append(decision)
-            earliest_slot.earliest_free += est_duration
+            best_slot.earliest_free += est_duration
 
         return decisions
 

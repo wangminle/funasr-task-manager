@@ -1,0 +1,23 @@
+# Load test configuration for ASR Task Manager
+# Usage: locust -f locustfile.py --config load_test_config.yaml
+
+# Target settings
+host: http://localhost:8000
+
+# User simulation
+users: 50
+spawn-rate: 10
+run-time: 5m
+
+# Reporting
+html: ../../../../4-tests/reports/load-report.html
+csv: ../../../../4-tests/reports/load-stats
+
+# Thresholds (P95 response time < 200ms)
+# These are documented expectations, not Locust-native config.
+# Validate via the generated report.
+
+# Performance targets:
+#   T-M3-40: P95 API response < 200ms with 50 concurrent users
+#   T-M3-41: 100 tasks completed, 0 lost, success rate >= 95%
+#   T-M3-42: No OOM, CPU not sustained at 100%

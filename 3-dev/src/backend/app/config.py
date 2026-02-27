@@ -33,5 +33,8 @@ class Settings(BaseSettings):
     heartbeat_interval_seconds: int = 30
     heartbeat_timeout_seconds: int = 90
 
+    auth_enabled: bool = False
+    auth_tokens: str = ""
+
 
 settings = Settings()

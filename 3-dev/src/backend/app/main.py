@@ -17,6 +17,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging(level=settings.log_level, fmt=settings.log_format)
     logger.info("application_starting", version=settings.app_version)
 
+    from app.auth.token import init_auth_from_settings
+    init_auth_from_settings()
+
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     settings.result_dir.mkdir(parents=True, exist_ok=True)
     settings.temp_dir.mkdir(parents=True, exist_ok=True)

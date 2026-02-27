@@ -85,7 +85,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Download, Document, VideoCamera, CircleClose } from '@element-plus/icons-vue'
-import { getTask, getFileMetadata, getTaskResult, cancelTask } from '../api'
+import { getTask, getFileMetadata, getTaskResult, cancelTask, getApiKey } from '../api'
 
 const route = useRoute()
 const taskId = route.params.taskId
@@ -116,34 +116,76 @@ async function loadTask() {
   }
 }
 
+let sseAbortController = null
+
 function connectSSE() {
-  if (eventSource) eventSource.close()
-  eventSource = new EventSource(`/api/v1/tasks/${taskId}/progress`)
-  eventSource.addEventListener('status_change', (e) => {
-    const data = JSON.parse(e.data)
+  if (sseAbortController) sseAbortController.abort()
+  if (eventSource) { eventSource.close(); eventSource = null }
+
+  const apiKey = getApiKey()
+  const tokenParam = apiKey ? `?token=${encodeURIComponent(apiKey)}` : ''
+  const url = `/api/v1/tasks/${taskId}/progress${tokenParam}`
+
+  sseAbortController = new AbortController()
+
+  fetch(url, { signal: sseAbortController.signal, headers: apiKey ? { 'X-API-Key': apiKey } : {} })
+    .then(response => {
+      if (!response.ok) {
+        if (response.status === 401) ElMessage.error('SSE 认证失败，请设置 API Key')
+        throw new Error(`SSE HTTP ${response.status}`)
+      }
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      function pump() {
+        return reader.read().then(({ done, value }) => {
+          if (done) return
+          buffer += decoder.decode(value, { stream: true })
+          const parts = buffer.split('\n\n')
+          buffer = parts.pop()
+          for (const part of parts) {
+            if (!part.trim() || part.startsWith(':')) continue
+            let eventType = 'message', eventData = ''
+            for (const line of part.split('\n')) {
+              if (line.startsWith('event: ')) eventType = line.slice(7)
+              else if (line.startsWith('data: ')) eventData = line.slice(6)
+            }
+            if (!eventData) continue
+            try {
+              const data = JSON.parse(eventData)
+              handleSSEEvent(eventType, data)
+            } catch {}
+          }
+          return pump()
+        })
+      }
+      return pump()
+    })
+    .catch(err => {
+      if (err.name === 'AbortError') return
+      if (!['SUCCEEDED', 'FAILED', 'CANCELED'].includes(task.value.status)) {
+        setTimeout(connectSSE, 3000)
+      }
+    })
+}
+
+function handleSSEEvent(eventType, data) {
+  if (eventType === 'status_change') {
     task.value.status = data.status
     progress.value = data.progress
     eta.value = data.eta_seconds
     progressMessage.value = data.message
     events.value.unshift({ timestamp: new Date(data.timestamp).toLocaleTimeString('zh-CN'), message: data.message, type: data.status === 'FAILED' ? 'danger' : data.status === 'SUCCEEDED' ? 'success' : 'primary' })
-  })
-  eventSource.addEventListener('progress_update', (e) => {
-    const data = JSON.parse(e.data)
+  } else if (eventType === 'progress_update') {
     progress.value = data.progress
     eta.value = data.eta_seconds
     progressMessage.value = data.message
-  })
-  eventSource.addEventListener('complete', (e) => {
-    const data = JSON.parse(e.data)
+  } else if (eventType === 'complete') {
     events.value.unshift({ timestamp: new Date(data.timestamp).toLocaleTimeString('zh-CN'), message: `最终状态: ${data.final_status}`, type: data.final_status === 'SUCCEEDED' ? 'success' : 'danger' })
-    eventSource.close()
+    if (sseAbortController) sseAbortController.abort()
     loadTask()
-  })
-  eventSource.addEventListener('error', () => {
-    if (!['SUCCEEDED', 'FAILED', 'CANCELED'].includes(task.value.status)) {
-      setTimeout(connectSSE, 3000)
-    }
-  })
+  }
 }
 
 async function downloadResult(format) {
@@ -180,7 +222,7 @@ function formatSize(b) { if (b < 1048576) return (b / 1024).toFixed(1) + ' KB'; 
 function formatDuration(s) { const m = Math.floor(s / 60); const sec = Math.floor(s % 60); return `${m}分${sec}秒` }
 
 onMounted(() => { loadTask(); connectSSE(); pollTimer = setInterval(loadTask, 10000) })
-onUnmounted(() => { if (eventSource) eventSource.close(); if (pollTimer) clearInterval(pollTimer) })
+onUnmounted(() => { if (sseAbortController) sseAbortController.abort(); if (eventSource) eventSource.close(); if (pollTimer) clearInterval(pollTimer) })
 </script>
 
 <style scoped>

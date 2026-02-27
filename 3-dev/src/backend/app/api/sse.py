@@ -1,4 +1,12 @@
-"""SSE (Server-Sent Events) endpoint for real-time task progress."""
+"""SSE (Server-Sent Events) endpoint for real-time task progress.
+
+The SSE endpoint does NOT hold the request-level DB session open for the
+duration of the long-lived connection. Instead it:
+1. Uses a short-lived session to verify the task exists (and the user owns it).
+2. Closes that session *before* returning the StreamingResponse.
+3. Inside the stream, each poll iteration opens its own ephemeral session
+   via the application-level session factory.
+"""
 
 import asyncio
 import json
@@ -31,7 +39,7 @@ async def _progress_stream(
     user_id: str,
     db_session_factory,
 ) -> AsyncGenerator[str, None]:
-    """Generate SSE events for a task's progress."""
+    """Generate SSE events using per-poll ephemeral DB sessions."""
     last_status = None
     last_progress = -1.0
     keepalive_counter = 0
@@ -62,45 +70,50 @@ async def _progress_stream(
                 )
                 message = format_progress_message(task.status, progress)
 
-                status_changed = task.status != last_status
-                progress_changed = abs(progress - last_progress) > 0.01
+                current_status = task.status
+                current_result_path = task.result_path
+                current_error_code = task.error_code
+                current_error_message = task.error_message
 
-                if status_changed or progress_changed:
-                    event_data = {
+            status_changed = current_status != last_status
+            progress_changed = abs(progress - last_progress) > 0.01
+
+            if status_changed or progress_changed:
+                event_data = {
+                    "task_id": task_id,
+                    "event_type": "status_change" if status_changed else "progress_update",
+                    "status": current_status,
+                    "progress": round(progress, 4),
+                    "eta_seconds": eta,
+                    "message": message,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+
+                if current_status == TaskStatus.SUCCEEDED:
+                    event_data["result_available"] = current_result_path is not None
+
+                if current_status == TaskStatus.FAILED:
+                    event_data["error_code"] = current_error_code
+                    event_data["error_message"] = current_error_message
+
+                yield _format_sse(event_data["event_type"], event_data)
+                last_status = current_status
+                last_progress = progress
+                keepalive_counter = 0
+
+                terminal = {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED}
+                if TaskStatus(current_status) in terminal:
+                    yield _format_sse("complete", {
                         "task_id": task_id,
-                        "event_type": "status_change" if status_changed else "progress_update",
-                        "status": task.status,
-                        "progress": round(progress, 4),
-                        "eta_seconds": eta,
-                        "message": message,
+                        "final_status": current_status,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
-                    }
-
-                    if task.status == TaskStatus.SUCCEEDED:
-                        event_data["result_available"] = task.result_path is not None
-
-                    if task.status == TaskStatus.FAILED:
-                        event_data["error_code"] = task.error_code
-                        event_data["error_message"] = task.error_message
-
-                    yield _format_sse(event_data["event_type"], event_data)
-                    last_status = task.status
-                    last_progress = progress
+                    })
+                    return
+            else:
+                keepalive_counter += 1
+                if keepalive_counter * SSE_POLL_INTERVAL >= SSE_KEEPALIVE_INTERVAL:
+                    yield ": keepalive\n\n"
                     keepalive_counter = 0
-
-                    terminal = {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED}
-                    if TaskStatus(task.status) in terminal:
-                        yield _format_sse("complete", {
-                            "task_id": task_id,
-                            "final_status": task.status,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        })
-                        return
-                else:
-                    keepalive_counter += 1
-                    if keepalive_counter * SSE_POLL_INTERVAL >= SSE_KEEPALIVE_INTERVAL:
-                        yield f": keepalive\n\n"
-                        keepalive_counter = 0
 
         except Exception as e:
             logger.error("sse_stream_error", task_id=task_id, error=str(e))
@@ -111,14 +124,20 @@ async def _progress_stream(
 
 
 @router.get("/{task_id}/progress")
-async def task_progress_sse(task_id: str, db: DbSession, user_id: CurrentUser):
-    """SSE endpoint for real-time task progress updates."""
-    repo = TaskRepository(db)
-    task = await repo.get_task(task_id, user_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
+async def task_progress_sse(task_id: str, user_id: CurrentUser):
+    """SSE endpoint for real-time task progress updates.
 
+    Authentication is handled via X-API-Key header or ?token= query param.
+    The request-level DB session is NOT injected here to avoid holding it
+    open for the entire stream lifetime.
+    """
     from app.storage.database import async_session_factory
+
+    async with async_session_factory() as session:
+        repo = TaskRepository(session)
+        task = await repo.get_task(task_id, user_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="Task not found")
 
     return StreamingResponse(
         _progress_stream(task_id, user_id, async_session_factory),

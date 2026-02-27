@@ -39,9 +39,10 @@ async def db_session(db_engine):
 
 
 @pytest_asyncio.fixture(scope="function")
-async def client(db_session):
+async def client(db_engine, db_session):
     from app.main import create_app
     from app.storage.database import get_db_session
+    import app.storage.database as db_module
 
     app = create_app()
 
@@ -49,9 +50,16 @@ async def client(db_session):
         yield db_session
 
     app.dependency_overrides[get_db_session] = _override_db
+
+    test_session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    original_factory = db_module.async_session_factory
+    db_module.async_session_factory = test_session_factory
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+
+    db_module.async_session_factory = original_factory
 
 
 @pytest.fixture(scope="session")
