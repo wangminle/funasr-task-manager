@@ -1,0 +1,49 @@
+"""Pydantic schemas for task management."""
+
+from datetime import datetime
+
+from pydantic import BaseModel, Field
+
+
+class CallbackConfig(BaseModel):
+    url: str
+    secret: str | None = None
+
+
+class TaskItemCreate(BaseModel):
+    file_id: str
+    language: str = "zh"
+    options: dict | None = None
+
+
+class TaskCreateRequest(BaseModel):
+    items: list[TaskItemCreate] = Field(..., min_length=1, max_length=100)
+    callback: CallbackConfig | None = None
+
+
+class TaskResponse(BaseModel):
+    task_id: str
+    user_id: str
+    file_id: str
+    task_group_id: str | None = None
+    status: str
+    progress: float
+    eta_seconds: int | None = None
+    language: str
+    assigned_server_id: str | None = None
+    result_path: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    retry_count: int = 0
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class TaskListResponse(BaseModel):
+    items: list[TaskResponse]
+    total: int
+    page: int
+    page_size: int

@@ -1,0 +1,10 @@
+servers:
+  - server_id: "asr-node-01"
+    name: "Primary ASR Server"
+    host: "192.168.1.100"
+    port: 10095
+    protocol_version: "v2_new"
+    max_concurrency: 4
+    labels:
+      model: "paraformer-zh"
+      hardware: "GPU"

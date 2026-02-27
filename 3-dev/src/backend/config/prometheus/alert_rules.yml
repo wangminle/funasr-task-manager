@@ -1,0 +1,55 @@
+groups:
+  - name: asr_task_manager
+    rules:
+      - alert: QueueBacklogWarning
+        expr: asr_queue_depth > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ASR task queue is backing up"
+          description: "Queue depth is {{ $value }} (threshold: 100). Tasks may be delayed."
+
+      - alert: QueueCritical
+        expr: asr_queue_depth > 500
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ASR task queue critically high"
+          description: "Queue depth is {{ $value }}. Consider scaling or pausing intake."
+
+      - alert: HighFailureRate
+        expr: rate(asr_tasks_total{status="FAILED"}[5m]) / rate(asr_tasks_total[5m]) > 0.1
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High ASR task failure rate"
+          description: "Failure rate exceeds 10% in the last 5 minutes."
+
+      - alert: ServerOffline
+        expr: time() - asr_server_last_heartbeat > 60
+        labels:
+          severity: critical
+        annotations:
+          summary: "ASR server {{ $labels.server_id }} is offline"
+          description: "No heartbeat received for over 60 seconds."
+
+      - alert: SlowProcessing
+        expr: histogram_quantile(0.95, rate(asr_task_duration_seconds_bucket[1h])) > 1800
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ASR processing is slow"
+          description: "P95 task duration exceeds 30 minutes."
+
+      - alert: HighRetryRate
+        expr: rate(asr_task_retries_total[10m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High task retry rate"
+          description: "Retry rate is {{ $value }}/s. Check server stability."
