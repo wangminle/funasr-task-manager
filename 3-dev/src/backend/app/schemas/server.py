@@ -30,3 +30,20 @@ class ServerResponse(BaseModel):
     last_heartbeat: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class ServerProbeResponse(BaseModel):
+    server_id: str
+    reachable: bool = False
+    responsive: bool = False
+    error: str | None = None
+    supports_offline: bool | None = None
+    supports_online: bool | None = None
+    supports_2pass: bool | None = None
+    has_timestamp: bool = False
+    has_stamp_sents: bool = False
+    is_final_semantics: str = "unknown"
+    inferred_server_type: str = "unknown"
+    probe_level: str = "CONNECT_ONLY"
+    probe_notes: list[str] = []
+    probe_duration_ms: float = 0.0

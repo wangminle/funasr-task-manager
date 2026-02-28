@@ -6,11 +6,12 @@ All server management routes require admin authentication.
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.deps import DbSession
 from app.models import ServerInstance, ServerStatus
-from app.schemas.server import ServerRegisterRequest, ServerResponse
+from app.schemas.server import ServerProbeResponse, ServerRegisterRequest, ServerResponse
+from app.services.server_probe import ProbeLevel, ServerCapabilities, probe_server
 from app.storage.repository import ServerRepository
 from app.auth.token import verify_admin
 from app.observability.logging import get_logger
@@ -28,10 +29,31 @@ async def register_server(body: ServerRegisterRequest, db: DbSession, admin: Adm
     existing = await repo.get_server(body.server_id)
     if existing:
         raise HTTPException(status_code=409, detail="Server already registered")
+
+    server_type = None
+    supported_modes = None
+    initial_status = ServerStatus.OFFLINE
+
+    caps = await _probe_with_ssl_fallback(body.host, body.port, ProbeLevel.OFFLINE_LIGHT, 8.0)
+    if caps.reachable:
+        initial_status = ServerStatus.ONLINE
+        if caps.inferred_server_type != "unknown":
+            server_type = caps.inferred_server_type
+        modes = _extract_modes(caps)
+        if modes:
+            supported_modes = ",".join(modes)
+        logger.info("server_probe_on_register", server_id=body.server_id,
+                    reachable=caps.reachable, responsive=caps.responsive,
+                    inferred_type=caps.inferred_server_type)
+    else:
+        logger.warning("server_probe_unreachable", server_id=body.server_id,
+                        error=caps.error, status="registering as OFFLINE")
+
     server = ServerInstance(
         server_id=body.server_id, name=body.name, host=body.host, port=body.port,
-        protocol_version=body.protocol_version, max_concurrency=body.max_concurrency,
-        status=ServerStatus.ONLINE, labels_json=json.dumps(body.labels) if body.labels else None,
+        protocol_version=body.protocol_version, server_type=server_type,
+        supported_modes=supported_modes, max_concurrency=body.max_concurrency,
+        status=initial_status, labels_json=json.dumps(body.labels) if body.labels else None,
     )
     await repo.register_server(server)
     logger.info("server_registered", server_id=body.server_id, host=body.host, by=admin)
@@ -45,6 +67,49 @@ async def list_servers(db: DbSession, admin: AdminUser):
     return [ServerResponse.model_validate(s) for s in servers]
 
 
+@router.post("/{server_id}/probe", response_model=ServerProbeResponse)
+async def probe_server_endpoint(
+    server_id: str,
+    db: DbSession,
+    admin: AdminUser,
+    level: str = Query("offline_light", pattern="^(connect_only|offline_light|twopass_full)$"),
+):
+    """Probe a registered server's capabilities and optionally update its metadata."""
+    repo = ServerRepository(db)
+    server = await repo.get_server(server_id)
+    if server is None:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    probe_level_map = {
+        "connect_only": ProbeLevel.CONNECT_ONLY,
+        "offline_light": ProbeLevel.OFFLINE_LIGHT,
+        "twopass_full": ProbeLevel.TWOPASS_FULL,
+    }
+    caps = await _probe_with_ssl_fallback(
+        server.host, server.port, probe_level_map[level], 12.0,
+    )
+
+    if caps.reachable and caps.inferred_server_type != "unknown":
+        server.server_type = caps.inferred_server_type
+    modes = _extract_modes(caps)
+    server.supported_modes = ",".join(modes) if modes else None
+
+    if caps.reachable:
+        server.status = ServerStatus.ONLINE
+    else:
+        server.status = ServerStatus.OFFLINE
+
+    await db.commit()
+
+    logger.info("server_probed", server_id=server_id, reachable=caps.reachable,
+                inferred_type=caps.inferred_server_type)
+
+    return ServerProbeResponse(
+        server_id=server_id,
+        **caps.to_dict(),
+    )
+
+
 @router.delete("/{server_id}", status_code=204)
 async def delete_server(server_id: str, db: DbSession, admin: AdminUser):
     repo = ServerRepository(db)
@@ -52,3 +117,40 @@ async def delete_server(server_id: str, db: DbSession, admin: AdminUser):
     if not deleted:
         raise HTTPException(status_code=404, detail="Server not found")
     logger.info("server_deleted", server_id=server_id, by=admin)
+
+
+def _extract_modes(caps) -> list[str]:
+    modes = []
+    if caps.supports_offline:
+        modes.append("offline")
+    if caps.supports_2pass:
+        modes.append("2pass")
+    if caps.supports_online:
+        modes.append("online")
+    return modes
+
+
+async def _probe_with_ssl_fallback(
+    host: str, port: int, level: ProbeLevel, timeout: float,
+):
+    """Probe with wss first; on SSL/connection error, retry with plain ws."""
+    try:
+        caps = await probe_server(host=host, port=port, use_ssl=True, level=level, timeout=timeout)
+        if caps.reachable:
+            return caps
+    except Exception as e:
+        logger.warning("probe_wss_exception", host=host, port=port, error=str(e))
+        caps = None
+
+    err_msg = (caps.error or "") if caps else ""
+    is_ssl_error = any(k in err_msg.lower() for k in ("ssl", "tls", "certificate"))
+    is_conn_error = any(k in err_msg.lower() for k in ("refused", "timeout", "network", "websocket", "http response"))
+    if is_ssl_error or is_conn_error or caps is None:
+        logger.info("probe_retry_plain_ws", host=host, port=port, original_error=err_msg)
+        try:
+            ws_caps = await probe_server(host=host, port=port, use_ssl=False, level=level, timeout=timeout)
+            return ws_caps
+        except Exception as e:
+            logger.warning("probe_ws_also_failed", host=host, port=port, error=str(e))
+
+    return caps if caps else ServerCapabilities(error="probe failed")

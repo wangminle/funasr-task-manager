@@ -192,3 +192,5 @@ cython_debug/
 /3-dev/src/backend/data/asr_tasks.db
 /3-dev/src/backend/data/results/
 /3-dev/src/backend/data/uploads/
+/7-data/
+.DS_Store

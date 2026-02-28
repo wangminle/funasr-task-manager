@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.observability.logging import setup_logging, get_logger
+from app.services.task_runner import task_runner
 
 logger = get_logger(__name__)
 
@@ -23,9 +24,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     settings.result_dir.mkdir(parents=True, exist_ok=True)
     settings.temp_dir.mkdir(parents=True, exist_ok=True)
+    await task_runner.start()
 
     yield
 
+    await task_runner.stop()
     logger.info("application_shutting_down")
 
 

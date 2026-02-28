@@ -66,6 +66,13 @@ export async function cancelTask(taskId) {
   return data
 }
 
+export async function deleteAllTasks(status = null) {
+  const params = {}
+  if (status) params.status = status
+  const { data } = await api.delete('/tasks', { params })
+  return data
+}
+
 export async function getTaskResult(taskId, format = 'json') {
   const { data } = await api.get(`/tasks/${taskId}/result`, { params: { format } })
   return data

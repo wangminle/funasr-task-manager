@@ -5,7 +5,7 @@
         <el-icon :size="24"><Headset /></el-icon>
         <span class="app-title">ASR 任务管理器</span>
       </div>
-      <el-menu :default-active="$route.path" mode="horizontal" router class="header-menu">
+      <el-menu :default-active="$route.path" mode="horizontal" :ellipsis="false" router class="header-menu">
         <el-menu-item index="/upload">
           <el-icon><Upload /></el-icon>
           <span>文件上传</span>

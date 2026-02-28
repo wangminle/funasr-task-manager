@@ -25,6 +25,11 @@
               <el-option label="已取消" value="CANCELED" />
             </el-select>
             <el-button @click="fetchTasks" :icon="Refresh">刷新</el-button>
+            <el-popconfirm title="确认清除所有任务？此操作不可恢复。" confirm-button-text="确认清除" cancel-button-text="取消" @confirm="handleDeleteAll">
+              <template #reference>
+                <el-button type="danger" :icon="Delete">一键清除</el-button>
+              </template>
+            </el-popconfirm>
           </div>
         </div>
       </template>
@@ -70,9 +75,9 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { Refresh } from '@element-plus/icons-vue'
+import { Refresh, Delete } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { listTasks, cancelTask, getTaskResult } from '../api'
+import { listTasks, cancelTask, getTaskResult, deleteAllTasks } from '../api'
 
 const tasks = ref([])
 const total = ref(0)
@@ -104,6 +109,17 @@ async function fetchTasks() {
     ElMessage.error('获取任务列表失败')
   } finally {
     loading.value = false
+  }
+}
+
+async function handleDeleteAll() {
+  try {
+    const res = await deleteAllTasks(statusFilter.value || null)
+    ElMessage.success(`已清除 ${res.deleted} 个任务`)
+    currentPage.value = 1
+    await fetchTasks()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.detail || '清除失败')
   }
 }
 

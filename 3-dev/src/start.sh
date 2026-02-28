@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# ASR Task Manager - 一键启动脚本
+# 用法: bash start.sh [--no-frontend]
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BACKEND_DIR="$SCRIPT_DIR/backend"
+FRONTEND_DIR="$SCRIPT_DIR/frontend"
+RUNTIME_DIR="$SCRIPT_DIR/../../.runtime"
+mkdir -p "$RUNTIME_DIR"
+
+BACKEND_LOG="$RUNTIME_DIR/backend.err.log"
+BACKEND_OUT="$RUNTIME_DIR/backend.out.log"
+FRONTEND_LOG="$RUNTIME_DIR/frontend.err.log"
+FRONTEND_OUT="$RUNTIME_DIR/frontend.out.log"
+PID_FILE="$RUNTIME_DIR/pids.txt"
+
+NO_FRONTEND=0
+if [[ "${1:-}" == "--no-frontend" ]]; then
+  NO_FRONTEND=1
+fi
+
+EXIT_CODE=0
+
+echo "========================================="
+echo "  ASR Task Manager - 启动中..."
+echo "========================================="
+
+# ------ 依赖预检 ------
+echo "[0/3] 检查依赖..."
+MISSING=()
+if ! command -v python &>/dev/null; then
+  MISSING+=("python")
+fi
+if ! python -c "import uvicorn" &>/dev/null; then
+  MISSING+=("uvicorn (pip install uvicorn)")
+fi
+if ! command -v curl &>/dev/null; then
+  MISSING+=("curl")
+fi
+if [[ $NO_FRONTEND -eq 0 ]]; then
+  if ! command -v npx &>/dev/null; then
+    MISSING+=("npx (install Node.js)")
+  fi
+fi
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+  echo ""
+  echo "  ✗ 缺少必要依赖:"
+  for dep in "${MISSING[@]}"; do
+    echo "    - $dep"
+  done
+  echo ""
+  echo "  请先安装上述依赖后重试。"
+  echo "========================================="
+  exit 1
+fi
+echo "      依赖检查通过 ✓"
+
+# ------ 后端 ------
+echo "[1/3] 启动后端 (uvicorn)..."
+cd "$BACKEND_DIR"
+nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload \
+  >"$BACKEND_OUT" 2>"$BACKEND_LOG" &
+BACKEND_PID=$!
+echo "backend=$BACKEND_PID" > "$PID_FILE"
+echo "      后端 PID: $BACKEND_PID"
+
+# ------ 前端 ------
+if [[ $NO_FRONTEND -eq 0 ]]; then
+  echo "[2/3] 启动前端 (vite)..."
+  cd "$FRONTEND_DIR"
+  nohup npx vite --host 0.0.0.0 --port 5173 \
+    >"$FRONTEND_OUT" 2>"$FRONTEND_LOG" &
+  FRONTEND_PID=$!
+  echo "frontend=$FRONTEND_PID" >> "$PID_FILE"
+  echo "      前端 PID: $FRONTEND_PID"
+else
+  echo "[2/3] 跳过前端 (--no-frontend)"
+fi
+
+# ------ 健康检查 ------
+echo "[3/3] 等待服务就绪..."
+sleep 4
+
+BACKEND_OK=0
+for i in $(seq 1 10); do
+  if curl -sf http://127.0.0.1:8000/health >/dev/null 2>&1; then
+    BACKEND_OK=1
+    break
+  fi
+  sleep 1
+done
+
+if [[ $BACKEND_OK -eq 1 ]]; then
+  echo ""
+  echo "  ✓ 后端就绪: http://127.0.0.1:8000"
+  echo "    健康检查: $(curl -s http://127.0.0.1:8000/health)"
+  echo "    API 文档: http://127.0.0.1:8000/docs"
+else
+  echo ""
+  echo "  ✗ 后端启动超时，请查看日志: $BACKEND_LOG"
+  EXIT_CODE=1
+fi
+
+if [[ $NO_FRONTEND -eq 0 ]]; then
+  sleep 1
+  if curl -sf http://127.0.0.1:5173 >/dev/null 2>&1; then
+    echo "  ✓ 前端就绪: http://127.0.0.1:5173"
+  else
+    echo "  ✗ 前端启动超时，请查看日志: $FRONTEND_LOG"
+    EXIT_CODE=1
+  fi
+fi
+
+echo ""
+echo "  日志文件:"
+echo "    后端: $BACKEND_LOG"
+echo "    前端: $FRONTEND_LOG"
+echo ""
+echo "  停止服务: bash $(dirname "$0")/stop.sh"
+echo "========================================="
+
+exit $EXIT_CODE

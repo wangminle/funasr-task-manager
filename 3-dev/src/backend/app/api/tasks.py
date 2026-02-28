@@ -4,10 +4,11 @@ import json
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
+from sqlalchemy import delete as sql_delete, func, select
 from ulid import ULID
 
 from app.deps import CurrentUser, DbSession
-from app.models import Task, TaskStatus
+from app.models import Task, TaskEvent, TaskStatus
 from app.schemas.task import TaskCreateRequest, TaskListResponse, TaskResponse
 from app.storage.repository import FileRepository, TaskRepository
 from app.storage.file_manager import read_result
@@ -68,6 +69,54 @@ async def cancel_task(task_id: str, db: DbSession, user_id: CurrentUser):
         raise HTTPException(status_code=409, detail=f"Cannot cancel task in {task.status} status")
     await task_repo.update_task_status(task, TaskStatus.CANCELED)
     return TaskResponse.model_validate(task)
+
+
+_ACTIVE_STATUSES = {TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING}
+
+
+@router.delete("", status_code=200)
+async def delete_all_tasks(db: DbSession, user_id: CurrentUser, status: str | None = Query(None)):
+    """Delete all tasks (optionally filtered by status). Returns count of deleted tasks.
+
+    Tasks in DISPATCHED or TRANSCRIBING status are always protected — they cannot
+    be deleted even when explicitly requested via status filter, because background
+    coroutines would still be running and produce orphaned results.
+    """
+    if status in {s.value for s in _ACTIVE_STATUSES}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot bulk-delete tasks in {status} status. "
+                   "Cancel them first via POST /tasks/{{id}}/cancel, then delete.",
+        )
+
+    base_where = [Task.user_id == user_id]
+    if status:
+        base_where.append(Task.status == status)
+    else:
+        base_where.append(Task.status.notin_([s.value for s in _ACTIVE_STATUSES]))
+
+    stmt_count = select(func.count()).select_from(Task).where(*base_where)
+    total = (await db.execute(stmt_count)).scalar() or 0
+
+    skip_stmt = select(func.count()).select_from(Task).where(
+        Task.user_id == user_id,
+        Task.status.in_([s.value for s in _ACTIVE_STATUSES]),
+    )
+    skipped = (await db.execute(skip_stmt)).scalar() or 0
+
+    if total == 0:
+        return {"deleted": 0, "skipped_active": skipped}
+
+    sub = select(Task.task_id).where(*base_where)
+    await db.execute(sql_delete(TaskEvent).where(TaskEvent.task_id.in_(sub)))
+
+    stmt_del = sql_delete(Task).where(*base_where)
+    await db.execute(stmt_del)
+    await db.commit()
+
+    logger.info("tasks_deleted", user_id=user_id, status_filter=status,
+                count=total, skipped_active=skipped)
+    return {"deleted": total, "skipped_active": skipped}
 
 
 @router.get("/{task_id}/result")

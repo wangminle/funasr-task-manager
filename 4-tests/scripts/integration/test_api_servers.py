@@ -10,7 +10,7 @@ class TestServerAPI:
         response = await client.post("/api/v1/servers", json=body)
         assert response.status_code == 201
         assert response.json()["server_id"] == "asr-test-01"
-        assert response.json()["status"] == "ONLINE"
+        assert response.json()["status"] == "OFFLINE"
 
     async def test_list_servers(self, client):
         body = {"server_id": "asr-list-01", "host": "10.0.0.1", "port": 10095, "protocol_version": "v2_new"}
