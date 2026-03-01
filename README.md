@@ -20,7 +20,7 @@
 |------|------|
 | 后端框架 | FastAPI + Uvicorn |
 | 数据库 | SQLite (aiosqlite) + SQLAlchemy 2.0 |
-| 任务队列 | Dramatiq + Redis |
+| 任务调度 | 进程内 BackgroundTaskRunner（asyncio） |
 | ASR 对接 | WebSocket (websockets) |
 | 前端 | Vue 3 + Vite + Element Plus |
 | 监控 | Prometheus + Grafana |
@@ -33,8 +33,9 @@
 
 - Python 3.11+
 - Node.js 20+
-- Redis
 - ffmpeg（用于音频元信息提取）
+
+> **注意**：当前版本使用进程内 `BackgroundTaskRunner`（基于 asyncio）执行任务调度，无需外部 Redis。如需多实例水平扩展部署，需迁移至 Dramatiq + Redis 方案（代码中已预留依赖和迁移路径）。
 
 ### 后端启动
 
@@ -59,6 +60,103 @@ cd 3-dev/src/frontend
 npm install
 npm run dev
 ```
+
+### 一键启停脚本（推荐）
+
+项目提供了一键启停脚本，用于在开发环境中管理前后端服务。**Windows 和 Linux/macOS 各有对应版本**：
+
+| 操作系统 | 启动 | 停止 |
+|----------|------|------|
+| **Windows** (PowerShell) | `.\start.ps1` | `.\stop.ps1` |
+| **Linux / macOS** (Bash) | `bash start.sh` | `bash stop.sh` |
+
+> **Windows 用户注意**：请使用 PowerShell 版脚本（`.ps1`）。不要用 `bash start.sh`，因为 Windows 的 `bash` 命令会调用 WSL（Linux 子系统），WSL 中的依赖与 Windows 本地环境相互隔离，会导致依赖检查失败。
+
+#### 启动服务
+
+**Windows (PowerShell)：**
+
+```powershell
+cd 3-dev\src
+
+# 启动前后端
+.\start.ps1
+
+# 仅启动后端（跳过前端）
+.\start.ps1 -NoFrontend
+
+# 关闭热重载 + 仅绑定本机
+.\start.ps1 -NoReload -BindHost 127.0.0.1
+```
+
+**Linux / macOS (Bash)：**
+
+```bash
+cd 3-dev/src
+
+# 启动前后端
+bash start.sh
+
+# 仅启动后端（跳过前端）
+bash start.sh --no-frontend
+
+# 关闭热重载 + 仅绑定本机
+ASR_NO_RELOAD=1 ASR_BIND_HOST=127.0.0.1 bash start.sh
+```
+
+**启动流程（两个版本一致）：**
+
+1. **依赖预检** — 检测 `python`、`uvicorn`、`curl`（以及前端需要的 `npx`），缺少任何依赖会提示并退出
+2. **启动后端** — 后台运行 `uvicorn app.main:app`，默认监听 `0.0.0.0:8000`，开启 `--reload` 热重载
+3. **启动前端** — 后台运行 `npx vite`，默认监听 `0.0.0.0:5173`
+4. **健康检查** — 轮询 `http://127.0.0.1:8000/health`（最多 10 次，每次间隔 1 秒），确认后端就绪后检查前端可访问性
+
+**参数/环境变量对照：**
+
+| 功能 | PowerShell (`.ps1`) | Bash (`.sh`) |
+|------|---------------------|--------------|
+| 跳过前端 | `-NoFrontend` | `--no-frontend` |
+| 关闭热重载 | `-NoReload` | `ASR_NO_RELOAD=1` |
+| 绑定地址 | `-BindHost 127.0.0.1` | `ASR_BIND_HOST=127.0.0.1` |
+
+> PowerShell 版同样支持环境变量 `ASR_NO_RELOAD` 和 `ASR_BIND_HOST`，参数和环境变量均可使用，参数优先级更高。
+
+**日志与 PID 文件：**
+
+启动后所有日志和 PID 信息保存在项目根目录的 `.runtime/` 下：
+
+| 文件 | 说明 |
+|------|------|
+| `.runtime/pids.txt` | 记录后端/前端进程 PID，供停止脚本使用 |
+| `.runtime/backend.out.log` | 后端标准输出 |
+| `.runtime/backend.err.log` | 后端错误输出（排查问题首先查看此文件） |
+| `.runtime/frontend.out.log` | 前端标准输出 |
+| `.runtime/frontend.err.log` | 前端错误输出 |
+
+#### 停止服务
+
+**Windows (PowerShell)：**
+
+```powershell
+cd 3-dev\src
+.\stop.ps1
+```
+
+**Linux / macOS (Bash)：**
+
+```bash
+cd 3-dev/src
+bash stop.sh
+```
+
+**停止流程（两个版本一致）：**
+
+1. **读取 PID 文件** — 解析 `.runtime/pids.txt`，逐一停止已记录的进程
+2. **安全性校验** — 通过进程名/命令行关键字（`uvicorn`、`vite`、`node`）确认 PID 仍属于本项目，避免误杀已被系统复用的 PID
+3. **优雅退出** — Bash 版先发送 `SIGTERM`，等待 2 秒后 `SIGKILL` 强杀；PowerShell 版使用 `Stop-Process -Force`
+4. **端口兜底** — 无论 PID 文件是否存在，都会检查并清理占用 `8000`（后端）和 `5173`（前端）端口的相关进程（Bash 用 `lsof`，PowerShell 用 `Get-NetTCPConnection`）
+
+> 即使 `.runtime/pids.txt` 丢失或手动删除，停止脚本也能通过端口扫描兜底停止服务。
 
 ### Docker 一键部署
 
@@ -98,9 +196,17 @@ docker-compose up -d
 
 ```
 funasr-task-manager/
+├── .runtime/              # 运行时目录（自动生成，已 gitignore）
+│   ├── pids.txt           # 进程 PID 记录
+│   ├── backend.out.log    # 后端标准输出
+│   ├── backend.err.log    # 后端错误日志
+│   ├── frontend.out.log   # 前端标准输出
+│   └── frontend.err.log   # 前端错误日志
 ├── 1-discussion/          # 调研讨论文档
 ├── 2-design/              # 设计文档 + UI 设计稿
 ├── 3-dev/src/
+│   ├── start.sh / start.ps1   # 一键启动 (Bash / PowerShell)
+│   ├── stop.sh  / stop.ps1    # 一键停止 (Bash / PowerShell)
 │   ├── backend/           # FastAPI 后端
 │   │   ├── app/           # 应用代码
 │   │   ├── cli/           # CLI 工具 (Typer)

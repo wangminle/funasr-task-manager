@@ -15,6 +15,15 @@ class ServerRegisterRequest(BaseModel):
     labels: dict | None = None
 
 
+class ServerUpdateRequest(BaseModel):
+    name: str | None = None
+    host: str | None = None
+    port: int | None = None
+    protocol_version: str | None = None
+    max_concurrency: int | None = None
+    labels: dict | None = None
+
+
 class ServerResponse(BaseModel):
     server_id: str
     name: str | None = None

@@ -189,8 +189,13 @@ cython_debug/
 .cursorindexingignore
 
 # ASR runtime data (local only, never commit)
+/.runtime
+/3-dev/src/backend/data/
 /3-dev/src/backend/data/asr_tasks.db
 /3-dev/src/backend/data/results/
 /3-dev/src/backend/data/uploads/
 /7-data/
 .DS_Store
+
+# test runtime data
+/4-tests/scripts/data/

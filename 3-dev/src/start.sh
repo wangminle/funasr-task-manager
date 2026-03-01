@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # ASR Task Manager - 一键启动脚本
 # 用法: bash start.sh [--no-frontend]
+# 环境变量:
+#   ASR_NO_RELOAD=1   关闭 uvicorn --reload（受限环境下推荐）
+#   ASR_BIND_HOST=127.0.0.1  指定前后端绑定地址（默认 0.0.0.0）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -19,6 +22,8 @@ NO_FRONTEND=0
 if [[ "${1:-}" == "--no-frontend" ]]; then
   NO_FRONTEND=1
 fi
+NO_RELOAD="${ASR_NO_RELOAD:-0}"
+BIND_HOST="${ASR_BIND_HOST:-0.0.0.0}"
 
 EXIT_CODE=0
 
@@ -59,7 +64,11 @@ echo "      依赖检查通过 ✓"
 # ------ 后端 ------
 echo "[1/3] 启动后端 (uvicorn)..."
 cd "$BACKEND_DIR"
-nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload \
+UVICORN_CMD=(python -m uvicorn app.main:app --host "$BIND_HOST" --port 8000)
+if [[ "$NO_RELOAD" != "1" ]]; then
+  UVICORN_CMD+=(--reload)
+fi
+nohup "${UVICORN_CMD[@]}" \
   >"$BACKEND_OUT" 2>"$BACKEND_LOG" &
 BACKEND_PID=$!
 echo "backend=$BACKEND_PID" > "$PID_FILE"
@@ -69,7 +78,7 @@ echo "      后端 PID: $BACKEND_PID"
 if [[ $NO_FRONTEND -eq 0 ]]; then
   echo "[2/3] 启动前端 (vite)..."
   cd "$FRONTEND_DIR"
-  nohup npx vite --host 0.0.0.0 --port 5173 \
+  nohup npx vite --host "$BIND_HOST" --port 5173 \
     >"$FRONTEND_OUT" 2>"$FRONTEND_LOG" &
   FRONTEND_PID=$!
   echo "frontend=$FRONTEND_PID" >> "$PID_FILE"

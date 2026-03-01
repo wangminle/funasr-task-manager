@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { ElMessageBox } from 'element-plus'
 
 const api = axios.create({ baseURL: '/api/v1', timeout: 30000 })
 
@@ -18,14 +19,33 @@ api.interceptors.request.use(config => {
   return config
 })
 
+let _apiKeyPromptPending = false
+
 api.interceptors.response.use(
   resp => resp,
-  err => {
-    if (err.response?.status === 401) {
-      const key = window.prompt('请输入 API Key：', getApiKey())
-      if (key) {
-        setApiKey(key)
-        return api.request(err.config)
+  async err => {
+    if (err.response?.status === 401 && !_apiKeyPromptPending) {
+      _apiKeyPromptPending = true
+      try {
+        const { value } = await ElMessageBox.prompt(
+          '当前请求需要认证，请输入有效的 API Key。',
+          '认证失败',
+          {
+            confirmButtonText: '确定',
+            cancelButtonText: '取消',
+            inputValue: getApiKey(),
+            inputPlaceholder: '请输入 API Key',
+            type: 'warning',
+          }
+        )
+        if (value) {
+          setApiKey(value)
+          return api.request(err.config)
+        }
+      } catch {
+        // user cancelled
+      } finally {
+        _apiKeyPromptPending = false
       }
     }
     return Promise.reject(err)
@@ -88,6 +108,16 @@ export async function registerServer(serverData) {
   return data
 }
 
+export async function updateServer(serverId, data) {
+  const { data: resp } = await api.patch(`/servers/${serverId}`, data)
+  return resp
+}
+
 export async function deleteServer(serverId) {
   await api.delete(`/servers/${serverId}`)
+}
+
+export async function probeServer(serverId, level = 'connect_only') {
+  const { data } = await api.post(`/servers/${serverId}/probe`, null, { params: { level } })
+  return data
 }

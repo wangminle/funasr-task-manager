@@ -1,18 +1,22 @@
-"""Heartbeat service - periodic server health checks."""
+"""Heartbeat service - periodic server health checks.
+
+Uses the same SSL-first-with-fallback probe logic as the API endpoints,
+matching the behavior of the funasr-client-python GUI client.
+"""
 
 import asyncio
 from datetime import datetime, timezone
 
 from app.config import settings
 from app.models.server import ServerStatus
-from app.services.probe import ServerProbe, ProbeLevel, get_probe_cache
+from app.services.server_probe import ProbeLevel, ServerCapabilities, probe_server
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 class HeartbeatService:
-    """Periodically checks ASR server health via connect-only probe."""
+    """Periodically checks ASR server health via connect-only probe with SSL fallback."""
 
     def __init__(
         self,
@@ -21,7 +25,6 @@ class HeartbeatService:
     ):
         self._interval = interval or settings.heartbeat_interval_seconds
         self._timeout = timeout or settings.heartbeat_timeout_seconds
-        self._probe = ServerProbe(use_ssl=False, connect_timeout=5.0)
         self._running = False
         self._task: asyncio.Task | None = None
 
@@ -59,18 +62,43 @@ class HeartbeatService:
                 logger.error("heartbeat_loop_error", error=str(e))
             await asyncio.sleep(self._interval)
 
+    async def _probe_with_ssl_fallback(
+        self, host: str, port: int,
+    ) -> ServerCapabilities:
+        """Try wss:// first; on failure, retry with plain ws://."""
+        try:
+            caps = await probe_server(
+                host=host, port=port, use_ssl=True,
+                level=ProbeLevel.CONNECT_ONLY, timeout=8.0,
+            )
+            if caps.reachable:
+                return caps
+        except Exception as e:
+            logger.debug("heartbeat_wss_error", host=host, port=port, error=str(e))
+            caps = ServerCapabilities(error=str(e))
+
+        try:
+            ws_caps = await probe_server(
+                host=host, port=port, use_ssl=False,
+                level=ProbeLevel.CONNECT_ONLY, timeout=8.0,
+            )
+            return ws_caps
+        except Exception as e:
+            logger.debug("heartbeat_ws_error", host=host, port=port, error=str(e))
+
+        return caps
+
     async def _check_one(self, server: dict, update_status_fn) -> None:
         server_id = server["server_id"]
         host = server["host"]
         port = server["port"]
         current_status = server.get("status", "OFFLINE")
 
-        get_probe_cache().invalidate(server_id)
-        caps = await self._probe.probe(server_id, host, port, level=ProbeLevel.CONNECT_ONLY)
+        caps = await self._probe_with_ssl_fallback(host, port)
 
         now = datetime.now(timezone.utc)
 
-        if caps.is_reachable:
+        if caps.reachable:
             if current_status != ServerStatus.ONLINE:
                 logger.info("server_back_online", server_id=server_id)
             await update_status_fn(server_id, ServerStatus.ONLINE, now)

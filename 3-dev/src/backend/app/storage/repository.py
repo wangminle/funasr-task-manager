@@ -1,5 +1,7 @@
 """Repository pattern for database operations."""
 
+from datetime import datetime
+
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -99,3 +101,28 @@ class ServerRepository:
         await self._session.delete(server)
         await self._session.flush()
         return True
+
+    async def get_all_servers_brief(self) -> list[dict]:
+        """Return lightweight dicts for the heartbeat service."""
+        servers = await self.list_all_servers()
+        return [
+            {
+                "server_id": s.server_id,
+                "host": s.host,
+                "port": s.port,
+                "status": s.status,
+                "last_heartbeat": s.last_heartbeat,
+            }
+            for s in servers
+        ]
+
+    async def update_server_status(
+        self, server_id: str, new_status: str, last_heartbeat: datetime | None,
+    ) -> None:
+        server = await self.get_server(server_id)
+        if server is None:
+            return
+        server.status = new_status
+        if last_heartbeat is not None:
+            server.last_heartbeat = last_heartbeat
+        await self._session.flush()

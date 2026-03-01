@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.deps import DbSession
 from app.models import ServerInstance, ServerStatus
-from app.schemas.server import ServerProbeResponse, ServerRegisterRequest, ServerResponse
+from app.schemas.server import ServerProbeResponse, ServerRegisterRequest, ServerResponse, ServerUpdateRequest
 from app.services.server_probe import ProbeLevel, ServerCapabilities, probe_server
 from app.storage.repository import ServerRepository
 from app.auth.token import verify_admin
@@ -108,6 +108,28 @@ async def probe_server_endpoint(
         server_id=server_id,
         **caps.to_dict(),
     )
+
+
+@router.patch("/{server_id}", response_model=ServerResponse)
+async def update_server(server_id: str, body: ServerUpdateRequest, db: DbSession, admin: AdminUser):
+    """Update a registered server's configuration."""
+    repo = ServerRepository(db)
+    server = await repo.get_server(server_id)
+    if server is None:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    import json as _json
+    updates = body.model_dump(exclude_unset=True)
+    if "labels" in updates:
+        labels = updates.pop("labels")
+        server.labels_json = _json.dumps(labels) if labels else None
+    for field, value in updates.items():
+        setattr(server, field, value)
+
+    await db.commit()
+    await db.refresh(server)
+    logger.info("server_updated", server_id=server_id, fields=list(updates.keys()), by=admin)
+    return ServerResponse.model_validate(server)
 
 
 @router.delete("/{server_id}", status_code=204)

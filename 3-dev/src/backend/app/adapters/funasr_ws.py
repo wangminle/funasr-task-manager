@@ -7,7 +7,6 @@ Ported and aligned with funasr-client-python's protocol_adapter + simple_funasr_
 from __future__ import annotations
 
 import asyncio
-import gc
 import json
 import ssl
 import time
@@ -274,8 +273,6 @@ class FunASRWebSocketAdapter(BaseAdapter):
                         if result.text:
                             total_text_len += len(result.text)
                             final_result = result
-
-                        gc.collect()
 
                         if result.is_complete:
                             final_result = result

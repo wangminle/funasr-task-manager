@@ -143,6 +143,9 @@ async def probe_server(
 
                 if level == ProbeLevel.CONNECT_ONLY:
                     caps.probe_duration_ms = (time.time() - start) * 1000
+                    logger.info("server_probe_done", uri=uri,
+                                duration_ms=f"{caps.probe_duration_ms:.0f}",
+                                reachable=True, level="CONNECT_ONLY")
                     return caps
 
                 await _probe_offline(ws, caps)

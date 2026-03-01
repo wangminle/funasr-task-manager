@@ -6,9 +6,8 @@ import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-import websockets
-
 from app.adapters.base import ServerType
+from app.adapters.websocket_compat import connect_websocket
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -158,9 +157,13 @@ class ServerProbe:
         uri = f"{scheme}://{caps.host}:{caps.port}"
         try:
             async with asyncio.timeout(self._connect_timeout):
-                async with websockets.connect(uri, close_timeout=2):
+                async with connect_websocket(uri, close_timeout=2):
                     caps.is_reachable = True
                     logger.info("probe_connect_ok", server_id=caps.server_id, uri=uri)
+        except asyncio.TimeoutError:
+            caps.is_reachable = False
+            caps.error = f"Connection timed out ({self._connect_timeout}s)"
+            logger.warning("probe_connect_failed", server_id=caps.server_id, error=caps.error)
         except Exception as e:
             caps.is_reachable = False
             caps.error = f"Connection failed: {e}"
@@ -185,7 +188,7 @@ class ServerProbe:
 
         try:
             async with asyncio.timeout(15.0):
-                async with websockets.connect(uri, max_size=None, close_timeout=3) as ws:
+                async with connect_websocket(uri, max_size=None, close_timeout=3) as ws:
                     await ws.send(start_msg)
                     await ws.send(silent_wav)
                     await ws.send(end_msg)

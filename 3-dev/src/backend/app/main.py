@@ -2,6 +2,7 @@
 
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from datetime import datetime
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,8 +10,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.observability.logging import setup_logging, get_logger
 from app.services.task_runner import task_runner
+from app.services.heartbeat import heartbeat_service
+from app.storage.database import async_session_factory
+from app.storage.repository import ServerRepository
 
 logger = get_logger(__name__)
+
+
+async def _get_servers_for_heartbeat() -> list[dict]:
+    async with async_session_factory() as session:
+        repo = ServerRepository(session)
+        return await repo.get_all_servers_brief()
+
+
+async def _update_server_status(
+    server_id: str, new_status: str, last_heartbeat: datetime | None,
+) -> None:
+    async with async_session_factory() as session:
+        repo = ServerRepository(session)
+        await repo.update_server_status(server_id, new_status, last_heartbeat)
+        await session.commit()
 
 
 @asynccontextmanager
@@ -24,11 +43,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     settings.result_dir.mkdir(parents=True, exist_ok=True)
     settings.temp_dir.mkdir(parents=True, exist_ok=True)
+
+    await heartbeat_service.start(_get_servers_for_heartbeat, _update_server_status)
     await task_runner.start()
 
     yield
 
     await task_runner.stop()
+    await heartbeat_service.stop()
     logger.info("application_shutting_down")
 
 

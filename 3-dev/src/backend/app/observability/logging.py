@@ -1,7 +1,9 @@
 """Structured logging configuration using structlog."""
 
 import logging
+import os
 import sys
+from pathlib import Path
 from typing import Literal
 
 import structlog
@@ -22,6 +24,8 @@ def setup_logging(level: str = "INFO", fmt: Literal["json", "console"] = "consol
     else:
         renderer = structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
 
+    file_renderer: structlog.types.Processor = structlog.dev.ConsoleRenderer(colors=False)
+
     structlog.configure(
         processors=[
             *shared_processors,
@@ -32,7 +36,7 @@ def setup_logging(level: str = "INFO", fmt: Literal["json", "console"] = "consol
         cache_logger_on_first_use=True,
     )
 
-    formatter = structlog.stdlib.ProcessorFormatter(
+    console_formatter = structlog.stdlib.ProcessorFormatter(
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             renderer,
@@ -40,16 +44,54 @@ def setup_logging(level: str = "INFO", fmt: Literal["json", "console"] = "consol
         foreign_pre_chain=shared_processors,
     )
 
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(formatter)
+    file_formatter = structlog.stdlib.ProcessorFormatter(
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            file_renderer,
+        ],
+        foreign_pre_chain=shared_processors,
+    )
+
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setFormatter(console_formatter)
 
     root = logging.getLogger()
     root.handlers.clear()
-    root.addHandler(handler)
+    root.addHandler(console_handler)
+
+    log_file = os.environ.get("ASR_LOG_FILE") or _default_log_file()
+    if log_file:
+        try:
+            Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.FileHandler(log_file, encoding="utf-8")
+            file_handler.setFormatter(file_formatter)
+            root.addHandler(file_handler)
+        except OSError:
+            pass
+
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
 
-    for name in ("uvicorn.access", "sqlalchemy.engine", "dramatiq"):
+    for name in ("uvicorn.access", "sqlalchemy.engine"):
         logging.getLogger(name).setLevel(logging.WARNING)
+
+
+def _default_log_file() -> str | None:
+    """Resolve default log path: <project>/.runtime/backend.err.log
+
+    Layout: <project>/3-dev/src/backend/app/observability/logging.py (6 levels)
+    """
+    try:
+        here = Path(__file__).resolve()
+        project_root = here
+        for _ in range(6):
+            project_root = project_root.parent
+        runtime_dir = project_root / ".runtime"
+        if project_root.exists() and (project_root / "README.md").exists():
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            return str(runtime_dir / "backend.err.log")
+    except Exception:
+        pass
+    return None
 
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
