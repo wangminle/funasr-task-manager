@@ -98,11 +98,13 @@ async def delete_all_tasks(db: DbSession, user_id: CurrentUser, status: str | No
     stmt_count = select(func.count()).select_from(Task).where(*base_where)
     total = (await db.execute(stmt_count)).scalar() or 0
 
-    skip_stmt = select(func.count()).select_from(Task).where(
-        Task.user_id == user_id,
-        Task.status.in_([s.value for s in _ACTIVE_STATUSES]),
-    )
-    skipped = (await db.execute(skip_stmt)).scalar() or 0
+    skipped = 0
+    if not status:
+        skip_stmt = select(func.count()).select_from(Task).where(
+            Task.user_id == user_id,
+            Task.status.in_([s.value for s in _ACTIVE_STATUSES]),
+        )
+        skipped = (await db.execute(skip_stmt)).scalar() or 0
 
     if total == 0:
         return {"deleted": 0, "skipped_active": skipped}

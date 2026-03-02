@@ -36,7 +36,6 @@ def parse_timestamp_segments(raw_result: dict) -> list[TimestampSegment]:
     if timestamp and isinstance(timestamp, list) and text:
         for i, ts_pair in enumerate(timestamp):
             if isinstance(ts_pair, list) and len(ts_pair) >= 2:
-                char_start = sum(len(str(t)) for t in text[:i]) if i < len(text) else 0
                 segments.append(TimestampSegment(
                     start_ms=int(ts_pair[0]),
                     end_ms=int(ts_pair[1]),

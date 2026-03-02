@@ -263,7 +263,7 @@ class TaskScheduler:
             deviation = actual_duration_sec / predicted_duration_sec
             result["deviation"] = deviation
 
-            if abs(deviation - 1.0) > CALIBRATION_THRESHOLD:
+            if deviation > (1.0 + CALIBRATION_THRESHOLD):
                 adjustment = current_penalty_factor * PENALTY_INCREASE_RATE
                 new_pf = current_penalty_factor + adjustment
                 result["penalty_adjustment"] = adjustment
@@ -276,7 +276,7 @@ class TaskScheduler:
                 )
             elif deviation < (1.0 - CALIBRATION_THRESHOLD):
                 tracker = self.rtf_tracker
-                tracker._consecutive_fast[server_id] = tracker._consecutive_fast.get(server_id, 0) + 1
+                tracker._consecutive_fast[server_id] += 1
                 if tracker._consecutive_fast[server_id] >= CONSECUTIVE_FAST_THRESHOLD:
                     adjustment = -current_penalty_factor * PENALTY_DECREASE_RATE
                     new_pf = max(0.01, current_penalty_factor + adjustment)

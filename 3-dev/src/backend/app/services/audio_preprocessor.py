@@ -91,7 +91,7 @@ async def ensure_wav(audio_path: str) -> str:
 
         settings.temp_dir.mkdir(parents=True, exist_ok=True)
 
-        fd, tmp_path = tempfile.mkstemp(suffix=".wav", dir=str(out_path.parent))
+        fd, tmp_path = tempfile.mkstemp(suffix=".wav", dir=str(settings.temp_dir))
         os.close(fd)
 
         try:

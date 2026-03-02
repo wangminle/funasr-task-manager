@@ -85,7 +85,6 @@ class BackgroundTaskRunner:
                     task.started_at = None
                     task.completed_at = None
                     await repo.update_task_status(task, TaskStatus.PENDING)
-                    await repo.update_task_status(task, TaskStatus.PREPROCESSING)
                     logger.info("task_retry_scheduled", task_id=task.task_id, retry=task.retry_count)
             await session.commit()
 
