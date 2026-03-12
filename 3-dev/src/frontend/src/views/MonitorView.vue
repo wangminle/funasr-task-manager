@@ -1,17 +1,12 @@
 <template>
   <div class="monitor-view">
-    <el-row :gutter="16" class="stats-row">
-      <el-col :span="6">
-        <el-card shadow="never" class="stat-card"><div class="stat-value" style="color:#67c23a;">{{ onlineCount }}</div><div class="stat-label">在线节点</div></el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="never" class="stat-card"><div class="stat-value" style="color:#f56c6c;">{{ offlineCount }}</div><div class="stat-label">离线节点</div></el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="never" class="stat-card"><div class="stat-value" style="color:#e6a23c;">{{ queueDepth }}</div><div class="stat-label">队列深度</div></el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="never" class="stat-card"><div class="stat-value" style="color:#409eff;">{{ activeTasks }}</div><div class="stat-label">活跃任务</div></el-card>
+    <el-row :gutter="12" class="stats-row">
+      <el-col :xs="12" :sm="8" :md="4" v-for="card in statCards" :key="card.label">
+        <el-card shadow="never" class="stat-card">
+          <div class="stat-icon"><el-icon :size="22" :color="card.color"><component :is="card.icon" /></el-icon></div>
+          <div class="stat-value" :style="{ color: card.color }">{{ card.value }}</div>
+          <div class="stat-label">{{ card.label }}</div>
+        </el-card>
       </el-col>
     </el-row>
 
@@ -121,33 +116,46 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { Refresh, Plus } from '@element-plus/icons-vue'
+import { ref, computed, onMounted, onUnmounted, markRaw } from 'vue'
+import { Refresh, Plus, Monitor as MonitorIcon, WarningFilled, List, Timer, SuccessFilled, TrendCharts } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { listServers, listTasks, probeServer, registerServer, updateServer } from '../api'
+import { listServers, listTasks, probeServer, registerServer, updateServer, getSystemStats } from '../api'
 
 const servers = ref([])
 const tasks = ref([])
+const sysStats = ref({
+  server_total: 0, server_online: 0, slots_total: 0, slots_used: 0,
+  queue_depth: 0, tasks_today_completed: 0, tasks_today_failed: 0,
+  success_rate_24h: 100, avg_rtf: null,
+})
 const loading = ref(false)
 let pollTimer = null
 
-const onlineCount = computed(() => servers.value.filter(s => s.status === 'ONLINE').length)
-const offlineCount = computed(() => servers.value.filter(s => s.status !== 'ONLINE').length)
-const totalSlots = computed(() => servers.value.reduce((sum, s) => sum + s.max_concurrency, 0))
-const activeTasks = computed(() => tasks.value.filter(t => ['PREPROCESSING', 'DISPATCHED', 'TRANSCRIBING'].includes(t.status)).length)
-const queueDepth = computed(() => tasks.value.filter(t => ['PENDING', 'QUEUED'].includes(t.status)).length)
+const totalSlots = computed(() => sysStats.value.slots_total)
 const taskStatusCounts = computed(() => {
   const counts = {}
   for (const t of tasks.value) { counts[t.status] = (counts[t.status] || 0) + 1 }
   return counts
 })
 
+const statCards = computed(() => [
+  { label: '在线节点', value: sysStats.value.server_online, color: '#67c23a', icon: markRaw(MonitorIcon) },
+  { label: '槽位 (已用/总)', value: `${sysStats.value.slots_used}/${sysStats.value.slots_total}`, color: '#409eff', icon: markRaw(List) },
+  { label: '队列深度', value: sysStats.value.queue_depth, color: '#e6a23c', icon: markRaw(Timer) },
+  { label: '今日完成', value: sysStats.value.tasks_today_completed, color: '#67c23a', icon: markRaw(SuccessFilled) },
+  { label: '今日失败', value: sysStats.value.tasks_today_failed, color: '#f56c6c', icon: markRaw(WarningFilled) },
+  { label: '24h 成功率', value: `${sysStats.value.success_rate_24h}%`, color: sysStats.value.success_rate_24h >= 90 ? '#67c23a' : '#f56c6c', icon: markRaw(TrendCharts) },
+])
+
 async function fetchServers() {
   loading.value = true
   try { servers.value = await listServers() } catch { ElMessage.error('获取服务器列表失败') } finally { loading.value = false }
 }
 async function fetchTasks() {
-  try { const data = await listTasks({ page: 1, page_size: 200 }); tasks.value = data.items } catch {}
+  try { const data = await listTasks({ page: 1, page_size: 200 }); tasks.value = data.items } catch (err) { console.warn('获取任务列表失败', err) }
+}
+async function fetchStats() {
+  try { sysStats.value = await getSystemStats() } catch (err) { console.warn('获取统计数据失败', err) }
 }
 function serverStatusType(s) { return { ONLINE: 'success', OFFLINE: 'danger', DEGRADED: 'warning' }[s] || 'info' }
 function circuitBreakerType(s) { return { CLOSED: 'success', OPEN: 'danger', HALF_OPEN: 'warning' }[s] || 'success' }
@@ -235,16 +243,17 @@ async function handleSubmit() {
   }
 }
 
-onMounted(() => { fetchServers(); fetchTasks(); pollTimer = setInterval(() => { fetchServers(); fetchTasks() }, 5000) })
+onMounted(() => { fetchServers(); fetchTasks(); fetchStats(); pollTimer = setInterval(() => { fetchServers(); fetchTasks(); fetchStats() }, 5000) })
 onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 </script>
 
 <style scoped>
-.monitor-view { max-width: 1200px; margin: 0 auto; }
+.monitor-view { max-width: 1400px; }
 .stats-row { margin-bottom: 16px; }
-.stat-card { text-align: center; }
-.stat-value { font-size: 32px; font-weight: 700; }
-.stat-label { font-size: 13px; color: #909399; margin-top: 4px; }
+.stat-card { text-align: center; padding: 12px 0; }
+.stat-icon { margin-bottom: 4px; }
+.stat-value { font-size: 24px; font-weight: 700; line-height: 1.4; }
+.stat-label { font-size: 12px; color: #909399; margin-top: 2px; }
 .card-header { display: flex; align-items: center; justify-content: space-between; }
 .mt-16 { margin-top: 16px; }
 </style>

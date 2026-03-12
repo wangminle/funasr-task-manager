@@ -46,10 +46,12 @@
             <el-tag v-else-if="row.uploadStatus === 'error'" type="danger">失败</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="进度" width="200">
+        <el-table-column label="进度" width="220">
           <template #default="{ row }">
-            <el-progress v-if="row.uploadStatus === 'uploading'" :percentage="row.uploadProgress" :stroke-width="6" />
-            <span v-else-if="row.fileId" style="color: #67c23a;">{{ row.fileId.slice(0, 12) }}...</span>
+            <el-progress v-if="row.uploadStatus === 'uploading'" :percentage="row.uploadProgress" :stroke-width="8" :text-inside="true" />
+            <el-progress v-else-if="row.uploadStatus === 'uploaded'" :percentage="100" status="success" :stroke-width="8" :text-inside="true" />
+            <el-progress v-else-if="row.uploadStatus === 'error'" :percentage="row.uploadProgress || 0" status="exception" :stroke-width="8" :text-inside="true" />
+            <span v-else style="color: #909399;">等待上传</span>
           </template>
         </el-table-column>
       </el-table>
@@ -90,9 +92,15 @@ const createdTasks = ref([])
 const language = ref('zh')
 const submitting = ref(false)
 
+const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024
+
 function handleFileChange(uploadFile) {
   const exists = pendingFiles.value.find(f => f.name === uploadFile.name && f.size === uploadFile.raw.size)
   if (exists) return
+  if (uploadFile.raw.size > MAX_FILE_SIZE) {
+    ElMessage.warning(`文件 "${uploadFile.name}" 超过 2GB 限制，已跳过`)
+    return
+  }
   pendingFiles.value.push({ name: uploadFile.name, size: uploadFile.raw.size, raw: uploadFile.raw, uploadStatus: 'pending', uploadProgress: 0, fileId: null })
 }
 
@@ -106,10 +114,11 @@ async function submitAll() {
   submitting.value = true
   try {
     for (const f of pendingFiles.value) {
-      if (f.uploadStatus === 'uploaded') continue
+      if (f.uploadStatus === 'uploaded' || f.uploadStatus === 'error') continue
       f.uploadStatus = 'uploading'
+      f.uploadProgress = 0
       try {
-        const result = await uploadFile(f.raw)
+        const result = await uploadFile(f.raw, (pct) => { f.uploadProgress = pct })
         f.fileId = result.file_id
         f.uploadStatus = 'uploaded'
         f.uploadProgress = 100
@@ -123,6 +132,8 @@ async function submitAll() {
     const items = uploadedFiles.map(f => ({ file_id: f.fileId, language: language.value }))
     const tasks = await createTasks(items)
     createdTasks.value = tasks
+    pendingFiles.value = []
+    uploadRef.value?.clearFiles()
     ElMessage.success(`成功创建 ${tasks.length} 个转写任务`)
   } catch (err) {
     ElMessage.error('提交失败: ' + (err.response?.data?.detail || err.message))
@@ -145,7 +156,7 @@ function statusTagType(status) {
 </script>
 
 <style scoped>
-.upload-view { max-width: 900px; margin: 0 auto; }
+.upload-view { max-width: 960px; }
 .card-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .mt-16 { margin-top: 16px; }
 .upload-area { width: 100%; }

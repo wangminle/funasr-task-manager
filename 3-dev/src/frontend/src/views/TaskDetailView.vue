@@ -2,6 +2,17 @@
   <div class="task-detail-view">
     <el-page-header @back="$router.push('/tasks')" title="返回列表" :content="`任务详情 - ${taskId.slice(0, 12)}...`" />
 
+    <el-card shadow="never" class="mt-16 steps-card">
+      <el-steps :active="activeStep" :process-status="processStatus" finish-status="success" align-center>
+        <el-step title="待处理" description="PENDING" :icon="Clock" />
+        <el-step title="预处理" description="PREPROCESSING" :icon="Loading" />
+        <el-step title="排队中" description="QUEUED" :icon="List" />
+        <el-step title="已分配" description="DISPATCHED" :icon="Connection" />
+        <el-step title="转写中" description="TRANSCRIBING" :icon="Microphone" />
+        <el-step :title="finalStepTitle" :description="finalStepDesc" :icon="finalStepIcon" />
+      </el-steps>
+    </el-card>
+
     <el-row :gutter="16" class="mt-16">
       <el-col :span="16">
         <el-card shadow="never">
@@ -84,7 +95,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Download, Document, VideoCamera, CircleClose } from '@element-plus/icons-vue'
+import { Download, Document, VideoCamera, CircleClose, Clock, Loading, List, Connection, Microphone, SuccessFilled, CircleCloseFilled, WarningFilled } from '@element-plus/icons-vue'
 import { getTask, getFileMetadata, getTaskResult, cancelTask, getApiKey } from '../api'
 
 const route = useRoute()
@@ -98,8 +109,53 @@ const progressMessage = ref('加载中...')
 const events = ref([])
 let eventSource = null
 let pollTimer = null
+let sseReconnectTimer = null
 
 const canCancel = computed(() => ['PENDING', 'QUEUED'].includes(task.value.status))
+
+const STEP_ORDER = ['PENDING', 'PREPROCESSING', 'QUEUED', 'DISPATCHED', 'TRANSCRIBING']
+
+const activeStep = computed(() => {
+  const s = task.value.status
+  const t = task.value
+  if (s === 'SUCCEEDED') return 6
+  if (s === 'FAILED' || s === 'CANCELED') {
+    if (t.started_at) return 4
+    if (t.assigned_server_id) return 3
+    return 0
+  }
+  const idx = STEP_ORDER.indexOf(s)
+  return idx >= 0 ? idx : 0
+})
+
+const processStatus = computed(() => {
+  const s = task.value.status
+  if (s === 'SUCCEEDED') return 'success'
+  if (s === 'FAILED') return 'error'
+  if (s === 'CANCELED') return 'wait'
+  return 'process'
+})
+
+const finalStepTitle = computed(() => {
+  const s = task.value.status
+  if (s === 'FAILED') return '失败'
+  if (s === 'CANCELED') return '已取消'
+  return '已完成'
+})
+
+const finalStepDesc = computed(() => {
+  const s = task.value.status
+  if (s === 'FAILED') return 'FAILED'
+  if (s === 'CANCELED') return 'CANCELED'
+  return 'SUCCEEDED'
+})
+
+const finalStepIcon = computed(() => {
+  const s = task.value.status
+  if (s === 'FAILED') return CircleCloseFilled
+  if (s === 'CANCELED') return WarningFilled
+  return SuccessFilled
+})
 
 async function loadTask() {
   try {
@@ -165,7 +221,7 @@ function connectSSE() {
     .catch(err => {
       if (err.name === 'AbortError') return
       if (!['SUCCEEDED', 'FAILED', 'CANCELED'].includes(task.value.status)) {
-        setTimeout(connectSSE, 3000)
+        sseReconnectTimer = setTimeout(connectSSE, 3000)
       }
     })
 }
@@ -217,16 +273,21 @@ function statusTagType(s) { return { PENDING: 'info', PREPROCESSING: 'warning', 
 function statusLabel(s) { return { PENDING: '待处理', PREPROCESSING: '预处理', QUEUED: '排队中', DISPATCHED: '已分配', TRANSCRIBING: '转写中', SUCCEEDED: '已完成', FAILED: '失败', CANCELED: '已取消' }[s] || s }
 function progressStatus(s) { if (s === 'SUCCEEDED') return 'success'; if (s === 'FAILED') return 'exception'; return undefined }
 function formatDate(d) { return d ? new Date(d).toLocaleString('zh-CN') : '-' }
-function formatEta(s) { if (s < 60) return `${s}秒`; return `${Math.round(s / 60)}分钟` }
+function formatEta(s) { if (!s || s <= 0) return '-'; if (s < 60) return `${s}秒`; return `${Math.round(s / 60)}分钟` }
 function formatSize(b) { if (b < 1048576) return (b / 1024).toFixed(1) + ' KB'; return (b / 1048576).toFixed(1) + ' MB' }
 function formatDuration(s) { const m = Math.floor(s / 60); const sec = Math.floor(s % 60); return `${m}分${sec}秒` }
 
 onMounted(() => { loadTask(); connectSSE(); pollTimer = setInterval(loadTask, 10000) })
-onUnmounted(() => { if (sseAbortController) sseAbortController.abort(); if (eventSource) eventSource.close(); if (pollTimer) clearInterval(pollTimer) })
+onUnmounted(() => {
+  if (sseReconnectTimer) clearTimeout(sseReconnectTimer)
+  if (sseAbortController) sseAbortController.abort()
+  if (eventSource) eventSource.close()
+  if (pollTimer) clearInterval(pollTimer)
+})
 </script>
 
 <style scoped>
-.task-detail-view { max-width: 1100px; margin: 0 auto; }
+.task-detail-view { max-width: 1400px; }
 .card-header { display: flex; align-items: center; justify-content: space-between; }
 .mt-16 { margin-top: 16px; }
 .mono { font-family: 'Cascadia Code', monospace; font-size: 12px; }
@@ -235,4 +296,5 @@ onUnmounted(() => { if (sseAbortController) sseAbortController.abort(); if (even
 .progress-msg { color: #606266; }
 .eta { color: #909399; font-size: 13px; }
 .error-section { margin-top: 16px; }
+.steps-card :deep(.el-step__description) { font-size: 11px; font-family: 'Cascadia Code', monospace; color: #909399 !important; }
 </style>

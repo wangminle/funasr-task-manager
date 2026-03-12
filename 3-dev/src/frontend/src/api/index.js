@@ -52,10 +52,20 @@ api.interceptors.response.use(
   }
 )
 
-export async function uploadFile(file) {
+export async function uploadFile(file, onProgress) {
   const formData = new FormData()
   formData.append('file', file)
-  const { data } = await api.post('/files/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
+  const config = {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 600000,
+  }
+  if (onProgress) {
+    config.onUploadProgress = (e) => {
+      const pct = e.total ? Math.round((e.loaded / e.total) * 100) : 0
+      onProgress(pct)
+    }
+  }
+  const { data } = await api.post('/files/upload', formData, config)
   return data
 }
 
@@ -119,5 +129,10 @@ export async function deleteServer(serverId) {
 
 export async function probeServer(serverId, level = 'connect_only') {
   const { data } = await api.post(`/servers/${serverId}/probe`, null, { params: { level } })
+  return data
+}
+
+export async function getSystemStats() {
+  const { data } = await api.get('/stats')
   return data
 }

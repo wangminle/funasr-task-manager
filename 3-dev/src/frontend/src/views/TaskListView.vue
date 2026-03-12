@@ -14,7 +14,8 @@
         <div class="card-header">
           <span>任务列表</span>
           <div class="header-actions">
-            <el-select v-model="statusFilter" placeholder="按状态筛选" clearable size="default" style="width: 160px;">
+            <el-input v-model="searchQuery" placeholder="搜索任务ID / 文件名" clearable :prefix-icon="Search" style="width: 220px;" />
+            <el-select v-model="statusFilter" placeholder="按状态筛选" clearable size="default" style="width: 160px;" @change="() => { currentPage = 1; fetchTasks() }">
               <el-option label="全部" value="" />
               <el-option label="待处理" value="PENDING" />
               <el-option label="预处理中" value="PREPROCESSING" />
@@ -74,34 +75,55 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { Refresh, Delete } from '@element-plus/icons-vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { Refresh, Delete, Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { listTasks, cancelTask, getTaskResult, deleteAllTasks } from '../api'
+import { listTasks, cancelTask, getTaskResult, deleteAllTasks, getSystemStats } from '../api'
 
 const tasks = ref([])
 const total = ref(0)
 const currentPage = ref(1)
 const pageSize = 20
 const statusFilter = ref('')
+const searchQuery = ref('')
 const loading = ref(false)
+const stats = ref([
+  { label: '总任务', value: 0, color: '#303133' },
+  { label: '进行中', value: 0, color: '#e6a23c' },
+  { label: '已完成', value: 0, color: '#67c23a' },
+  { label: '失败', value: 0, color: '#f56c6c' },
+])
 let pollTimer = null
+let searchDebounceTimer = null
 
-const stats = computed(() => {
-  const all = tasks.value
-  return [
-    { label: '总任务', value: total.value, color: '#303133' },
-    { label: '进行中', value: all.filter(t => ['PREPROCESSING','QUEUED','DISPATCHED','TRANSCRIBING'].includes(t.status)).length, color: '#e6a23c' },
-    { label: '已完成', value: all.filter(t => t.status === 'SUCCEEDED').length, color: '#67c23a' },
-    { label: '失败', value: all.filter(t => t.status === 'FAILED').length, color: '#f56c6c' },
-  ]
+watch(searchQuery, () => {
+  clearTimeout(searchDebounceTimer)
+  searchDebounceTimer = setTimeout(() => {
+    currentPage.value = 1
+    fetchTasks()
+  }, 400)
 })
+
+async function fetchStats() {
+  try {
+    const s = await getSystemStats()
+    stats.value = [
+      { label: '总任务', value: total.value, color: '#303133' },
+      { label: '进行中', value: s.slots_used + s.queue_depth, color: '#e6a23c' },
+      { label: '今日完成', value: s.tasks_today_completed, color: '#67c23a' },
+      { label: '今日失败', value: s.tasks_today_failed, color: '#f56c6c' },
+    ]
+  } catch (err) {
+    console.warn('获取统计数据失败', err)
+  }
+}
 
 async function fetchTasks() {
   loading.value = true
   try {
     const params = { page: currentPage.value, page_size: pageSize }
     if (statusFilter.value) params.status = statusFilter.value
+    if (searchQuery.value.trim()) params.search = searchQuery.value.trim()
     const data = await listTasks(params)
     tasks.value = data.items
     total.value = data.total
@@ -171,12 +193,19 @@ function formatDate(dateStr) {
   return new Date(dateStr).toLocaleString('zh-CN')
 }
 
-onMounted(() => { fetchTasks(); pollTimer = setInterval(fetchTasks, 5000) })
-onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
+onMounted(() => {
+  fetchTasks()
+  fetchStats()
+  pollTimer = setInterval(() => { fetchTasks(); fetchStats() }, 5000)
+})
+onUnmounted(() => {
+  clearTimeout(searchDebounceTimer)
+  if (pollTimer) clearInterval(pollTimer)
+})
 </script>
 
 <style scoped>
-.task-list-view { max-width: 1100px; margin: 0 auto; }
+.task-list-view { max-width: 1400px; }
 .stats-row { margin-bottom: 16px; }
 .stat-card { text-align: center; }
 .stat-value { font-size: 28px; font-weight: 700; }
