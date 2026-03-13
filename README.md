@@ -19,11 +19,11 @@
 | 层次 | 技术 |
 |------|------|
 | 后端框架 | FastAPI + Uvicorn |
-| 数据库 | SQLite (aiosqlite) + SQLAlchemy 2.0 |
-| 任务调度 | 进程内 BackgroundTaskRunner（asyncio） |
+| 数据库 | SQLite (aiosqlite) / PostgreSQL (asyncpg, 可选) + SQLAlchemy 2.0 |
+| 任务调度 | 进程内 BackgroundTaskRunner（asyncio）/ Dramatiq + Redis（可选多实例） |
 | ASR 对接 | WebSocket (websockets) |
-| 前端 | Vue 3 + Vite + Element Plus |
-| 监控 | Prometheus + Grafana |
+| 前端 | Vue 3 + Vite + Element Plus + ECharts |
+| 监控 | Prometheus + Grafana + Alertmanager |
 | CLI | Typer + Rich + httpx |
 | 部署 | Docker Compose |
 
@@ -163,14 +163,22 @@ bash stop.sh
 ```bash
 cd 3-dev/src/backend
 
-# 启动全部服务（web + redis + prometheus + grafana）
+# 启动全部服务（web + redis + prometheus + alertmanager + grafana）
 docker-compose up -d
+
+# 可选：使用 PostgreSQL 替代 SQLite（高并发场景）
+# 在 3-dev/src/backend/ 目录下创建 .env 文件：
+#   POSTGRES_PASSWORD=your_secure_password
+#   ASR_DATABASE_URL=postgresql+asyncpg://asr:your_secure_password@postgres:5432/asr_tasks
+docker compose --profile postgres up -d
+# 首次启动后执行迁移: docker compose exec web alembic upgrade head
 ```
 
 服务启动后访问：
 - API 文档：http://localhost:8000/docs
 - 前端界面：http://localhost:5173（开发模式）或 http://localhost:80（Docker 部署）
 - Prometheus：http://localhost:9090
+- Alertmanager：http://localhost:9093
 - Grafana：http://localhost:3001（默认账号 admin/admin）
 
 ## API 接口
@@ -190,6 +198,7 @@ docker-compose up -d
 | GET | `/api/v1/servers` | 服务器列表 |
 | DELETE | `/api/v1/servers/{server_id}` | 注销服务器 |
 | GET | `/api/v1/stats` | 系统统计（节点/槽位/队列/成功率） |
+| POST | `/api/v1/internal/alert-webhook` | Alertmanager 告警接收 |
 | GET | `/metrics` | Prometheus 指标 |
 
 ## 项目结构
@@ -216,7 +225,7 @@ funasr-task-manager/
 │   └── frontend/          # Vue 3 前端
 ├── 4-tests/
 │   ├── scripts/           # 测试脚本
-│   │   ├── unit/          # 单元测试 (174 tests)
+│   │   ├── unit/          # 单元测试 (184 tests)
 │   │   ├── integration/   # 集成测试 (34 tests)
 │   │   ├── e2e/           # 端到端测试
 │   │   └── load/          # 压力测试 (Locust)

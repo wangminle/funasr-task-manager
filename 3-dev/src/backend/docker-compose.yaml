@@ -6,7 +6,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - ASR_DATABASE_URL=sqlite+aiosqlite:///./data/asr_tasks.db
+      - ASR_DATABASE_URL=${ASR_DATABASE_URL:-sqlite+aiosqlite:///./data/asr_tasks.db}
       - ASR_REDIS_URL=redis://redis:6379/0
       - ASR_LOG_FORMAT=json
       - ASR_LOG_LEVEL=INFO
@@ -46,6 +46,17 @@ services:
       - "--storage.tsdb.retention.time=30d"
     restart: unless-stopped
 
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./config/alertmanager:/etc/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    restart: unless-stopped
+
   grafana:
     image: grafana/grafana:11.5.0
     ports:
@@ -58,8 +69,35 @@ services:
       - prometheus
     restart: unless-stopped
 
+  # --- 可选: PostgreSQL (高并发场景替代 SQLite) ---
+  # 启用方法:
+  #   1. 创建 .env 文件，设置:
+  #        POSTGRES_PASSWORD=your_secure_password
+  #        ASR_DATABASE_URL=postgresql+asyncpg://asr:your_secure_password@postgres:5432/asr_tasks
+  #   2. docker compose --profile postgres up -d
+  #   3. web 服务会自动使用 .env 中的 ASR_DATABASE_URL 连接 PostgreSQL
+  #   4. 首次启动需执行迁移: docker compose exec web alembic upgrade head
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-asr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请设置 POSTGRES_PASSWORD 环境变量}
+      POSTGRES_DB: ${POSTGRES_DB:-asr_tasks}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-asr}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
 volumes:
   app-data:
   redis-data:
   prometheus-data:
   grafana-data:
+  postgres-data:

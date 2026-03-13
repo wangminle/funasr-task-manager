@@ -26,6 +26,10 @@
           <el-icon><Monitor /></el-icon>
           <template #title>系统监控</template>
         </el-menu-item>
+        <el-menu-item index="/settings">
+          <el-icon><Setting /></el-icon>
+          <template #title>设置</template>
+        </el-menu-item>
       </el-menu>
       <div class="aside-footer">
         <el-button text :icon="isCollapsed ? Expand : Fold" @click="isCollapsed = !isCollapsed" class="collapse-btn" />
@@ -48,7 +52,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { Headset, Upload, List, Monitor, Fold, Expand } from '@element-plus/icons-vue'
+import { Headset, Upload, List, Monitor, Fold, Expand, Setting } from '@element-plus/icons-vue'
 
 const appVersion = __APP_VERSION__
 
@@ -73,6 +77,7 @@ const titleMap = {
   '/upload': '文件上传',
   '/tasks': '任务列表',
   '/monitor': '系统监控',
+  '/settings': '系统设置',
 }
 const currentTitle = computed(() => {
   if (route.path.startsWith('/tasks/')) return '任务详情'

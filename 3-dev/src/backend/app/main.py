@@ -63,10 +63,12 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
     )
 
+    origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+    is_wildcard = origins == ["*"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
+        allow_origins=origins if origins else ["*"],
+        allow_credentials=bool(origins) and not is_wildcard,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -77,6 +79,7 @@ def create_app() -> FastAPI:
     from app.api.servers import router as servers_router
     from app.api.sse import router as sse_router
     from app.api.stats import router as stats_router
+    from app.api.alerts import router as alerts_router
 
     app.include_router(health_router)
     app.include_router(files_router)
@@ -84,6 +87,7 @@ def create_app() -> FastAPI:
     app.include_router(servers_router)
     app.include_router(sse_router)
     app.include_router(stats_router)
+    app.include_router(alerts_router)
 
     return app
 

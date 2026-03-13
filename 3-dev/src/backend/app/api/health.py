@@ -1,5 +1,6 @@
 """Health check and Prometheus metrics endpoints."""
 
+import time
 from fastapi import APIRouter
 from fastapi.responses import PlainTextResponse
 from prometheus_client import generate_latest
@@ -9,10 +10,34 @@ import app.observability.metrics as _  # noqa: F401
 
 router = APIRouter()
 
+_startup_time = time.time()
+
+
+def _format_uptime() -> str:
+    elapsed = int(time.time() - _startup_time)
+    days, remainder = divmod(elapsed, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, _ = divmod(remainder, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}天")
+    if hours:
+        parts.append(f"{hours}时")
+    parts.append(f"{minutes}分")
+    return "".join(parts)
+
 
 @router.get("/health")
 async def health_check() -> dict:
-    return {"status": "ok", "version": settings.app_version, "service": settings.app_name}
+    db_type = "PostgreSQL" if "postgresql" in settings.database_url else "SQLite"
+    return {
+        "status": "ok",
+        "version": settings.app_version,
+        "service": settings.app_name,
+        "database_type": db_type,
+        "auth_enabled": settings.auth_enabled,
+        "uptime": _format_uptime(),
+    }
 
 
 @router.get("/metrics", response_class=PlainTextResponse)

@@ -36,5 +36,7 @@ class Settings(BaseSettings):
     auth_enabled: bool = False
     auth_tokens: str = ""
 
+    cors_origins: str = "*"
+
 
 settings = Settings()

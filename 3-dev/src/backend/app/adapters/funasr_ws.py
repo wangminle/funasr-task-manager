@@ -90,7 +90,10 @@ class FunASRWebSocketAdapter(BaseAdapter):
             "audio_fs": profile.audio_fs,
             "is_speaking": True,
             "itn": profile.use_itn,
+            "punc": profile.use_punc,
         }
+        if profile.use_spk:
+            msg["spk"] = True
         if profile.hotwords:
             msg["hotwords"] = profile.hotwords
 

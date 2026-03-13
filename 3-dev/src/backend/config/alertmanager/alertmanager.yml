@@ -1,0 +1,65 @@
+# ============================================================
+# Alertmanager 配置 — ASR 任务管理器
+# 请根据实际情况配置接收器（邮件/钉钉/企业微信）
+# ============================================================
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: "default"
+  group_by: ["alertname", "severity"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - match:
+        severity: critical
+      receiver: "critical-alerts"
+      repeat_interval: 1h
+
+receivers:
+  - name: "default"
+    webhook_configs:
+      # === 钉钉机器人 Webhook ===
+      # 取消注释并替换为实际的钉钉机器人 Webhook 地址
+      # - url: "https://oapi.dingtalk.com/robot/send?access_token=YOUR_DINGTALK_TOKEN"
+      #   send_resolved: true
+
+      # === 企业微信机器人 Webhook ===
+      # - url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_WECOM_KEY"
+      #   send_resolved: true
+
+      # === 通用 Webhook (可对接自定义告警服务) ===
+      - url: "http://web:8000/api/v1/internal/alert-webhook"
+        send_resolved: true
+
+    # === 邮件通知 ===
+    # email_configs:
+    #   - to: "ops-team@example.com"
+    #     from: "alertmanager@example.com"
+    #     smarthost: "smtp.example.com:587"
+    #     auth_username: "alertmanager@example.com"
+    #     auth_password: "YOUR_SMTP_PASSWORD"
+    #     send_resolved: true
+
+  - name: "critical-alerts"
+    webhook_configs:
+      - url: "http://web:8000/api/v1/internal/alert-webhook"
+        send_resolved: true
+
+    # 关键告警同时发邮件
+    # email_configs:
+    #   - to: "sre-team@example.com"
+    #     from: "alertmanager@example.com"
+    #     smarthost: "smtp.example.com:587"
+    #     auth_username: "alertmanager@example.com"
+    #     auth_password: "YOUR_SMTP_PASSWORD"
+    #     send_resolved: true
+
+inhibit_rules:
+  - source_match:
+      severity: "critical"
+    target_match:
+      severity: "warning"
+    equal: ["alertname"]

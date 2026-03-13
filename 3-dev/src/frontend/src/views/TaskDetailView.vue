@@ -38,6 +38,22 @@
           </div>
         </el-card>
 
+        <el-card v-if="task.status === 'SUCCEEDED' && resultText !== null" shadow="never" class="mt-16 result-card">
+          <template #header>
+            <div class="card-header">
+              <span>转写结果预览</span>
+              <el-button-group size="small">
+                <el-button :type="resultFormat === 'txt' ? 'primary' : ''" @click="loadResult('txt')">TXT</el-button>
+                <el-button :type="resultFormat === 'srt' ? 'primary' : ''" @click="loadResult('srt')">SRT</el-button>
+                <el-button :type="resultFormat === 'json' ? 'primary' : ''" @click="loadResult('json')">JSON</el-button>
+              </el-button-group>
+            </div>
+          </template>
+          <div class="result-preview">
+            <pre class="result-text">{{ resultText }}</pre>
+          </div>
+        </el-card>
+
         <el-card shadow="never" class="mt-16">
           <template #header><span>进度追踪</span></template>
           <div class="progress-section">
@@ -107,6 +123,8 @@ const progress = ref(0)
 const eta = ref(null)
 const progressMessage = ref('加载中...')
 const events = ref([])
+const resultText = ref(null)
+const resultFormat = ref('txt')
 let eventSource = null
 let pollTimer = null
 let sseReconnectTimer = null
@@ -167,8 +185,21 @@ async function loadTask() {
         fileInfo.value = await getFileMetadata(data.file_id)
       } catch {}
     }
+    if (data.status === 'SUCCEEDED' && resultText.value === null) {
+      loadResult('txt')
+    }
   } catch (err) {
     ElMessage.error('获取任务失败')
+  }
+}
+
+async function loadResult(format) {
+  resultFormat.value = format
+  try {
+    const data = await getTaskResult(taskId, format)
+    resultText.value = typeof data === 'string' ? data : JSON.stringify(data, null, 2)
+  } catch (err) {
+    console.warn('加载结果失败', err)
   }
 }
 
@@ -297,4 +328,6 @@ onUnmounted(() => {
 .eta { color: #909399; font-size: 13px; }
 .error-section { margin-top: 16px; }
 .steps-card :deep(.el-step__description) { font-size: 11px; font-family: 'Cascadia Code', monospace; color: #909399 !important; }
+.result-preview { max-height: 400px; overflow-y: auto; background: #fafafa; border: 1px solid #ebeef5; border-radius: 4px; padding: 12px; }
+.result-text { white-space: pre-wrap; word-break: break-word; margin: 0; font-size: 13px; line-height: 1.8; font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; color: #303133; }
 </style>

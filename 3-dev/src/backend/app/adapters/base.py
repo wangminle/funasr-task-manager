@@ -26,6 +26,8 @@ class MessageProfile:
     wav_format: str = "pcm"
     audio_fs: int = 16000
     use_itn: bool = True
+    use_punc: bool = True
+    use_spk: bool = False
     hotwords: str = ""
     enable_svs_params: bool = False
     svs_lang: str = "auto"

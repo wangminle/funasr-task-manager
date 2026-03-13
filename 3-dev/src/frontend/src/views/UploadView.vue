@@ -20,19 +20,44 @@
       <template #header>
         <div class="card-header">
           <span>待上传文件 ({{ pendingFiles.length }})</span>
-          <div>
-            <el-select v-model="language" size="small" style="width: 100px; margin-right: 8px;">
-              <el-option label="中文" value="zh" />
-              <el-option label="英文" value="en" />
-              <el-option label="日文" value="ja" />
-              <el-option label="自动检测" value="auto" />
-            </el-select>
-            <el-button type="primary" @click="submitAll" :loading="submitting">
-              <el-icon><Check /></el-icon> 提交转写
-            </el-button>
-          </div>
+          <el-button type="primary" @click="submitAll" :loading="submitting">
+            <el-icon><Check /></el-icon> 提交转写
+          </el-button>
         </div>
       </template>
+
+      <el-row :gutter="16" class="options-row">
+        <el-col :span="6">
+          <span class="option-label">语言</span>
+          <el-select v-model="language" size="small" style="width: 100%;">
+            <el-option label="中文" value="zh" />
+            <el-option label="英文" value="en" />
+            <el-option label="日文" value="ja" />
+            <el-option label="自动检测" value="auto" />
+          </el-select>
+        </el-col>
+        <el-col :span="6">
+          <span class="option-label">标点恢复</span>
+          <el-select v-model="asrOptions.use_punc" size="small" style="width: 100%;">
+            <el-option label="开启" :value="true" />
+            <el-option label="关闭" :value="false" />
+          </el-select>
+        </el-col>
+        <el-col :span="6">
+          <span class="option-label">逆文本正则化 (ITN)</span>
+          <el-select v-model="asrOptions.use_itn" size="small" style="width: 100%;">
+            <el-option label="开启" :value="true" />
+            <el-option label="关闭" :value="false" />
+          </el-select>
+        </el-col>
+        <el-col :span="6">
+          <span class="option-label">说话人分离</span>
+          <el-select v-model="asrOptions.use_spk" size="small" style="width: 100%;">
+            <el-option label="关闭" :value="false" />
+            <el-option label="开启" :value="true" />
+          </el-select>
+        </el-col>
+      </el-row>
       <el-table :data="pendingFiles" stripe>
         <el-table-column prop="name" label="文件名" />
         <el-table-column prop="size" label="大小" width="120">
@@ -91,6 +116,7 @@ const pendingFiles = ref([])
 const createdTasks = ref([])
 const language = ref('zh')
 const submitting = ref(false)
+const asrOptions = ref({ use_punc: true, use_itn: true, use_spk: false })
 
 const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024
 
@@ -129,7 +155,8 @@ async function submitAll() {
     }
     const uploadedFiles = pendingFiles.value.filter(f => f.fileId)
     if (uploadedFiles.length === 0) { ElMessage.error('没有成功上传的文件'); return }
-    const items = uploadedFiles.map(f => ({ file_id: f.fileId, language: language.value }))
+    const opts = { ...asrOptions.value }
+    const items = uploadedFiles.map(f => ({ file_id: f.fileId, language: language.value, options: opts }))
     const tasks = await createTasks(items)
     createdTasks.value = tasks
     pendingFiles.value = []
@@ -160,4 +187,6 @@ function statusTagType(status) {
 .card-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .mt-16 { margin-top: 16px; }
 .upload-area { width: 100%; }
+.options-row { margin-bottom: 16px; }
+.option-label { display: block; font-size: 12px; color: #909399; margin-bottom: 4px; }
 </style>

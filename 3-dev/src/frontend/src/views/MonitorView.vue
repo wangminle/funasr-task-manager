@@ -61,6 +61,25 @@
     <el-card shadow="never" class="mt-16">
       <template #header>
         <div class="card-header">
+          <span>实时趋势监控</span>
+          <el-tag type="info" size="small">最近 {{ MAX_HISTORY_POINTS }} 个采样点</el-tag>
+        </div>
+      </template>
+      <el-row :gutter="16">
+        <el-col :span="12">
+          <div class="chart-title">队列深度 & 活跃任务</div>
+          <v-chart :option="queueChartOption" autoresize style="height: 240px;" />
+        </el-col>
+        <el-col :span="12">
+          <div class="chart-title">今日任务完成 & 失败</div>
+          <v-chart :option="taskChartOption" autoresize style="height: 240px;" />
+        </el-col>
+      </el-row>
+    </el-card>
+
+    <el-card shadow="never" class="mt-16">
+      <template #header>
+        <div class="card-header">
           <span>任务统计概览</span>
         </div>
       </template>
@@ -76,6 +95,7 @@
           <el-descriptions :column="1" border title="系统信息">
             <el-descriptions-item label="总节点数">{{ servers.length }}</el-descriptions-item>
             <el-descriptions-item label="总并发槽位">{{ totalSlots }}</el-descriptions-item>
+            <el-descriptions-item label="平均 RTF">{{ sysStats.avg_rtf != null ? sysStats.avg_rtf.toFixed(3) : '-' }}</el-descriptions-item>
             <el-descriptions-item label="数据刷新间隔">5 秒</el-descriptions-item>
           </el-descriptions>
         </el-col>
@@ -117,9 +137,18 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, markRaw } from 'vue'
+import { use } from 'echarts/core'
+import { CanvasRenderer } from 'echarts/renderers'
+import { LineChart } from 'echarts/charts'
+import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
+import VChart from 'vue-echarts'
 import { Refresh, Plus, Monitor as MonitorIcon, WarningFilled, List, Timer, SuccessFilled, TrendCharts } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { listServers, listTasks, probeServer, registerServer, updateServer, getSystemStats } from '../api'
+
+use([CanvasRenderer, LineChart, GridComponent, TooltipComponent, LegendComponent])
+
+const MAX_HISTORY_POINTS = 60
 
 const servers = ref([])
 const tasks = ref([])
@@ -130,6 +159,56 @@ const sysStats = ref({
 })
 const loading = ref(false)
 let pollTimer = null
+
+const historyLabels = ref([])
+const historyQueueDepth = ref([])
+const historySlotsUsed = ref([])
+const historyCompleted = ref([])
+const historyFailed = ref([])
+
+function recordHistory() {
+  const now = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  const s = sysStats.value
+  historyLabels.value.push(now)
+  historyQueueDepth.value.push(s.queue_depth)
+  historySlotsUsed.value.push(s.slots_used)
+  historyCompleted.value.push(s.tasks_today_completed)
+  historyFailed.value.push(s.tasks_today_failed)
+  if (historyLabels.value.length > MAX_HISTORY_POINTS) {
+    historyLabels.value.shift()
+    historyQueueDepth.value.shift()
+    historySlotsUsed.value.shift()
+    historyCompleted.value.shift()
+    historyFailed.value.shift()
+  }
+}
+
+const chartBaseOption = {
+  tooltip: { trigger: 'axis' },
+  grid: { left: 40, right: 16, top: 36, bottom: 24 },
+}
+
+const queueChartOption = computed(() => ({
+  ...chartBaseOption,
+  legend: { data: ['队列深度', '占用槽位'] },
+  xAxis: { type: 'category', data: historyLabels.value, axisLabel: { fontSize: 10 } },
+  yAxis: { type: 'value', minInterval: 1 },
+  series: [
+    { name: '队列深度', type: 'line', smooth: true, data: historyQueueDepth.value, itemStyle: { color: '#e6a23c' }, areaStyle: { color: 'rgba(230,162,60,0.1)' } },
+    { name: '占用槽位', type: 'line', smooth: true, data: historySlotsUsed.value, itemStyle: { color: '#409eff' }, areaStyle: { color: 'rgba(64,158,255,0.1)' } },
+  ],
+}))
+
+const taskChartOption = computed(() => ({
+  ...chartBaseOption,
+  legend: { data: ['今日完成', '今日失败'] },
+  xAxis: { type: 'category', data: historyLabels.value, axisLabel: { fontSize: 10 } },
+  yAxis: { type: 'value', minInterval: 1 },
+  series: [
+    { name: '今日完成', type: 'line', smooth: true, data: historyCompleted.value, itemStyle: { color: '#67c23a' }, areaStyle: { color: 'rgba(103,194,58,0.1)' } },
+    { name: '今日失败', type: 'line', smooth: true, data: historyFailed.value, itemStyle: { color: '#f56c6c' }, areaStyle: { color: 'rgba(245,108,108,0.1)' } },
+  ],
+}))
 
 const totalSlots = computed(() => sysStats.value.slots_total)
 const taskStatusCounts = computed(() => {
@@ -155,7 +234,10 @@ async function fetchTasks() {
   try { const data = await listTasks({ page: 1, page_size: 200 }); tasks.value = data.items } catch (err) { console.warn('获取任务列表失败', err) }
 }
 async function fetchStats() {
-  try { sysStats.value = await getSystemStats() } catch (err) { console.warn('获取统计数据失败', err) }
+  try {
+    sysStats.value = await getSystemStats()
+    recordHistory()
+  } catch (err) { console.warn('获取统计数据失败', err) }
 }
 function serverStatusType(s) { return { ONLINE: 'success', OFFLINE: 'danger', DEGRADED: 'warning' }[s] || 'info' }
 function circuitBreakerType(s) { return { CLOSED: 'success', OPEN: 'danger', HALF_OPEN: 'warning' }[s] || 'success' }
@@ -256,4 +338,5 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .stat-label { font-size: 12px; color: #909399; margin-top: 2px; }
 .card-header { display: flex; align-items: center; justify-content: space-between; }
 .mt-16 { margin-top: 16px; }
+.chart-title { font-size: 13px; font-weight: 600; color: #606266; margin-bottom: 4px; }
 </style>

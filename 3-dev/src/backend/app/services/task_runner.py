@@ -368,6 +368,12 @@ class BackgroundTaskRunner:
                         profile.mode = RecognitionMode(mode)
                     except ValueError:
                         pass
+                if "use_itn" in options:
+                    profile.use_itn = bool(options["use_itn"])
+                if "use_punc" in options:
+                    profile.use_punc = bool(options["use_punc"])
+                if "use_spk" in options:
+                    profile.use_spk = bool(options["use_spk"])
             except Exception:
                 logger.warning("task_options_parse_failed", task_id=task.task_id)
         return profile
