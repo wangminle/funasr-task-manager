@@ -38,5 +38,10 @@ class Settings(BaseSettings):
 
     cors_origins: str = "*"
 
+    rate_limit_enabled: bool = False
+    rate_limit_max_concurrent: int = 10
+    rate_limit_max_daily: int = 100
+    rate_limit_max_upload_mb_per_min: int = 50
+
 
 settings = Settings()

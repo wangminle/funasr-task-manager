@@ -39,9 +39,13 @@ def get_upload_path(file_id: str, original_name: str) -> Path:
     return final_path
 
 
-def get_result_path(task_id: str, fmt: str = "json") -> Path:
+def get_result_dir(task_id: str) -> Path:
     prefix = task_id[:4]
-    target_dir = settings.result_dir / prefix / task_id
+    return settings.result_dir / prefix / task_id
+
+
+def get_result_path(task_id: str, fmt: str = "json") -> Path:
+    target_dir = get_result_dir(task_id)
     target_dir.mkdir(parents=True, exist_ok=True)
     return target_dir / f"result.{fmt}"
 
@@ -62,7 +66,7 @@ async def save_result(task_id: str, content: str, fmt: str = "json") -> Path:
 
 
 async def read_result(task_id: str, fmt: str = "json") -> str | None:
-    path = get_result_path(task_id, fmt)
+    path = get_result_dir(task_id) / f"result.{fmt}"
     if not path.exists():
         return None
     async with aiofiles.open(path, "r", encoding="utf-8") as f:
@@ -75,5 +79,14 @@ def delete_file(file_id: str) -> bool:
     if target_dir.exists():
         shutil.rmtree(target_dir)
         logger.info("file_deleted", file_id=file_id)
+        return True
+    return False
+
+
+def delete_result(task_id: str) -> bool:
+    target_dir = get_result_dir(task_id)
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+        logger.info("result_deleted", task_id=task_id)
         return True
     return False

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "files": {
+    "test001.wav": {
+      "expected_language": "zh-CN",
+      "keywords_all": [],
+      "keywords_any": [],
+      "notes": "Fill keywords after you curate a stable transcript baseline."
+    },
+    "tv-report-1.wav": {
+      "expected_language": "zh-CN",
+      "keywords_all": [],
+      "keywords_any": [],
+      "notes": "Use keywords_any for looser ASR validation when exact phrasing drifts."
+    }
+  }
+}

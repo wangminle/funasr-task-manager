@@ -3,6 +3,7 @@
 from fastapi import APIRouter, HTTPException, UploadFile
 from sqlalchemy import select
 
+from app.auth.rate_limiter import rate_limiter
 from app.deps import CurrentUser, DbSession
 from app.models import File
 from app.schemas.file import FileMetadataResponse, FileUploadResponse
@@ -19,6 +20,8 @@ UPLOAD_CHUNK_SIZE = 256 * 1024  # 256 KB per chunk
 @router.post("/upload", response_model=FileUploadResponse, status_code=201)
 async def upload_file(file: UploadFile, db: DbSession, user_id: CurrentUser):
     filename = file.filename or "unknown"
+    content_length = file.size or 0
+    rate_limiter.check_upload_bandwidth(user_id, content_length)
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
     try:
         file_record = await process_upload_streaming(user_id, filename, file, max_bytes)
@@ -26,6 +29,7 @@ async def upload_file(file: UploadFile, db: DbSession, user_id: CurrentUser):
         raise HTTPException(status_code=e.status_code, detail=e.message)
     db.add(file_record)
     await db.flush()
+    rate_limiter.record_upload(user_id, file_record.size_bytes)
     logger.info("file_uploaded", file_id=file_record.file_id, name=filename, size=file_record.size_bytes)
     return FileUploadResponse(
         file_id=file_record.file_id, original_name=file_record.original_name,

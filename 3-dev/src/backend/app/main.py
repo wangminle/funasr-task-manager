@@ -40,6 +40,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from app.auth.token import init_auth_from_settings
     init_auth_from_settings()
 
+    if settings.rate_limit_enabled:
+        from app.auth.rate_limiter import rate_limiter, RateLimitConfig
+        rate_limiter.config = RateLimitConfig(
+            max_concurrent_tasks=settings.rate_limit_max_concurrent,
+            max_upload_bytes_per_minute=settings.rate_limit_max_upload_mb_per_min * 1024 * 1024,
+            max_tasks_per_day=settings.rate_limit_max_daily,
+        )
+        rate_limiter.enable()
+        logger.info("rate_limiter_enabled",
+                     max_concurrent=settings.rate_limit_max_concurrent,
+                     max_daily=settings.rate_limit_max_daily)
+
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     settings.result_dir.mkdir(parents=True, exist_ok=True)
     settings.temp_dir.mkdir(parents=True, exist_ok=True)

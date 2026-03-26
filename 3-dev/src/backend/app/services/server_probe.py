@@ -113,7 +113,7 @@ async def probe_server(
     timeout: float = 8.0,
 ) -> ServerCapabilities:
     """Probe a FunASR server's capabilities."""
-    start = time.time()
+    start = time.perf_counter()
     caps = ServerCapabilities(probe_level=level)
 
     if level == ProbeLevel.TWOPASS_FULL and timeout < 12.0:
@@ -142,9 +142,9 @@ async def probe_server(
                 caps.probe_notes.append("WebSocket connected")
 
                 if level == ProbeLevel.CONNECT_ONLY:
-                    caps.probe_duration_ms = (time.time() - start) * 1000
+                    caps.probe_duration_ms = max((time.perf_counter() - start) * 1000, 0.01)
                     logger.info("server_probe_done", uri=uri,
-                                duration_ms=f"{caps.probe_duration_ms:.0f}",
+                                duration_ms=f"{caps.probe_duration_ms:.2f}",
                                 reachable=True, level="CONNECT_ONLY")
                     return caps
 
@@ -169,8 +169,8 @@ async def probe_server(
         logger.warning("server_probe_error", uri=uri, exc_type=exc_name, error=str(e))
 
     _infer_server_type(caps)
-    caps.probe_duration_ms = (time.time() - start) * 1000
-    logger.info("server_probe_done", uri=uri, duration_ms=f"{caps.probe_duration_ms:.0f}",
+    caps.probe_duration_ms = max((time.perf_counter() - start) * 1000, 0.01)
+    logger.info("server_probe_done", uri=uri, duration_ms=f"{caps.probe_duration_ms:.2f}",
                 reachable=caps.reachable, responsive=caps.responsive,
                 inferred_type=caps.inferred_server_type)
     return caps

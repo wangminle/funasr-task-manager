@@ -11,13 +11,17 @@ from sqlalchemy import select
 from app.adapters.base import MessageProfile
 from app.adapters.registry import get_adapter
 from app.config import settings
-from app.models import File, ServerInstance, Task, TaskStatus
+from app.fault.circuit_breaker import breaker_registry
+from app.models import File, ServerInstance, Task, TaskStatus, CallbackOutbox, OutboxStatus
 from app.observability.logging import get_logger
 from app.services.audio_preprocessor import ensure_wav, needs_conversion
+from app.services.callback import create_outbox_record, deliver_callback, get_retry_delay, MAX_CALLBACK_RETRIES
 from app.services.result_formatter import to_json, to_srt, to_txt
+from app.services.scheduler import ServerProfile, scheduler as global_scheduler
 from app.storage.database import async_session_factory
 from app.storage.file_manager import save_result
 from app.storage.repository import TaskRepository
+from app.auth.rate_limiter import rate_limiter
 
 logger = get_logger(__name__)
 
@@ -50,6 +54,7 @@ class BackgroundTaskRunner:
 
     async def _run_loop(self) -> None:
         retry_tick = 0
+        callback_tick = 0
         while not self._stop_event.is_set():
             try:
                 await self._promote_preprocessing_tasks()
@@ -58,6 +63,10 @@ class BackgroundTaskRunner:
                 if retry_tick >= 10:
                     await self._retry_failed_tasks()
                     retry_tick = 0
+                callback_tick += 1
+                if callback_tick >= 30:
+                    await self._retry_pending_callbacks()
+                    callback_tick = 0
             except Exception as e:
                 logger.exception("task_runner_loop_error", error=str(e))
             await asyncio.sleep(self.poll_interval)
@@ -138,30 +147,56 @@ class BackgroundTaskRunner:
                 )
                 running_count[srv.server_id] = len(list((await session.execute(count_stmt)).scalars().all()))
 
-            reservations = {srv.server_id: max(srv.max_concurrency - running_count[srv.server_id], 0) for srv in servers}
+            server_profiles = [
+                ServerProfile(
+                    server_id=srv.server_id,
+                    host=srv.host,
+                    port=srv.port,
+                    max_concurrency=srv.max_concurrency,
+                    running_tasks=running_count.get(srv.server_id, 0),
+                )
+                for srv in servers
+            ]
+
             to_start: list[str] = []
 
             for task in queued_tasks:
                 if task.task_id in inflight:
                     continue
-                candidates = [
-                    srv for srv in servers if reservations.get(srv.server_id, 0) > 0
-                ]
-                if not candidates:
-                    break
-                selected = max(
-                    candidates,
-                    key=lambda s: (
-                        reservations.get(s.server_id, 0),
-                        s.max_concurrency,
-                    ),
-                )
-
                 if not task.can_transition_to(TaskStatus.DISPATCHED):
                     continue
-                task.assigned_server_id = selected.server_id
+
+                available_profiles = []
+                for sp in server_profiles:
+                    cb = breaker_registry.get(sp.server_id)
+                    if not cb.allow_request():
+                        logger.info("circuit_breaker_skip", server_id=sp.server_id, task_id=task.task_id)
+                        continue
+                    available_profiles.append(sp)
+
+                if not available_profiles:
+                    break
+
+                audio_duration = 0.0
+                if task.file and task.file.duration_sec:
+                    audio_duration = task.file.duration_sec
+
+                decision = global_scheduler.assign_single_task(
+                    task_id=task.task_id,
+                    audio_duration_sec=audio_duration,
+                    servers=available_profiles,
+                )
+                if decision is None:
+                    continue
+
+                task.assigned_server_id = decision.server_id
+                task.eta_seconds = int(decision.estimated_duration)
                 await repo.update_task_status(task, TaskStatus.DISPATCHED)
-                reservations[selected.server_id] -= 1
+
+                for sp in server_profiles:
+                    if sp.server_id == decision.server_id:
+                        sp.running_tasks += 1
+                        break
                 to_start.append(task.task_id)
 
             if not to_start:
@@ -173,6 +208,7 @@ class BackgroundTaskRunner:
             asyncio.create_task(self._execute_task(task_id), name=f"asr-task-{task_id}")
 
     async def _execute_task(self, task_id: str) -> None:
+        server = None
         try:
             dispatch_info = await self._load_dispatch_info(task_id)
             if dispatch_info is None:
@@ -214,15 +250,30 @@ class BackgroundTaskRunner:
             )
 
             if result.error:
+                breaker_registry.get(server.server_id).record_failure()
                 await self._mark_task_failed(task_id, result.error)
                 return
 
             if not result.text or not result.text.strip():
+                breaker_registry.get(server.server_id).record_failure()
                 await self._mark_task_failed(
                     task_id,
                     "ASR returned empty text (no transcription content received)",
                 )
                 return
+
+            breaker_registry.get(server.server_id).record_success()
+
+            audio_duration = 0.0
+            if file_record and hasattr(file_record, "duration_sec") and file_record.duration_sec:
+                audio_duration = file_record.duration_sec
+            if audio_duration > 0 and task.started_at:
+                actual_sec = (datetime.now(timezone.utc) - task.started_at).total_seconds()
+                global_scheduler.calibrate_after_completion(
+                    server_id=server.server_id,
+                    audio_duration_sec=audio_duration,
+                    actual_duration_sec=actual_sec,
+                )
 
             raw = result.raw if isinstance(result.raw, dict) and result.raw else {}
             if "text" not in raw:
@@ -236,6 +287,8 @@ class BackgroundTaskRunner:
             await self._mark_task_succeeded(task_id)
         except Exception as e:
             logger.exception("task_execute_unhandled_error", task_id=task_id, error=str(e))
+            if server is not None:
+                breaker_registry.get(server.server_id).record_failure()
             await self._mark_task_failed(task_id, str(e))
         finally:
             await self._unmark_inflight(task_id)
@@ -260,6 +313,7 @@ class BackgroundTaskRunner:
             return task, server, file_record
 
     async def _mark_task_succeeded(self, task_id: str) -> None:
+        pending_delivery = None
         async with async_session_factory() as session:
             repo = TaskRepository(session)
             task = await repo.get_task(task_id)
@@ -269,11 +323,19 @@ class BackgroundTaskRunner:
             task.error_code = None
             task.error_message = None
             if task.can_transition_to(TaskStatus.SUCCEEDED):
-                await repo.update_task_status(task, TaskStatus.SUCCEEDED)
+                event = await repo.update_task_status(task, TaskStatus.SUCCEEDED)
+                outbox = await self._enqueue_callback(session, task, event.event_id, TaskStatus.SUCCEEDED)
+                if outbox is not None:
+                    pending_delivery = (outbox.outbox_id, task.callback_secret)
+            user_id = task.user_id
             await session.commit()
             logger.info("task_transcription_succeeded", task_id=task_id)
+            rate_limiter.record_task_completed(user_id)
+        if pending_delivery:
+            await self._try_deliver_outbox(*pending_delivery)
 
     async def _mark_task_failed(self, task_id: str, message: str) -> None:
+        pending_delivery = None
         async with async_session_factory() as session:
             repo = TaskRepository(session)
             task = await repo.get_task(task_id)
@@ -282,9 +344,83 @@ class BackgroundTaskRunner:
             task.error_code = "TRANSCRIBE_ERROR"
             task.error_message = message[:2000]
             if task.can_transition_to(TaskStatus.FAILED):
-                await repo.update_task_status(task, TaskStatus.FAILED)
+                event = await repo.update_task_status(task, TaskStatus.FAILED)
+                outbox = await self._enqueue_callback(session, task, event.event_id, TaskStatus.FAILED, error_message=message[:2000])
+                if outbox is not None:
+                    pending_delivery = (outbox.outbox_id, task.callback_secret)
+            user_id = task.user_id
             await session.commit()
             logger.warning("task_transcription_failed", task_id=task_id, error=message[:300])
+            rate_limiter.record_task_completed(user_id)
+        if pending_delivery:
+            await self._try_deliver_outbox(*pending_delivery)
+
+    async def _enqueue_callback(
+        self,
+        session,
+        task: Task,
+        event_id: str,
+        status: TaskStatus,
+        error_message: str | None = None,
+    ) -> CallbackOutbox | None:
+        """Write outbox record within the current transaction.
+
+        Returns the outbox record so the caller can attempt delivery AFTER commit.
+        """
+        if not task.callback_url:
+            return None
+        outbox = create_outbox_record(
+            task_id=task.task_id,
+            event_id=event_id,
+            callback_url=task.callback_url,
+            status=status.value,
+            progress=task.progress,
+            result_path=task.result_path,
+            error_message=error_message,
+        )
+        session.add(outbox)
+        await session.flush()
+        return outbox
+
+    async def _try_deliver_outbox(self, outbox_id: str, callback_secret: str | None) -> None:
+        """Best-effort immediate delivery using a dedicated session (post-commit)."""
+        try:
+            async with async_session_factory() as session:
+                stmt = select(CallbackOutbox).where(CallbackOutbox.outbox_id == outbox_id)
+                outbox = (await session.execute(stmt)).scalar_one_or_none()
+                if outbox is None or outbox.status != OutboxStatus.PENDING.value:
+                    return
+                await deliver_callback(outbox, secret=callback_secret)
+                await session.commit()
+        except Exception as e:
+            logger.warning("callback_immediate_delivery_failed", outbox_id=outbox_id, error=str(e))
+
+    async def _retry_pending_callbacks(self) -> None:
+        """Scan callback_outbox for undelivered PENDING records and retry."""
+        async with async_session_factory() as session:
+            stmt = (
+                select(CallbackOutbox)
+                .where(
+                    CallbackOutbox.status == OutboxStatus.PENDING.value,
+                    CallbackOutbox.retry_count < MAX_CALLBACK_RETRIES,
+                )
+                .order_by(CallbackOutbox.created_at.asc())
+                .limit(50)
+            )
+            records = list((await session.execute(stmt)).scalars().all())
+            if not records:
+                return
+            for outbox in records:
+                task_stmt = select(Task.callback_secret).where(Task.task_id == outbox.task_id)
+                secret = (await session.execute(task_stmt)).scalar_one_or_none()
+                try:
+                    await deliver_callback(outbox, secret=secret)
+                except Exception as e:
+                    logger.warning("callback_retry_error", outbox_id=outbox.outbox_id, error=str(e))
+            await session.commit()
+            delivered = sum(1 for r in records if r.status == OutboxStatus.SENT.value)
+            if delivered:
+                logger.info("callback_outbox_retry_batch", total=len(records), delivered=delivered)
 
     async def _transcribe_with_protocol_fallback(
         self,

@@ -7,7 +7,7 @@
           <span>文件上传</span>
         </div>
       </template>
-      <el-upload ref="uploadRef" class="upload-area" drag multiple :auto-upload="false" :on-change="handleFileChange" :on-remove="handleFileRemove" accept=".wav,.mp3,.mp4,.flac,.ogg,.webm,.m4a,.aac,.mkv,.avi,.mov">
+      <el-upload ref="uploadRef" class="upload-area" drag multiple :auto-upload="false" :on-change="handleFileChange" :on-remove="handleFileRemove" accept=".wav,.mp3,.mp4,.flac,.ogg,.webm,.m4a,.aac,.mkv,.avi,.mov" data-testid="upload-dropzone">
         <el-icon class="el-icon--upload" :size="48"><UploadFilled /></el-icon>
         <div class="el-upload__text">将文件拖到此处，或 <em>点击上传</em></div>
         <template #tip>
@@ -20,7 +20,7 @@
       <template #header>
         <div class="card-header">
           <span>待上传文件 ({{ pendingFiles.length }})</span>
-          <el-button type="primary" @click="submitAll" :loading="submitting">
+          <el-button type="primary" @click="submitAll" :loading="submitting" data-testid="submit-transcribe">
             <el-icon><Check /></el-icon> 提交转写
           </el-button>
         </div>
@@ -58,7 +58,7 @@
           </el-select>
         </el-col>
       </el-row>
-      <el-table :data="pendingFiles" stripe>
+      <el-table :data="pendingFiles" stripe data-testid="pending-files-table">
         <el-table-column prop="name" label="文件名" />
         <el-table-column prop="size" label="大小" width="120">
           <template #default="{ row }">{{ formatSize(row.size) }}</template>
@@ -89,7 +89,7 @@
           <el-button type="primary" text @click="$router.push('/tasks')">查看任务列表 →</el-button>
         </div>
       </template>
-      <el-table :data="createdTasks" stripe>
+      <el-table :data="createdTasks" stripe data-testid="created-tasks-table">
         <el-table-column prop="task_id" label="任务ID" width="200">
           <template #default="{ row }">{{ row.task_id.slice(0, 16) }}...</template>
         </el-table-column>

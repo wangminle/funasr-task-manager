@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(curl -s http://localhost:8000/health)",
+      "Bash(curl -s http://localhost:5173 -o /dev/null -w \"%{http_code}\")",
+      "Bash(bash start.sh --no-frontend)",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s -X POST http://localhost:8000/api/v1/servers -H 'Content-Type: application/json' -d '{\"\"\"\"name\"\"\"\": \"\"\"\"FunASR-Server-1\"\"\"\", \"\"\"\"host\"\"\"\": \"\"\"\"100.116.250.20\"\"\"\", \"\"\"\"port\"\"\"\": 10095, \"\"\"\"protocol\"\"\"\": \"\"\"\"websocket\"\"\"\"}')",
+      "Bash(curl:*)",
+      "Bash(alembic upgrade:*)",
+      "Bash(bash stop.sh)",
+      "Bash(python -m uvicorn app.main:app --host 127.0.0.1 --port 8000)",
+      "Bash(npx vite:*)",
+      "Bash(ASR_E2E_PROFILE=remote-standard npx playwright test --project=chrome-beta)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)",
+      "Bash(set ASR_E2E_PROFILE=remote-standard)",
+      "Bash(npx playwright:*)",
+      "Bash(python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile remote-standard --write)",
+      "Bash(node -e \":*)",
+      "Bash(pkill -f \"playwright\")",
+      "Bash(cd:*)",
+      "Bash(rm -rf test-results)",
+      "Bash(ASR_E2E_PROFILE=remote-standard npx playwright test tests/e2e/upload-to-result.spec.js)",
+      "Bash(python3 -m alembic upgrade head)",
+      "Bash(ASR_E2E_PROFILE=remote-standard npx playwright test tests/e2e/upload-to-result.spec.js --project=chromium)"
+    ]
+  }
+}

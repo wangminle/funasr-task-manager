@@ -199,3 +199,21 @@ cython_debug/
 
 # test runtime data
 /4-tests/scripts/data/
+
+# Playwright
+/test-results/
+/3-dev/src/frontend/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
+
+# Root-level test artifacts (should stay in frontend directory)
+/package.json
+/package-lock.json
+/playwright.config.ts
+/tests/
+/e2e/
+
+# Claude Code local settings (keep in repo for team)
+# .claude/ is tracked

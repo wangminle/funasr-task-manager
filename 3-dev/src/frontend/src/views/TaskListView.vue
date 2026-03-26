@@ -35,7 +35,7 @@
         </div>
       </template>
 
-      <el-table :data="tasks" stripe v-loading="loading" empty-text="暂无任务">
+      <el-table :data="tasks" stripe v-loading="loading" empty-text="暂无任务" data-testid="task-list-table">
         <el-table-column prop="task_id" label="任务ID" width="180">
           <template #default="{ row }"><span class="mono">{{ row.task_id.slice(0, 12) }}...</span></template>
         </el-table-column>

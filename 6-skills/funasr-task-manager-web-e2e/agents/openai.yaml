@@ -1,0 +1,4 @@
+interface:
+  display_name: "FunASR Web E2E"
+  short_description: "为 funasr-task-manager 执行浏览器端到端测试"
+  default_prompt: "Use $funasr-task-manager-web-e2e to run the project's browser-based end-to-end transcription workflow."

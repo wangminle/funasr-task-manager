@@ -7,11 +7,13 @@ from fastapi.responses import Response
 from sqlalchemy import delete as sql_delete, func, select
 from ulid import ULID
 
+from app.auth.rate_limiter import rate_limiter
 from app.deps import CurrentUser, DbSession
 from app.models import Task, TaskEvent, TaskStatus
 from app.schemas.task import TaskCreateRequest, TaskListResponse, TaskResponse
 from app.storage.repository import FileRepository, TaskRepository
 from app.storage.file_manager import read_result
+from app.config import settings
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -20,6 +22,8 @@ router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
 @router.post("", response_model=list[TaskResponse], status_code=201)
 async def create_tasks(body: TaskCreateRequest, db: DbSession, user_id: CurrentUser):
+    rate_limiter.check_concurrent_tasks(user_id)
+    rate_limiter.check_daily_limit(user_id)
     file_repo = FileRepository(db)
     task_repo = TaskRepository(db)
     task_group_id = str(ULID()) if len(body.items) > 1 else None
@@ -39,6 +43,7 @@ async def create_tasks(body: TaskCreateRequest, db: DbSession, user_id: CurrentU
         task = await task_repo.create_task(task)
         await task_repo.update_task_status(task, TaskStatus.PREPROCESSING)
         created_tasks.append(task)
+        rate_limiter.record_task_created(user_id)
         logger.info("task_created", task_id=task.task_id, file_id=item.file_id)
     return [TaskResponse.model_validate(t) for t in created_tasks]
 
@@ -109,6 +114,33 @@ async def delete_all_tasks(db: DbSession, user_id: CurrentUser, status: str | No
     if total == 0:
         return {"deleted": 0, "skipped_active": skipped}
 
+    tasks_to_delete = (await db.execute(select(Task).where(*base_where))).scalars().all()
+
+    task_ids_to_delete = {t.task_id for t in tasks_to_delete}
+    candidate_file_ids = {t.file_id for t in tasks_to_delete if t.file_id}
+
+    orphaned_file_ids: set[str] = set()
+    if candidate_file_ids:
+        still_referenced_stmt = (
+            select(Task.file_id)
+            .where(Task.file_id.in_(candidate_file_ids), Task.task_id.notin_(task_ids_to_delete))
+            .distinct()
+        )
+        still_referenced = set((await db.execute(still_referenced_stmt)).scalars().all())
+        orphaned_file_ids = candidate_file_ids - still_referenced
+
+    from app.storage.file_manager import delete_result as _del_result, delete_file as _del_file
+    cleaned_files = 0
+    cleaned_results = 0
+    deleted_file_ids: set[str] = set()
+    for t in tasks_to_delete:
+        if _del_result(t.task_id):
+            cleaned_results += 1
+        if t.file_id and t.file_id in orphaned_file_ids and t.file_id not in deleted_file_ids:
+            if _del_file(t.file_id):
+                cleaned_files += 1
+            deleted_file_ids.add(t.file_id)
+
     sub = select(Task.task_id).where(*base_where)
     await db.execute(sql_delete(TaskEvent).where(TaskEvent.task_id.in_(sub)))
 
@@ -117,7 +149,8 @@ async def delete_all_tasks(db: DbSession, user_id: CurrentUser, status: str | No
     await db.commit()
 
     logger.info("tasks_deleted", user_id=user_id, status_filter=status,
-                count=total, skipped_active=skipped)
+                count=total, skipped_active=skipped,
+                cleaned_files=cleaned_files, cleaned_results=cleaned_results)
     return {"deleted": total, "skipped_active": skipped}
 
 
