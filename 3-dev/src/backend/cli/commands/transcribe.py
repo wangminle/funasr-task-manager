@@ -1,7 +1,12 @@
-"""Transcribe command - one-shot: upload → create → wait → download."""
+"""Transcribe command - supports both single-file and batch parallel modes.
+
+Single file:  upload → create → wait → download  (backward compatible)
+Batch mode:   upload all → batch create → poll batch progress → download all
+"""
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -22,11 +27,16 @@ def transcribe(
     callback: Optional[str] = typer.Option(None, "--callback", help="回调地址"),
     no_wait: bool = typer.Option(False, "--no-wait", help="不等待完成"),
     poll_interval: float = typer.Option(5.0, "--poll-interval", help="轮询间隔(秒)"),
-    wait_timeout: float = typer.Option(3600.0, "--timeout", help="单任务超时(秒)"),
+    wait_timeout: float = typer.Option(3600.0, "--timeout", help="超时(秒)"),
+    batch: bool = typer.Option(False, "--batch", help="强制批量模式（多文件时自动启用）"),
+    download: bool = typer.Option(True, "--download/--no-download", help="完成后自动下载结果"),
+    json_summary: bool = typer.Option(False, "--json-summary", help="输出批次 JSON 摘要"),
 ):
-    """一键转写：上传 → 创建任务 → 等待完成 → 下载结果。"""
+    """一键转写：上传 → 创建任务 → 等待完成 → 下载结果。
+
+    多文件时自动使用批量模式，一次性创建所有任务，由后端并行调度到多台服务器。
+    """
     from cli.main import get_ctx
-    from cli.progress import wait_for_task
     c = get_ctx(ctx)
 
     existing = [f for f in files if f.exists()]
@@ -34,92 +44,257 @@ def transcribe(
         out.error("没有找到有效的文件")
         raise typer.Exit(1)
 
+    use_batch = batch or len(existing) > 1
+
+    if use_batch:
+        _run_batch(c, existing, language, hotwords, fmt, output_dir, callback,
+                   no_wait, poll_interval, wait_timeout, download, json_summary)
+    else:
+        _run_single(c, existing[0], language, hotwords, fmt, output_dir, save,
+                    callback, no_wait, poll_interval, wait_timeout)
+
+
+def _run_single(c, fp, language, hotwords, fmt, output_dir, save,
+                callback, no_wait, poll_interval, wait_timeout):
+    """Original single-file flow: upload → create → wait → download."""
+    from cli.progress import wait_for_task
+
     options = {}
     if hotwords:
         options["hotwords"] = hotwords
 
-    results = []
-    error_count = 0
+    if not c.quiet:
+        out.info(f"[1/4] 上传: {fp.name}")
+    try:
+        file_data = c.client.upload_file(fp)
+    except APIError as e:
+        out.error(f"上传失败 {fp.name}: {e.detail}")
+        raise typer.Exit(1)
 
-    for fp in existing:
-        if not c.quiet:
-            out.info(f"[1/4] 上传: {fp.name}")
+    if not c.quiet:
+        out.info(f"[2/4] 创建任务: {file_data['file_id']}")
+    items = [{"file_id": file_data["file_id"], "language": language, "options": options or None}]
+    cb = {"url": callback} if callback else None
+    try:
+        tasks = c.client.create_tasks(items, callback=cb)
+    except APIError as e:
+        out.error(f"创建任务失败: {e.detail}")
+        raise typer.Exit(1)
+
+    task = tasks[0]
+    task_id = task["task_id"]
+
+    if no_wait:
+        out.render(c.output_format, data=[{"file": fp.name, "task_id": task_id, "status": task["status"]}],
+                   title="任务已提交", columns=["文件", "task_id", "状态"],
+                   rows=[[fp.name, task_id[:12] + "...", task["status"]]])
+        return
+
+    if not c.quiet:
+        out.info(f"[3/4] 等待完成: {task_id}")
+    try:
+        task = wait_for_task(c.client, task_id, poll_interval=poll_interval,
+                             timeout=wait_timeout, quiet=c.quiet)
+    except TimeoutError:
+        out.error(f"任务超时: {task_id}")
+        raise typer.Exit(1)
+
+    if task["status"] != "SUCCEEDED":
+        out.error(f"任务失败: {task_id} [{task['status']}] {task.get('error_message', '')}")
+        raise typer.Exit(1)
+
+    if not c.quiet:
+        out.info(f"[4/4] 下载结果: {task_id}")
+    try:
+        content = c.client.get_result(task_id, fmt=fmt)
+    except APIError as e:
+        out.error(f"下载结果失败: {e.detail}")
+        raise typer.Exit(1)
+
+    if save:
+        dest = save
+    else:
+        suffix = {"json": ".json", "txt": ".txt", "srt": ".srt"}.get(fmt, ".json")
+        dest = output_dir / f"{fp.stem}_result{suffix}"
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content, encoding="utf-8")
+
+    if not c.quiet:
+        out.success(f"完成: {fp.name} → {dest}")
+    out.render(c.output_format,
+               data=[{"file": fp.name, "task_id": task_id, "status": "SUCCEEDED", "output": str(dest)}],
+               title="转写结果", columns=["文件", "task_id", "状态", "输出"],
+               rows=[[fp.name, task_id[:12] + "...", "SUCCEEDED", str(dest)]])
+
+
+def _run_batch(c, files, language, hotwords, fmt, output_dir, callback,
+               no_wait, poll_interval, wait_timeout, download_results, json_summary):
+    """Batch mode: upload all → batch create → poll batch → download all."""
+    import json
+
+    options = {}
+    if hotwords:
+        options["hotwords"] = hotwords
+
+    total = len(files)
+
+    # Phase 1: Upload all files
+    if not c.quiet:
+        out.info(f"[1/4] 批量上传 {total} 个文件...")
+    upload_map: list[tuple[Path, str]] = []
+    upload_failures: list[str] = []
+    for i, fp in enumerate(files, 1):
         try:
             file_data = c.client.upload_file(fp)
+            upload_map.append((fp, file_data["file_id"]))
+            if not c.quiet:
+                out.info(f"  上传 ({i}/{total}): {fp.name} → {file_data['file_id']}")
         except APIError as e:
-            out.error(f"上传失败 {fp.name}: {e.detail}")
-            results.append({"file": fp.name, "task_id": "-", "status": "UPLOAD_FAILED"})
-            error_count += 1
-            continue
+            upload_failures.append(fp.name)
+            out.error(f"  上传失败 {fp.name}: {e.detail}")
 
-        if not c.quiet:
-            out.info(f"[2/4] 创建任务: {file_data['file_id']}")
-        items = [{"file_id": file_data["file_id"], "language": language, "options": options or None}]
-        cb = {"url": callback} if callback else None
-        try:
-            tasks = c.client.create_tasks(items, callback=cb)
-        except APIError as e:
-            out.error(f"创建任务失败: {e.detail}")
-            results.append({"file": fp.name, "task_id": "-", "status": "CREATE_FAILED"})
-            error_count += 1
-            continue
+    if not upload_map:
+        out.error("所有文件上传失败")
+        raise typer.Exit(1)
 
-        task = tasks[0]
-        task_id = task["task_id"]
+    if upload_failures and not c.quiet:
+        out.error(f"  {len(upload_failures)}/{total} 个文件上传失败: {', '.join(upload_failures)}")
 
-        if no_wait:
-            results.append({"file": fp.name, "task_id": task_id, "status": task["status"]})
-            continue
+    # Phase 2: Batch create tasks
+    if not c.quiet:
+        out.info(f"[2/4] 批量创建 {len(upload_map)} 个任务...")
+    items = [{"file_id": fid, "language": language, "options": options or None}
+             for _, fid in upload_map]
+    cb = {"url": callback} if callback else None
+    try:
+        tasks = c.client.create_tasks(items, callback=cb)
+    except APIError as e:
+        out.error(f"批量创建任务失败: {e.detail}")
+        raise typer.Exit(1)
 
-        if not c.quiet:
-            out.info(f"[3/4] 等待完成: {task_id}")
-        try:
-            task = wait_for_task(c.client, task_id, poll_interval=poll_interval,
-                                 timeout=wait_timeout, quiet=c.quiet)
-        except TimeoutError:
-            out.error(f"任务超时: {task_id}")
-            results.append({"file": fp.name, "task_id": task_id, "status": "TIMEOUT"})
-            error_count += 1
-            continue
+    task_group_id = tasks[0].get("task_group_id") if tasks else None
+    task_ids = [t["task_id"] for t in tasks]
+    file_name_map = {t["task_id"]: fp.name for t, (fp, _) in zip(tasks, upload_map)}
+    file_stem_map = {t["task_id"]: fp.stem for t, (fp, _) in zip(tasks, upload_map)}
 
-        if task["status"] != "SUCCEEDED":
-            out.error(f"任务失败: {task_id} [{task['status']}] {task.get('error_message', '')}")
-            results.append({"file": fp.name, "task_id": task_id, "status": task["status"]})
-            error_count += 1
-            continue
+    if not c.quiet:
+        out.success(f"已创建 {len(tasks)} 个任务 (批次: {task_group_id or 'N/A'})")
 
-        if not c.quiet:
-            out.info(f"[4/4] 下载结果: {task_id}")
-        try:
-            content = c.client.get_result(task_id, fmt=fmt)
-        except APIError as e:
-            out.error(f"下载结果失败: {e.detail}")
-            results.append({"file": fp.name, "task_id": task_id, "status": "DOWNLOAD_FAILED"})
-            error_count += 1
-            continue
-
-        if save and len(existing) == 1:
-            dest = save
+    if no_wait:
+        summary = {
+            "task_group_id": task_group_id,
+            "task_count": len(tasks),
+            "task_ids": task_ids,
+            "files": [fp.name for fp, _ in upload_map],
+            "upload_failures": upload_failures,
+        }
+        if json_summary:
+            out.print_json(summary)
         else:
-            suffix = {"json": ".json", "txt": ".txt", "srt": ".srt"}.get(fmt, ".json")
-            dest = output_dir / f"{fp.stem}_result{suffix}"
+            out.render(c.output_format, data=tasks,
+                       title="任务已提交（批量）",
+                       columns=["文件", "task_id", "状态"],
+                       rows=[[file_name_map.get(t["task_id"], ""), t["task_id"][:12] + "...", t["status"]] for t in tasks],
+                       footer=f"批次 ID: {task_group_id or 'N/A'}")
+        if upload_failures:
+            raise typer.Exit(1)
+        return
 
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(content, encoding="utf-8")
+    # Phase 3: Poll batch progress
+    if not c.quiet:
+        out.info(f"[3/4] 等待 {len(task_ids)} 个任务完成...")
 
+    terminal = {"SUCCEEDED", "FAILED", "CANCELED"}
+    completed: dict[str, dict] = {}
+    start_time = time.time()
+
+    while len(completed) < len(task_ids):
+        if time.time() - start_time > wait_timeout:
+            out.error(f"批量等待超时 ({wait_timeout}s)")
+            break
+
+        for tid in task_ids:
+            if tid in completed:
+                continue
+            try:
+                task = c.client.get_task(tid)
+                if task["status"] in terminal:
+                    completed[tid] = task
+                    if not c.quiet:
+                        elapsed = int(time.time() - start_time)
+                        status_icon = "✓" if task["status"] == "SUCCEEDED" else "✗"
+                        out.info(f"  [{elapsed}s] {status_icon} {file_name_map.get(tid, tid[:12])} → {task['status']} "
+                                 f"({len(completed)}/{len(task_ids)})")
+            except APIError:
+                pass
+
+        if len(completed) < len(task_ids):
+            time.sleep(poll_interval)
+
+    succeeded = [t for t in completed.values() if t["status"] == "SUCCEEDED"]
+    failed = [t for t in completed.values() if t["status"] != "SUCCEEDED"]
+    not_finished = len(task_ids) - len(completed)
+
+    if not c.quiet:
+        elapsed = int(time.time() - start_time)
+        out.info(f"  批量完成: {len(succeeded)} 成功, {len(failed)} 失败, {not_finished} 未完成 (耗时 {elapsed}s)")
+
+    # Phase 4: Download results
+    results = []
+    if download_results and succeeded:
         if not c.quiet:
-            out.success(f"完成: {fp.name} → {dest}")
-        results.append({"file": fp.name, "task_id": task_id, "status": "SUCCEEDED", "output": str(dest)})
+            out.info(f"[4/4] 下载 {len(succeeded)} 个结果...")
+        suffix = {"json": ".json", "txt": ".txt", "srt": ".srt"}.get(fmt, ".json")
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    if c.quiet and results:
-        out.render("json", data=results)
-    elif results:
+        for task in succeeded:
+            tid = task["task_id"]
+            try:
+                content = c.client.get_result(tid, fmt=fmt)
+                stem = file_stem_map.get(tid, tid[:12])
+                dest = output_dir / f"{stem}_result{suffix}"
+                dest.write_text(content, encoding="utf-8")
+                results.append({"file": file_name_map.get(tid, ""), "task_id": tid,
+                                "status": "SUCCEEDED", "output": str(dest)})
+            except APIError as e:
+                results.append({"file": file_name_map.get(tid, ""), "task_id": tid,
+                                "status": "DOWNLOAD_FAILED", "output": e.detail})
+
+    for task in failed:
+        tid = task["task_id"]
+        results.append({"file": file_name_map.get(tid, ""), "task_id": tid,
+                        "status": task["status"],
+                        "output": task.get("error_message", "-") or "-"})
+
+    for tid in task_ids:
+        if tid not in completed:
+            results.append({"file": file_name_map.get(tid, ""), "task_id": tid,
+                            "status": "TIMEOUT", "output": "-"})
+
+    # Output summary
+    if json_summary:
+        summary = {
+            "task_group_id": task_group_id,
+            "total_input_files": total,
+            "upload_failures": upload_failures,
+            "tasks_created": len(task_ids),
+            "succeeded": len(succeeded),
+            "failed": len(failed),
+            "timeout": not_finished,
+            "elapsed_seconds": int(time.time() - start_time),
+            "results": results,
+        }
+        out.print_json(summary)
+    else:
         out.render(
             c.output_format, data=results,
-            title="转写结果", columns=["文件", "task_id", "状态", "输出"],
+            title=f"批量转写结果 (批次: {task_group_id or 'N/A'})",
+            columns=["文件", "task_id", "状态", "输出"],
             rows=[[r.get("file", ""), r.get("task_id", "")[:12] + "...",
                    r.get("status", ""), r.get("output", "-")] for r in results],
+            footer=f"成功 {len(succeeded)} / 失败 {len(failed)} / 超时 {not_finished}",
         )
 
-    if error_count > 0:
+    if failed or not_finished or upload_failures:
         raise typer.Exit(1)

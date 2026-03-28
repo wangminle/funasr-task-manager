@@ -1,4 +1,4 @@
-"""Server management commands: list, register, delete."""
+"""Server management commands: list, register, delete, probe, benchmark, update."""
 
 from __future__ import annotations
 
@@ -86,3 +86,127 @@ def delete(
         raise typer.Exit(1)
 
     out.success(f"节点已删除: {server_id}")
+
+
+@app.command(name="probe")
+def probe(
+    ctx: typer.Context,
+    server_id: str = typer.Argument(..., help="节点 ID"),
+    level: str = typer.Option(
+        "offline_light", "--level", "-l",
+        help="探测级别: connect_only/offline_light/twopass_full/benchmark",
+    ),
+):
+    """探测 ASR 节点能力和连通性。"""
+    from cli.main import get_ctx
+    c = get_ctx(ctx)
+
+    if not c.quiet:
+        out.info(f"正在探测 {server_id} (级别: {level})...")
+
+    try:
+        result = c.client.probe_server(server_id, level=level)
+    except APIError as e:
+        out.error(e.detail)
+        raise typer.Exit(1)
+
+    reachable = result.get("reachable", False)
+    if reachable:
+        out.success(f"节点 {server_id} 可达")
+    else:
+        out.error(f"节点 {server_id} 不可达: {result.get('error', 'unknown')}")
+
+    out.render(
+        c.output_format, data=result, title=f"探测结果: {server_id}",
+        columns=["字段", "值"],
+        rows=[
+            ["可达", "✅" if reachable else "❌"],
+            ["响应", "✅" if result.get("responsive") else "❌"],
+            ["服务类型", result.get("inferred_server_type", "-")],
+            ["支持 offline", "✅" if result.get("supports_offline") else "-"],
+            ["支持 2pass", "✅" if result.get("supports_2pass") else "-"],
+            ["支持 online", "✅" if result.get("supports_online") else "-"],
+            ["Benchmark RTF", str(result.get("benchmark_rtf", "-") or "-")],
+            ["探测耗时", f"{result.get('probe_duration_ms', 0):.0f}ms"],
+        ],
+    )
+
+    if not reachable:
+        raise typer.Exit(1)
+
+
+@app.command(name="benchmark")
+def benchmark(ctx: typer.Context):
+    """对所有在线节点执行性能基准测试。"""
+    from cli.main import get_ctx
+    c = get_ctx(ctx)
+
+    if not c.quiet:
+        out.info("正在对所有在线节点执行 benchmark...")
+
+    try:
+        data = c.client.benchmark_servers()
+    except APIError as e:
+        out.error(e.detail)
+        raise typer.Exit(1)
+
+    results = data.get("results", [])
+    capacity = data.get("capacity_comparison", [])
+
+    if not c.quiet:
+        out.success(f"Benchmark 完成: {len(results)} 个节点")
+
+    if capacity:
+        out.render(
+            c.output_format, data=data, title="节点性能对比",
+            columns=["server_id", "RTF", "加速比", "相对速度"],
+            rows=[
+                [item.get("server_id", ""),
+                 f"{item.get('rtf', 0):.4f}",
+                 f"{item.get('acceleration_ratio', 0):.1f}x",
+                 f"{item.get('relative_speed', 0)*100:.0f}%"]
+                for item in capacity
+            ],
+        )
+    else:
+        out.render(c.output_format, data=data)
+
+
+@app.command(name="update")
+def update(
+    ctx: typer.Context,
+    server_id: str = typer.Argument(..., help="节点 ID"),
+    name: Optional[str] = typer.Option(None, "--name", help="节点名称"),
+    host: Optional[str] = typer.Option(None, "--host", help="主机地址"),
+    port: Optional[int] = typer.Option(None, "--port", help="端口"),
+    max_concurrency: Optional[int] = typer.Option(None, "--max-concurrency", help="最大并发数"),
+    protocol: Optional[str] = typer.Option(None, "--protocol", help="协议版本"),
+):
+    """更新 ASR 节点配置。"""
+    from cli.main import get_ctx
+    c = get_ctx(ctx)
+
+    data = {}
+    if name is not None:
+        data["name"] = name
+    if host is not None:
+        data["host"] = host
+    if port is not None:
+        data["port"] = port
+    if max_concurrency is not None:
+        data["max_concurrency"] = max_concurrency
+    if protocol is not None:
+        data["protocol_version"] = protocol
+
+    if not data:
+        out.error("请至少指定一个要更新的字段")
+        raise typer.Exit(1)
+
+    try:
+        result = c.client.update_server(server_id, data)
+    except APIError as e:
+        out.error(e.detail)
+        raise typer.Exit(1)
+
+    out.success(f"节点 {server_id} 已更新")
+    out.render(c.output_format, data=result)

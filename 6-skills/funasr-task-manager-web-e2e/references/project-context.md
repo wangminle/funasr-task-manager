@@ -80,7 +80,39 @@
 
 - 默认每 5 秒轮询一次任务与统计数据
 - 成功状态为 `SUCCEEDED`
-- 成功任务可下载 `txt` 结果
+- 成功任务可下载 `txt` / `json` / `srt` 结果
+
+### 批次管理 API
+
+多文件上传会自动创建 `task_group_id`，以下端点可用于验证批次流程：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/v1/task-groups/{group_id}` | 批次概况（total/succeeded/failed 等） |
+| GET | `/api/v1/task-groups/{group_id}/tasks` | 批次内任务列表 |
+| GET | `/api/v1/task-groups/{group_id}/results?format=` | 批次结果（txt/json/srt/zip） |
+| DELETE | `/api/v1/task-groups/{group_id}` | 删除整批 |
+
+### 节点管理 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/servers` | 注册 ASR 节点 |
+| GET | `/api/v1/servers` | 节点列表 |
+| POST | `/api/v1/servers/{server_id}/probe` | 探测（connect_only/offline_light/twopass_full/benchmark） |
+| POST | `/api/v1/servers/benchmark` | 全量 benchmark |
+| PATCH | `/api/v1/servers/{server_id}` | 更新配置（max_concurrency/name） |
+
+### 系统诊断 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/v1/diagnostics` | 系统诊断（database_schema/ffprobe/upload_dir/asr_servers） |
+| GET | `/health` | 健康检查 |
+
+### CLI 批量模式
+
+CLI `transcribe` 命令传入多个文件时自动启用批量模式，一次性上传并创建任务，后端并行调度。结果可通过 `task result --group <group_id> --format txt,json,srt` 多格式导出。
 
 ## 测试素材策略
 
@@ -122,7 +154,10 @@
 ### 结构性结果校验
 
 - `txt` 结果非空
-- 或 `json` 结果中存在非空 `text`
+- `json` 结果中存在非空 `text`
+- `srt` 结果包含时间戳和字幕文本
+- 批次 `format=json` 返回合法 JSON 数组（每个元素含 `task_id`, `file_name`, `result`）
+- `format=zip` 返回可解压的 ZIP 文件，内含各任务结果文件（文件名不重复）
 - 视频文件不会因为预处理链路问题直接失效
 
 ### 语义校验
@@ -271,8 +306,10 @@ test001.wav                  3.7MB      ✅     12s      156字      ✓json ✓
 tv-report-1.wav              5.5MB      ✅     18s      342字      ✓json ✓txt ✓srt
 test.mp4                     6.4MB      ❌     --       --         超时
 
+批次ID: {task_group_id}
 总计: 2/3 通过  |  1 失败  |  整体耗时: 45s
 失败项: test.mp4 - 任务停留在 TRANSCRIBING 超过 5 分钟
+批次结果: /api/v1/task-groups/{group_id}/results?format=zip
 ═══════════════════════════════════════════
 ```
 

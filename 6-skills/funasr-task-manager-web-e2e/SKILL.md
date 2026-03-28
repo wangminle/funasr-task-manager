@@ -110,9 +110,11 @@ Drive the same visible workflow a user follows:
 3. Set shared task options such as language and ASR flags.
 4. Click `提交转写`.
 5. Verify the created task count matches the selected file count.
-6. Open `/tasks`.
-7. Poll until tasks reach terminal states (SUCCEEDED / FAILED / CANCELED). Use per-profile timeouts from [references/project-context.md](references/project-context.md). The backend also exposes SSE at `GET /api/v1/tasks/{id}/progress`; prefer API polling at 5–10 second intervals.
-8. Download or fetch text results for validation.
+6. Capture the `task_group_id` from the batch creation response for subsequent verification.
+7. Open `/tasks`.
+8. Poll until tasks reach terminal states (SUCCEEDED / FAILED / CANCELED). Use per-profile timeouts from [references/project-context.md](references/project-context.md). The backend also exposes SSE at `GET /api/v1/tasks/{id}/progress`; prefer API polling at 5–10 second intervals.
+9. Verify batch completeness via `GET /api/v1/task-groups/{group_id}` — check that `succeeded + failed == total`.
+10. Download results in multiple formats: `GET /api/v1/task-groups/{group_id}/results?format=txt`, `?format=json`, `?format=zip`.
 
 Prefer `input[type=file].setInputFiles(...)` when using Playwright.
 Element Plus drag-and-drop ultimately feeds the same upload component state, and direct file assignment is more stable than synthetic drag events.
@@ -123,8 +125,9 @@ Only simulate literal drag events when the task explicitly requires verifying dr
 Apply assertions in this order:
 
 1. Hard gate: page loads, upload succeeds, tasks are created, tasks leave the queue, terminal states are reachable, results are downloadable.
-2. Structural gate: each successful task returns non-empty text or JSON text content, and the number of finished results matches expectations.
-3. Semantic gate: if a baseline exists for a file, verify expected keywords or phrases; if no baseline exists, record the transcript and flag it for review instead of inventing strict text equality.
+2. Batch gate: `GET /api/v1/task-groups/{group_id}` returns correct totals; `format=json` returns a valid JSON array; `format=zip` is a valid ZIP archive with no duplicate filenames.
+3. Structural gate: each successful task returns non-empty text or JSON text content, and the number of finished results matches expectations.
+4. Semantic gate: if a baseline exists for a file, verify expected keywords or phrases; if no baseline exists, record the transcript and flag it for review instead of inventing strict text equality.
 
 Do not require exact transcript equality unless the project already has a maintained golden baseline for that file and model combination.
 

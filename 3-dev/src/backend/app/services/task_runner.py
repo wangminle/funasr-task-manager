@@ -274,7 +274,16 @@ class BackgroundTaskRunner:
                     audio_duration_sec=audio_duration,
                     actual_duration_sec=actual_sec,
                 )
-                await self._persist_rtf_baseline(server.server_id, cal_result["new_rtf_p90"])
+                window_size = global_scheduler.rtf_tracker.get_window_size(server.server_id)
+                if window_size >= 3:
+                    await self._persist_rtf_baseline(server.server_id, cal_result["new_rtf_p90"])
+                else:
+                    logger.info(
+                        "rtf_baseline_persist_skipped",
+                        server_id=server.server_id,
+                        window_size=window_size,
+                        reason="insufficient samples, preserving existing baseline",
+                    )
 
             raw = result.raw if isinstance(result.raw, dict) and result.raw else {}
             if "text" not in raw:

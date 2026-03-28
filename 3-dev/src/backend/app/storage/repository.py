@@ -27,10 +27,12 @@ class TaskRepository:
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def list_tasks(self, user_id: str, status: str | None = None, search: str | None = None, page: int = 1, page_size: int = 20) -> tuple[list[Task], int]:
+    async def list_tasks(self, user_id: str, status: str | None = None, search: str | None = None, group: str | None = None, page: int = 1, page_size: int = 20) -> tuple[list[Task], int]:
         base = select(Task).where(Task.user_id == user_id)
         if status:
             base = base.where(Task.status == status)
+        if group:
+            base = base.where(Task.task_group_id == group)
         if search:
             pattern = f"%{search}%"
             base = base.join(File, Task.file_id == File.file_id).where(

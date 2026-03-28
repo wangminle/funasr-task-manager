@@ -28,7 +28,11 @@
       "Bash(python -m pytest unit/ -v --tb=short)",
       "Bash(python -m pytest integration/ -v --tb=short)",
       "Bash(python 4-tests/scripts/analysis/test_scheduler_simulation.py)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(python -m json.tool)",
+      "Bash(python -c \"import sys,json; tasks=json.load\\(sys.stdin\\); running=[t for t in tasks if t.get\\(''''status''''\\) in \\(''''QUEUED'''',''''DISPATCHED'''',''''TRANSCRIBING'''',''''PREPROCESSING''''\\)]; print\\(f''''运行中: {len\\(running\\)}, 总任务: {len\\(tasks\\)}''''\\)\")",
+      "Bash(python -c \":*)",
+      "Bash(ls -lt \"C:/Users/wangminle/Documents/VSCode/1-Cursor实战记录/5-FunASR-Practice/funasr-task-manager/2-design/\"*.md)"
     ]
   }
 }

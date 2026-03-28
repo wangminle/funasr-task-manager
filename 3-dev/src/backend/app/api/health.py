@@ -1,4 +1,4 @@
-"""Health check and Prometheus metrics endpoints."""
+"""Health check, Prometheus metrics, and system diagnostics endpoints."""
 
 import time
 from fastapi import APIRouter
@@ -6,6 +6,7 @@ from fastapi.responses import PlainTextResponse
 from prometheus_client import generate_latest
 
 from app.config import settings
+from app.deps import DbSession
 import app.observability.metrics as _  # noqa: F401
 
 router = APIRouter()
@@ -38,6 +39,14 @@ async def health_check() -> dict:
         "auth_enabled": settings.auth_enabled,
         "uptime": _format_uptime(),
     }
+
+
+@router.get("/api/v1/diagnostics")
+async def diagnostics(db: DbSession) -> dict:
+    """Run system diagnostics: schema, dependencies, server connectivity."""
+    from app.services.diagnostics import run_full_diagnostics
+    report = await run_full_diagnostics(db)
+    return report.to_dict()
 
 
 @router.get("/metrics", response_class=PlainTextResponse)

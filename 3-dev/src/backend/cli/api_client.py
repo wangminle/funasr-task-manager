@@ -103,12 +103,42 @@ class ASRClient:
                         pass
                     event_data = ""
 
+    # --- task groups ---
+    def get_task_group(self, group_id: str) -> dict:
+        return self._check(self._client.get(f"/api/v1/task-groups/{group_id}")).json()
+
+    def list_group_tasks(self, group_id: str, page: int = 1, page_size: int = 100) -> dict:
+        params = {"page": page, "page_size": page_size}
+        return self._check(self._client.get(f"/api/v1/task-groups/{group_id}/tasks", params=params)).json()
+
+    def get_group_results(self, group_id: str, fmt: str = "txt") -> str:
+        resp = self._check(self._client.get(f"/api/v1/task-groups/{group_id}/results", params={"format": fmt}))
+        return resp.text
+
+    def delete_task_group(self, group_id: str) -> dict:
+        return self._check(self._client.delete(f"/api/v1/task-groups/{group_id}")).json()
+
+    # --- diagnostics ---
+    def diagnostics(self) -> dict:
+        return self._check(self._client.get("/api/v1/diagnostics")).json()
+
     # --- servers ---
     def list_servers(self) -> list[dict]:
         return self._check(self._client.get("/api/v1/servers")).json()
 
     def register_server(self, data: dict) -> dict:
         return self._check(self._client.post("/api/v1/servers", json=data)).json()
+
+    def probe_server(self, server_id: str, level: str = "offline_light") -> dict:
+        return self._check(self._client.post(
+            f"/api/v1/servers/{server_id}/probe", params={"level": level}
+        )).json()
+
+    def benchmark_servers(self) -> dict:
+        return self._check(self._client.post("/api/v1/servers/benchmark")).json()
+
+    def update_server(self, server_id: str, data: dict) -> dict:
+        return self._check(self._client.patch(f"/api/v1/servers/{server_id}", json=data)).json()
 
     def delete_server(self, server_id: str) -> None:
         self._check(self._client.delete(f"/api/v1/servers/{server_id}"))

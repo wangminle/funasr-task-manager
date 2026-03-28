@@ -90,9 +90,16 @@ async def benchmark_all_servers(db: DbSession, admin: AdminUser):
         caps = await _probe_with_ssl_fallback(
             server.host, server.port, ProbeLevel.BENCHMARK, 30.0,
         )
+        if not caps.reachable:
+            server.status = ServerStatus.OFFLINE
+            logger.warning("benchmark_server_unreachable",
+                           server_id=server.server_id, error=caps.error)
+            results.append(ServerProbeResponse(server_id=server.server_id, **caps.to_dict()))
+            continue
+
         if caps.benchmark_rtf is not None:
             server.rtf_baseline = caps.benchmark_rtf
-        if caps.reachable and caps.inferred_server_type != "unknown":
+        if caps.inferred_server_type != "unknown":
             server.server_type = caps.inferred_server_type
         modes = _extract_modes(caps)
         server.supported_modes = ",".join(modes) if modes else None
@@ -100,13 +107,14 @@ async def benchmark_all_servers(db: DbSession, admin: AdminUser):
 
     await db.commit()
 
+    still_online = [s for s in online_servers if s.status == ServerStatus.ONLINE]
     profiles = [
         ServerProfile(
             server_id=s.server_id, host=s.host, port=s.port,
             max_concurrency=s.max_concurrency,
             rtf_baseline=s.rtf_baseline, penalty_factor=s.penalty_factor,
         )
-        for s in online_servers
+        for s in still_online
     ]
     comparison = global_scheduler.compare_server_capacity(profiles)
 

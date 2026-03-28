@@ -1,4 +1,4 @@
-"""System commands: health, stats, metrics."""
+"""System commands: health, stats, metrics, doctor."""
 
 from __future__ import annotations
 
@@ -64,3 +64,46 @@ def metrics(ctx: typer.Context):
         raise typer.Exit(1)
 
     print(text)
+
+
+def doctor(ctx: typer.Context):
+    """系统诊断：检查数据库、依赖、服务连通性等。
+
+    输出等级：
+      ✅ ok     — 正常
+      ⚠️ warning — 功能降级但可运行
+      ❌ error  — 阻断性问题，需要修复
+    """
+    from cli.main import get_ctx
+    c = get_ctx(ctx)
+
+    try:
+        data = c.client.diagnostics()
+    except (APIError, Exception) as e:
+        out.error(f"诊断接口调用失败: {e}")
+        raise typer.Exit(1)
+
+    checks = data.get("checks", [])
+    has_blocking = data.get("has_blocking_errors", False)
+
+    level_icons = {"ok": "✅", "warning": "⚠️", "error": "❌"}
+
+    if c.output_format == "json":
+        out.print_json(data)
+    else:
+        out.render(
+            "table", data=data,
+            title="系统诊断报告",
+            columns=["检查项", "状态", "说明"],
+            rows=[
+                [ck.get("name", ""), level_icons.get(ck.get("level", ""), "?"), ck.get("detail", "")]
+                for ck in checks
+            ],
+        )
+
+    if has_blocking:
+        if not c.quiet:
+            out.error("存在阻断性问题，请先修复后再继续使用")
+        raise typer.Exit(1)
+    elif not c.quiet:
+        out.success("系统诊断通过，无阻断性问题")
