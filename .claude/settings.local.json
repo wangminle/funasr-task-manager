@@ -24,7 +24,11 @@
       "Bash(rm -rf test-results)",
       "Bash(ASR_E2E_PROFILE=remote-standard npx playwright test tests/e2e/upload-to-result.spec.js)",
       "Bash(python3 -m alembic upgrade head)",
-      "Bash(ASR_E2E_PROFILE=remote-standard npx playwright test tests/e2e/upload-to-result.spec.js --project=chromium)"
+      "Bash(ASR_E2E_PROFILE=remote-standard npx playwright test tests/e2e/upload-to-result.spec.js --project=chromium)",
+      "Bash(python -m pytest unit/ -v --tb=short)",
+      "Bash(python -m pytest integration/ -v --tb=short)",
+      "Bash(python 4-tests/scripts/analysis/test_scheduler_simulation.py)",
+      "WebSearch"
     ]
   }
 }

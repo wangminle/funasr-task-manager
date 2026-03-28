@@ -1,4 +1,4 @@
-"""Scheduler unit tests - LPT, EFT, concurrency penalty, ETA."""
+"""Scheduler unit tests - LPT, EFT, capacity-aware, concurrency penalty, ETA."""
 
 import pytest
 
@@ -89,6 +89,113 @@ class TestSchedulerLPT:
 
 
 @pytest.mark.unit
+class TestCapacityAwareScheduling:
+    """Tests for capacity-aware batch scheduling with heterogeneous servers."""
+
+    def test_faster_server_gets_bigger_task(self):
+        """Fastest server (lowest RTF) should be assigned the longest task."""
+        sched = TaskScheduler()
+        tasks = [
+            {"task_id": "huge", "audio_duration_sec": 7200},
+            {"task_id": "small", "audio_duration_sec": 60},
+        ]
+        fast = _make_server("fast", concurrency=1, rtf=0.1)
+        slow = _make_server("slow", concurrency=1, rtf=0.5)
+        decisions = sched.schedule_batch(tasks, [fast, slow])
+        decision_map = {d.task_id: d.server_id for d in decisions}
+        assert decision_map["huge"] == "fast"
+
+    def test_balanced_distribution_three_servers(self):
+        """With 3 heterogeneous servers, batch should distribute to minimize makespan."""
+        sched = TaskScheduler()
+        tasks = [
+            {"task_id": "t1", "audio_duration_sec": 5400},
+            {"task_id": "t2", "audio_duration_sec": 2700},
+            {"task_id": "t3", "audio_duration_sec": 1200},
+            {"task_id": "t4", "audio_duration_sec": 600},
+            {"task_id": "t5", "audio_duration_sec": 300},
+            {"task_id": "t6", "audio_duration_sec": 120},
+            {"task_id": "t7", "audio_duration_sec": 60},
+            {"task_id": "t8", "audio_duration_sec": 30},
+        ]
+        fast = _make_server("fast", concurrency=4, rtf=0.1)
+        medium = _make_server("medium", concurrency=4, rtf=0.25)
+        slow = _make_server("slow", concurrency=4, rtf=0.5)
+        decisions = sched.schedule_batch(tasks, [fast, medium, slow])
+        assert len(decisions) == 8
+
+        server_tasks = {}
+        for d in decisions:
+            server_tasks.setdefault(d.server_id, []).append(d.task_id)
+        assert len(server_tasks) >= 2, "Should use multiple servers"
+
+        longest_task = next(d for d in decisions if d.task_id == "t1")
+        assert longest_task.server_id == "fast", "Longest task should go to fastest server"
+
+    def test_running_tasks_reduce_available_slots(self):
+        """Servers with running tasks should have fewer slots available."""
+        sched = TaskScheduler()
+        tasks = [
+            {"task_id": "t1", "audio_duration_sec": 600},
+            {"task_id": "t2", "audio_duration_sec": 600},
+        ]
+        full = _make_server("full", concurrency=2, running=2)
+        free = _make_server("free", concurrency=2, running=0)
+        decisions = sched.schedule_batch(tasks, [full, free])
+        assert all(d.server_id == "free" for d in decisions)
+
+    def test_all_slots_occupied_returns_empty(self):
+        """If all server slots are occupied, return empty schedule."""
+        sched = TaskScheduler()
+        tasks = [{"task_id": "t1", "audio_duration_sec": 600}]
+        full1 = _make_server("s1", concurrency=2, running=2)
+        full2 = _make_server("s2", concurrency=2, running=2)
+        decisions = sched.schedule_batch(tasks, [full1, full2])
+        assert decisions == []
+
+    def test_simulated_full_batch_scenario(self):
+        """Simulate the real full E2E scenario: 8 files across 3 servers.
+
+        Verify that the 178.9MB long audio (GuruMorningTeaching ~5400s audio)
+        goes to the fastest server, not the slowest.
+        """
+        sched = TaskScheduler()
+        tasks = [
+            {"task_id": "m4a-36MB", "audio_duration_sec": 1500},
+            {"task_id": "mp3-178MB", "audio_duration_sec": 5400},
+            {"task_id": "mp4-412MB", "audio_duration_sec": 420},
+            {"task_id": "mp4-6MB", "audio_duration_sec": 45},
+            {"task_id": "wav-3MB", "audio_duration_sec": 120},
+            {"task_id": "mp4-20MB", "audio_duration_sec": 180},
+            {"task_id": "wav-5MB", "audio_duration_sec": 180},
+            {"task_id": "mp4-9MB", "audio_duration_sec": 90},
+        ]
+        s95 = _make_server("funasr-10095", concurrency=4, rtf=0.15)
+        s96 = _make_server("funasr-10096", concurrency=4, rtf=0.20)
+        s97 = _make_server("funasr-10097", concurrency=4, rtf=0.35)
+        decisions = sched.schedule_batch(tasks, [s95, s96, s97])
+        assert len(decisions) == 8
+
+        decision_map = {d.task_id: d for d in decisions}
+        longest = decision_map["mp3-178MB"]
+        assert longest.server_id == "funasr-10095", (
+            "The longest audio must go to the fastest server (10095, RTF=0.15)"
+        )
+
+        server_finish_times = {}
+        for d in decisions:
+            cur = server_finish_times.get(d.server_id, 0)
+            server_finish_times[d.server_id] = max(cur, d.estimated_finish)
+
+        makespan = max(server_finish_times.values())
+        naive_makespan = 5400 * 0.35 + 5.0
+        assert makespan < naive_makespan, (
+            f"Capacity-aware makespan ({makespan:.0f}s) should be "
+            f"much less than naive single-slowest ({naive_makespan:.0f}s)"
+        )
+
+
+@pytest.mark.unit
 class TestConcurrencyPenalty:
     def test_penalty_increases_eta(self):
         """T-M2-12: running_tasks=8 produces higher ETA than running_tasks=2."""
@@ -150,3 +257,24 @@ class TestCalibration:
             predicted_duration_sec=180, current_penalty_factor=0.1,
         )
         assert result["new_penalty_factor"] == 0.1
+
+
+@pytest.mark.unit
+class TestCapacityComparison:
+    def test_compare_server_capacity(self):
+        sched = TaskScheduler()
+        servers = [
+            _make_server("fast", rtf=0.1),
+            _make_server("medium", rtf=0.25),
+            _make_server("slow", rtf=0.5),
+        ]
+        comparison = sched.compare_server_capacity(servers)
+        assert len(comparison) == 3
+        assert comparison[0]["server_id"] == "fast"
+        assert comparison[0]["relative_speed"] == 1.0
+        assert comparison[1]["relative_speed"] == pytest.approx(0.4, abs=0.01)
+        assert comparison[2]["relative_speed"] == pytest.approx(0.2, abs=0.01)
+
+    def test_compare_empty(self):
+        sched = TaskScheduler()
+        assert sched.compare_server_capacity([]) == []

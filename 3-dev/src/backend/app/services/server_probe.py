@@ -1,14 +1,17 @@
 """FunASR server probe service.
 
 Ported from funasr-client-python's server_probe.py.
-Detects server reachability, capabilities, and protocol semantics.
+Detects server reachability, capabilities, protocol semantics, and
+per-server processing speed (RTF benchmark).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import math
 import ssl
+import struct
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -19,11 +22,15 @@ from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
+BENCHMARK_AUDIO_DURATION_SEC = 5.0
+BENCHMARK_SAMPLE_RATE = 16000
+
 
 class ProbeLevel(Enum):
     CONNECT_ONLY = 0
     OFFLINE_LIGHT = 1
     TWOPASS_FULL = 2
+    BENCHMARK = 3
 
 
 @dataclass
@@ -46,6 +53,10 @@ class ServerCapabilities:
     probe_notes: list[str] = field(default_factory=list)
     probe_duration_ms: float = 0.0
 
+    benchmark_rtf: float | None = None
+    benchmark_audio_sec: float | None = None
+    benchmark_elapsed_sec: float | None = None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "reachable": self.reachable,
@@ -61,6 +72,9 @@ class ServerCapabilities:
             "probe_level": self.probe_level.name,
             "probe_notes": self.probe_notes,
             "probe_duration_ms": self.probe_duration_ms,
+            "benchmark_rtf": self.benchmark_rtf,
+            "benchmark_audio_sec": self.benchmark_audio_sec,
+            "benchmark_elapsed_sec": self.benchmark_elapsed_sec,
         }
 
     @classmethod
@@ -84,6 +98,9 @@ class ServerCapabilities:
             probe_level=probe_level,
             probe_notes=data.get("probe_notes", []),
             probe_duration_ms=data.get("probe_duration_ms", 0.0),
+            benchmark_rtf=data.get("benchmark_rtf"),
+            benchmark_audio_sec=data.get("benchmark_audio_sec"),
+            benchmark_elapsed_sec=data.get("benchmark_elapsed_sec"),
         )
 
 
@@ -118,6 +135,8 @@ async def probe_server(
 
     if level == ProbeLevel.TWOPASS_FULL and timeout < 12.0:
         timeout = 12.0
+    if level == ProbeLevel.BENCHMARK and timeout < 30.0:
+        timeout = 30.0
 
     scheme = "wss" if use_ssl else "ws"
     uri = f"{scheme}://{host}:{port}"
@@ -168,11 +187,15 @@ async def probe_server(
             caps.error = str(e)
         logger.warning("server_probe_error", uri=uri, exc_type=exc_name, error=str(e))
 
+    if level == ProbeLevel.BENCHMARK and caps.reachable:
+        await _probe_benchmark_new_conn(uri, ssl_ctx, caps, timeout)
+
     _infer_server_type(caps)
     caps.probe_duration_ms = max((time.perf_counter() - start) * 1000, 0.01)
     logger.info("server_probe_done", uri=uri, duration_ms=f"{caps.probe_duration_ms:.2f}",
                 reachable=caps.reachable, responsive=caps.responsive,
-                inferred_type=caps.inferred_server_type)
+                inferred_type=caps.inferred_server_type,
+                benchmark_rtf=caps.benchmark_rtf)
     return caps
 
 
@@ -269,6 +292,80 @@ async def _probe_2pass_new_conn(
     except Exception as e:
         caps.probe_notes.append(f"2pass probe connection error: {e}")
         logger.warning("probe_2pass_error", error=str(e))
+
+
+def _generate_benchmark_pcm(duration_sec: float = BENCHMARK_AUDIO_DURATION_SEC) -> bytes:
+    """Generate synthetic PCM audio (16kHz 16-bit mono) for RTF benchmark.
+
+    Uses a swept sine wave (200-800 Hz) with amplitude modulation to
+    produce speech-like spectral content that exercises the ASR pipeline.
+    """
+    num_samples = int(BENCHMARK_SAMPLE_RATE * duration_sec)
+    buf = bytearray(num_samples * 2)
+    for i in range(num_samples):
+        t = i / BENCHMARK_SAMPLE_RATE
+        freq = 200 + 600 * (t / duration_sec)
+        envelope = 0.6 + 0.4 * math.sin(2 * math.pi * 3.0 * t)
+        sample = int(12000 * math.sin(2 * math.pi * freq * t) * envelope)
+        struct.pack_into("<h", buf, i * 2, max(-32768, min(32767, sample)))
+    return bytes(buf)
+
+
+async def _probe_benchmark_new_conn(
+    uri: str,
+    ssl_ctx: ssl.SSLContext | None,
+    caps: ServerCapabilities,
+    timeout: float,
+) -> None:
+    """Send a synthetic audio clip and measure RTF (processing speed)."""
+    pcm_data = _generate_benchmark_pcm()
+    try:
+        async with asyncio.timeout(timeout):
+            async with connect_websocket(
+                uri,
+                subprotocols=["binary"],
+                ping_interval=None,
+                ssl=ssl_ctx,
+                close_timeout=5,
+            ) as ws:
+                probe_msg = json.dumps({
+                    "mode": "offline",
+                    "wav_name": "__benchmark_rtf__",
+                    "wav_format": "pcm",
+                    "audio_fs": BENCHMARK_SAMPLE_RATE,
+                    "is_speaking": True,
+                    "itn": True,
+                })
+                await ws.send(probe_msg)
+
+                chunk_size = BENCHMARK_SAMPLE_RATE * 2
+                t_start = time.perf_counter()
+                for offset in range(0, len(pcm_data), chunk_size):
+                    await ws.send(pcm_data[offset:offset + chunk_size])
+
+                await ws.send(json.dumps({"is_speaking": False}))
+
+                try:
+                    await asyncio.wait_for(ws.recv(), timeout=15.0)
+                    elapsed = time.perf_counter() - t_start
+                    caps.benchmark_rtf = round(elapsed / BENCHMARK_AUDIO_DURATION_SEC, 4)
+                    caps.benchmark_audio_sec = BENCHMARK_AUDIO_DURATION_SEC
+                    caps.benchmark_elapsed_sec = round(elapsed, 3)
+                    caps.probe_notes.append(
+                        f"benchmark RTF={caps.benchmark_rtf:.4f} "
+                        f"({elapsed:.2f}s / {BENCHMARK_AUDIO_DURATION_SEC}s)"
+                    )
+                    logger.info("benchmark_rtf_measured",
+                                uri=uri,
+                                rtf=f"{caps.benchmark_rtf:.4f}",
+                                elapsed=f"{elapsed:.2f}s")
+                except asyncio.TimeoutError:
+                    caps.probe_notes.append("benchmark: response timeout")
+                    logger.warning("benchmark_timeout", uri=uri)
+
+    except Exception as e:
+        caps.probe_notes.append(f"benchmark connection error: {e}")
+        logger.warning("benchmark_probe_error", uri=uri, error=str(e))
 
 
 def _infer_server_type(caps: ServerCapabilities) -> None:

@@ -10,7 +10,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.deps import DbSession
 from app.models import ServerInstance, ServerStatus
-from app.schemas.server import ServerProbeResponse, ServerRegisterRequest, ServerResponse, ServerUpdateRequest
+from app.schemas.server import (
+    ServerBenchmarkResponse,
+    ServerCapacityItem,
+    ServerProbeResponse,
+    ServerRegisterRequest,
+    ServerResponse,
+    ServerUpdateRequest,
+)
+from app.services.scheduler import ServerProfile, scheduler as global_scheduler
 from app.services.server_probe import ProbeLevel, ServerCapabilities, probe_server
 from app.storage.repository import ServerRepository
 from app.auth.token import verify_admin
@@ -67,12 +75,57 @@ async def list_servers(db: DbSession, admin: AdminUser):
     return [ServerResponse.model_validate(s) for s in servers]
 
 
+@router.post("/benchmark", response_model=ServerBenchmarkResponse)
+async def benchmark_all_servers(db: DbSession, admin: AdminUser):
+    """Benchmark all ONLINE servers to measure RTF and update capacity baselines."""
+    repo = ServerRepository(db)
+    all_servers = await repo.list_all_servers()
+    online_servers = [s for s in all_servers if s.status == ServerStatus.ONLINE]
+
+    if not online_servers:
+        raise HTTPException(status_code=422, detail="No online servers to benchmark")
+
+    results: list[ServerProbeResponse] = []
+    for server in online_servers:
+        caps = await _probe_with_ssl_fallback(
+            server.host, server.port, ProbeLevel.BENCHMARK, 30.0,
+        )
+        if caps.benchmark_rtf is not None:
+            server.rtf_baseline = caps.benchmark_rtf
+        if caps.reachable and caps.inferred_server_type != "unknown":
+            server.server_type = caps.inferred_server_type
+        modes = _extract_modes(caps)
+        server.supported_modes = ",".join(modes) if modes else None
+        results.append(ServerProbeResponse(server_id=server.server_id, **caps.to_dict()))
+
+    await db.commit()
+
+    profiles = [
+        ServerProfile(
+            server_id=s.server_id, host=s.host, port=s.port,
+            max_concurrency=s.max_concurrency,
+            rtf_baseline=s.rtf_baseline, penalty_factor=s.penalty_factor,
+        )
+        for s in online_servers
+    ]
+    comparison = global_scheduler.compare_server_capacity(profiles)
+
+    logger.info("benchmark_all_complete",
+                servers=[r.server_id for r in results],
+                comparison=comparison)
+
+    return ServerBenchmarkResponse(
+        results=results,
+        capacity_comparison=[ServerCapacityItem(**c) for c in comparison],
+    )
+
+
 @router.post("/{server_id}/probe", response_model=ServerProbeResponse)
 async def probe_server_endpoint(
     server_id: str,
     db: DbSession,
     admin: AdminUser,
-    level: str = Query("offline_light", pattern="^(connect_only|offline_light|twopass_full)$"),
+    level: str = Query("offline_light", pattern="^(connect_only|offline_light|twopass_full|benchmark)$"),
 ):
     """Probe a registered server's capabilities and optionally update its metadata."""
     repo = ServerRepository(db)
@@ -84,9 +137,11 @@ async def probe_server_endpoint(
         "connect_only": ProbeLevel.CONNECT_ONLY,
         "offline_light": ProbeLevel.OFFLINE_LIGHT,
         "twopass_full": ProbeLevel.TWOPASS_FULL,
+        "benchmark": ProbeLevel.BENCHMARK,
     }
+    timeout = 30.0 if level == "benchmark" else 12.0
     caps = await _probe_with_ssl_fallback(
-        server.host, server.port, probe_level_map[level], 12.0,
+        server.host, server.port, probe_level_map[level], timeout,
     )
 
     if caps.reachable and caps.inferred_server_type != "unknown":
@@ -99,10 +154,16 @@ async def probe_server_endpoint(
     else:
         server.status = ServerStatus.OFFLINE
 
+    if caps.benchmark_rtf is not None:
+        server.rtf_baseline = caps.benchmark_rtf
+        logger.info("rtf_baseline_updated_from_benchmark",
+                     server_id=server_id, rtf=f"{caps.benchmark_rtf:.4f}")
+
     await db.commit()
 
     logger.info("server_probed", server_id=server_id, reachable=caps.reachable,
-                inferred_type=caps.inferred_server_type)
+                inferred_type=caps.inferred_server_type,
+                benchmark_rtf=caps.benchmark_rtf)
 
     return ServerProbeResponse(
         server_id=server_id,

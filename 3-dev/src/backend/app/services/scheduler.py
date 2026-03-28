@@ -1,8 +1,10 @@
-"""Task scheduler: LPT + Earliest-Finish-Time + concurrency penalty.
+"""Task scheduler: LPT + Earliest-Finish-Time + capacity-aware scheduling.
 
 Scheduling algorithm:
-1. Estimate processing time per task: p(i,s) = duration(i) * rtf_p90(s) + overhead
-2. Expand each server's slots into virtual machines
+1. Estimate processing time per task: p(i,s) = duration(i) * rtf(s) + overhead
+   where rtf(s) uses per-server RTF baseline (from benchmark/history) for
+   capacity-aware assignment — faster servers handle bigger files.
+2. Expand each server's FREE slots into virtual machines (respecting running_tasks)
 3. Sort tasks by estimated duration descending (LPT: Longest Processing Time First)
 4. Assign each task to the virtual machine with earliest expected finish time
 5. Online correction: update RTF rolling statistics after each task completes
@@ -104,7 +106,7 @@ class RTFTracker:
 
 
 class TaskScheduler:
-    """LPT + Earliest-Finish-Time scheduler."""
+    """LPT + Earliest-Finish-Time capacity-aware scheduler."""
 
     def __init__(self):
         self.rtf_tracker = RTFTracker()
@@ -117,6 +119,13 @@ class TaskScheduler:
         )
         penalty = 1.0 + server.penalty_factor * server.running_tasks
         return base_rtf * penalty
+
+    def get_base_rtf(self, server: ServerProfile) -> float:
+        """Get base RTF for a server WITHOUT concurrency penalty (for pure capacity comparison)."""
+        return self.rtf_tracker.get_p90(
+            server.server_id,
+            default=server.rtf_baseline or DEFAULT_RTF,
+        )
 
     def estimate_processing_time(
         self,
@@ -134,11 +143,14 @@ class TaskScheduler:
         servers: list[ServerProfile],
     ) -> list[ScheduleDecision]:
         """Schedule a batch of tasks using LPT + Earliest-Finish-Time.
-        
+
+        Capacity-aware: uses per-server RTF baselines so that faster servers
+        (lower RTF) are assigned heavier tasks, minimizing makespan.
+
         tasks: list of dicts with keys: task_id, audio_duration_sec
-        servers: list of ServerProfile (only ONLINE servers)
-        
-        Returns list of ScheduleDecision sorted by task order.
+        servers: list of ServerProfile (only ONLINE servers with running_tasks set)
+
+        Returns list of ScheduleDecision.
         """
         online_servers = [s for s in servers if s.status == "ONLINE"]
         if not online_servers:
@@ -147,10 +159,16 @@ class TaskScheduler:
 
         slots: list[ServerSlot] = []
         for srv in online_servers:
-            for i in range(srv.max_concurrency):
-                slots.append(ServerSlot(server_id=srv.server_id, slot_index=i))
+            free = max(srv.max_concurrency - srv.running_tasks, 0)
+            for i in range(free):
+                slots.append(ServerSlot(
+                    server_id=srv.server_id,
+                    slot_index=srv.running_tasks + i,
+                ))
 
         if not slots:
+            logger.warning("no_free_slots_for_scheduling",
+                           servers=[f"{s.server_id}({s.running_tasks}/{s.max_concurrency})" for s in online_servers])
             return []
 
         server_map = {s.server_id: s for s in online_servers}
@@ -196,7 +214,46 @@ class TaskScheduler:
             decisions.append(decision)
             best_slot.earliest_free += est_duration
 
+        self._log_batch_plan(decisions, server_map, task_estimates)
         return decisions
+
+    def _log_batch_plan(
+        self,
+        decisions: list[ScheduleDecision],
+        server_map: dict[str, ServerProfile],
+        task_estimates: list[dict],
+    ) -> None:
+        """Log the batch scheduling plan for diagnostics."""
+        if not decisions:
+            return
+        server_loads: dict[str, list[str]] = defaultdict(list)
+        server_finish: dict[str, float] = {}
+        for d in decisions:
+            dur_info = ""
+            for te in task_estimates:
+                if te["task_id"] == d.task_id:
+                    dur_info = f"dur={te.get('audio_duration_sec', 0):.0f}s"
+                    break
+            server_loads[d.server_id].append(f"{d.task_id[:8]}({dur_info})")
+            server_finish[d.server_id] = max(server_finish.get(d.server_id, 0), d.estimated_finish)
+
+        for sid, tasks in server_loads.items():
+            srv = server_map.get(sid)
+            rtf = self.get_base_rtf(srv) if srv else DEFAULT_RTF
+            logger.info(
+                "batch_schedule_plan",
+                server_id=sid,
+                rtf=f"{rtf:.3f}",
+                task_count=len(tasks),
+                est_finish=f"{server_finish.get(sid, 0):.1f}s",
+                tasks=tasks,
+            )
+
+        makespan = max(server_finish.values()) if server_finish else 0
+        logger.info("batch_schedule_summary",
+                     total_tasks=len(decisions),
+                     servers_used=len(server_loads),
+                     estimated_makespan=f"{makespan:.1f}s")
 
     def assign_single_task(
         self,
@@ -243,7 +300,7 @@ class TaskScheduler:
         current_penalty_factor: float = 0.1,
     ) -> dict:
         """Called after a task completes. Updates RTF stats and returns calibration info.
-        
+
         Returns dict with: new_rtf_p90, deviation, penalty_adjustment, new_penalty_factor
         """
         actual_rtf = actual_duration_sec / audio_duration_sec if audio_duration_sec > 0 else DEFAULT_RTF
@@ -306,7 +363,7 @@ class TaskScheduler:
         overhead: float = DEFAULT_OVERHEAD,
     ) -> int:
         """Calculate ETA in seconds for a task.
-        
+
         eta = queue_time + asr_time + overhead
         where:
           queue_time = queue_position * avg_queue_task_duration / available_slots
@@ -317,6 +374,31 @@ class TaskScheduler:
         asr_time = audio_duration_sec * self.get_effective_rtf(server)
         eta = queue_time + asr_time + overhead
         return max(int(eta), 1)
+
+    def compare_server_capacity(self, servers: list[ServerProfile]) -> list[dict]:
+        """Return per-server capacity comparison (for diagnostics/UI).
+
+        Each entry: server_id, rtf, relative_speed (1.0 = fastest), acceleration_ratio.
+        """
+        if not servers:
+            return []
+        entries = []
+        for srv in servers:
+            rtf = self.get_base_rtf(srv)
+            entries.append({"server_id": srv.server_id, "rtf": rtf, "server": srv})
+
+        min_rtf = min(e["rtf"] for e in entries)
+        result = []
+        for e in entries:
+            ratio = min_rtf / e["rtf"] if e["rtf"] > 0 else 0
+            result.append({
+                "server_id": e["server_id"],
+                "rtf": round(e["rtf"], 4),
+                "relative_speed": round(ratio, 3),
+                "acceleration_ratio": round(1.0 / e["rtf"], 2) if e["rtf"] > 0 else 0,
+            })
+        result.sort(key=lambda x: x["rtf"])
+        return result
 
 
 scheduler = TaskScheduler()

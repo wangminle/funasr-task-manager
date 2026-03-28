@@ -153,50 +153,50 @@ class BackgroundTaskRunner:
                     host=srv.host,
                     port=srv.port,
                     max_concurrency=srv.max_concurrency,
+                    rtf_baseline=srv.rtf_baseline,
+                    penalty_factor=srv.penalty_factor,
                     running_tasks=running_count.get(srv.server_id, 0),
                 )
                 for srv in servers
             ]
 
-            to_start: list[str] = []
+            available_profiles = []
+            for sp in server_profiles:
+                cb = breaker_registry.get(sp.server_id)
+                if cb.allow_request():
+                    available_profiles.append(sp)
+            if not available_profiles:
+                return
 
+            dispatchable: list[tuple[Task, dict]] = []
             for task in queued_tasks:
                 if task.task_id in inflight:
                     continue
                 if not task.can_transition_to(TaskStatus.DISPATCHED):
                     continue
-
-                available_profiles = []
-                for sp in server_profiles:
-                    cb = breaker_registry.get(sp.server_id)
-                    if not cb.allow_request():
-                        logger.info("circuit_breaker_skip", server_id=sp.server_id, task_id=task.task_id)
-                        continue
-                    available_profiles.append(sp)
-
-                if not available_profiles:
-                    break
-
                 audio_duration = 0.0
                 if task.file and task.file.duration_sec:
                     audio_duration = task.file.duration_sec
+                dispatchable.append((task, {
+                    "task_id": task.task_id,
+                    "audio_duration_sec": audio_duration,
+                }))
 
-                decision = global_scheduler.assign_single_task(
-                    task_id=task.task_id,
-                    audio_duration_sec=audio_duration,
-                    servers=available_profiles,
-                )
+            if not dispatchable:
+                return
+
+            batch_input = [d[1] for d in dispatchable]
+            decisions = global_scheduler.schedule_batch(batch_input, available_profiles)
+            decision_map = {d.task_id: d for d in decisions}
+
+            to_start: list[str] = []
+            for task, _ in dispatchable:
+                decision = decision_map.get(task.task_id)
                 if decision is None:
                     continue
-
                 task.assigned_server_id = decision.server_id
                 task.eta_seconds = int(decision.estimated_duration)
                 await repo.update_task_status(task, TaskStatus.DISPATCHED)
-
-                for sp in server_profiles:
-                    if sp.server_id == decision.server_id:
-                        sp.running_tasks += 1
-                        break
                 to_start.append(task.task_id)
 
             if not to_start:
@@ -269,11 +269,12 @@ class BackgroundTaskRunner:
                 audio_duration = file_record.duration_sec
             if audio_duration > 0 and task.started_at:
                 actual_sec = (datetime.now(timezone.utc) - task.started_at).total_seconds()
-                global_scheduler.calibrate_after_completion(
+                cal_result = global_scheduler.calibrate_after_completion(
                     server_id=server.server_id,
                     audio_duration_sec=audio_duration,
                     actual_duration_sec=actual_sec,
                 )
+                await self._persist_rtf_baseline(server.server_id, cal_result["new_rtf_p90"])
 
             raw = result.raw if isinstance(result.raw, dict) and result.raw else {}
             if "text" not in raw:
@@ -525,6 +526,20 @@ class BackgroundTaskRunner:
         if "legacy" in pv or "old" in pv:
             return "legacy"
         return None
+
+    async def _persist_rtf_baseline(self, server_id: str, new_rtf_p90: float) -> None:
+        """Save updated RTF baseline to database so it survives restarts."""
+        try:
+            async with async_session_factory() as session:
+                srv = (await session.execute(
+                    select(ServerInstance).where(ServerInstance.server_id == server_id)
+                )).scalar_one_or_none()
+                if srv is not None:
+                    srv.rtf_baseline = round(new_rtf_p90, 4)
+                    await session.commit()
+                    logger.info("rtf_baseline_persisted", server_id=server_id, rtf=f"{new_rtf_p90:.4f}")
+        except Exception as e:
+            logger.warning("rtf_baseline_persist_failed", server_id=server_id, error=str(e))
 
     async def _get_inflight_snapshot(self) -> set[str]:
         async with self._inflight_lock:

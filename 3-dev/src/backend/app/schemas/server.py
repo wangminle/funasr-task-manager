@@ -56,3 +56,18 @@ class ServerProbeResponse(BaseModel):
     probe_level: str = "CONNECT_ONLY"
     probe_notes: list[str] = []
     probe_duration_ms: float = 0.0
+    benchmark_rtf: float | None = None
+    benchmark_audio_sec: float | None = None
+    benchmark_elapsed_sec: float | None = None
+
+
+class ServerCapacityItem(BaseModel):
+    server_id: str
+    rtf: float
+    relative_speed: float
+    acceleration_ratio: float
+
+
+class ServerBenchmarkResponse(BaseModel):
+    results: list[ServerProbeResponse]
+    capacity_comparison: list[ServerCapacityItem]
