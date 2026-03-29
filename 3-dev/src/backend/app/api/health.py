@@ -1,15 +1,20 @@
 """Health check, Prometheus metrics, and system diagnostics endpoints."""
 
 import time
-from fastapi import APIRouter
+from typing import Annotated
+
+from fastapi import APIRouter, Depends
 from fastapi.responses import PlainTextResponse
 from prometheus_client import generate_latest
 
 from app.config import settings
 from app.deps import DbSession
+from app.auth.token import verify_admin
 import app.observability.metrics as _  # noqa: F401
 
 router = APIRouter()
+
+AdminUser = Annotated[str, Depends(verify_admin)]
 
 _startup_time = time.time()
 
@@ -42,8 +47,11 @@ async def health_check() -> dict:
 
 
 @router.get("/api/v1/diagnostics")
-async def diagnostics(db: DbSession) -> dict:
-    """Run system diagnostics: schema, dependencies, server connectivity."""
+async def diagnostics(db: DbSession, admin: AdminUser) -> dict:
+    """Run system diagnostics: schema, dependencies, server connectivity.
+
+    Requires admin authentication — exposes internal schema and server info.
+    """
     from app.services.diagnostics import run_full_diagnostics
     report = await run_full_diagnostics(db)
     return report.to_dict()

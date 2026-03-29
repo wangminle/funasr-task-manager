@@ -66,9 +66,9 @@ class TestTranscribeBatchMode:
             _make_task(f"tid{i}", group_id, "PREPROCESSING") for i in range(3)
         ]
 
-        def mock_get_task(task_id):
-            return _make_task(task_id, group_id, "SUCCEEDED")
-        mock_client.get_task.side_effect = mock_get_task
+        mock_client.list_group_tasks.return_value = {
+            "items": [_make_task(f"tid{i}", group_id, "SUCCEEDED") for i in range(3)]
+        }
         mock_client.get_result.return_value = "transcribed text"
 
         file_args = [str(f) for f in audio_files]
@@ -82,6 +82,7 @@ class TestTranscribeBatchMode:
         mock_client.create_tasks.assert_called_once()
         call_items = mock_client.create_tasks.call_args[0][0]
         assert len(call_items) == 3
+        mock_client.list_group_tasks.assert_called()
 
     def test_single_file_uses_single_mode(self, audio_files, mock_client, tmp_path):
         """Single file should use single mode (backward compat)."""

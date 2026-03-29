@@ -103,6 +103,16 @@ def _upgrade_generic(conn) -> None:
 
 
 def downgrade() -> None:
+    conn = op.get_bind()
+    dialect = conn.dialect.name
+
+    if dialect == "sqlite":
+        _downgrade_sqlite()
+    else:
+        _downgrade_generic()
+
+
+def _downgrade_sqlite() -> None:
     with op.batch_alter_table("callback_outbox", recreate="always") as batch_op:
         batch_op.drop_constraint("fk_callback_outbox_event_id", type_="foreignkey")
         batch_op.drop_constraint("pk_callback_outbox", type_="primary")
@@ -116,3 +126,17 @@ def downgrade() -> None:
             sa.Column("updated_at", sa.DateTime(timezone=True),
                        server_default=sa.func.now()),
         )
+
+
+def _downgrade_generic() -> None:
+    op.drop_constraint("fk_callback_outbox_event_id", "callback_outbox", type_="foreignkey")
+    op.drop_constraint("pk_callback_outbox", "callback_outbox", type_="primary")
+
+    op.add_column("callback_outbox", sa.Column("id", sa.Integer, autoincrement=True))
+    op.add_column("callback_outbox", sa.Column("signature", sa.String(128)))
+    op.add_column("callback_outbox",
+                  sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()))
+
+    op.create_primary_key("pk_callback_outbox_id", "callback_outbox", ["id"])
+    op.drop_column("callback_outbox", "sent_at")
+    op.drop_column("callback_outbox", "outbox_id")

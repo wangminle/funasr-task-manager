@@ -75,6 +75,18 @@ class Task(Base):
     file: Mapped["File"] = relationship(back_populates="tasks", lazy="selectin")  # type: ignore[name-defined]
     events: Mapped[list["TaskEvent"]] = relationship(back_populates="task", lazy="selectin")  # type: ignore[name-defined]
 
+    @property
+    def file_name(self) -> str | None:
+        """Original filename from the related File record.
+
+        Returns None when the relationship hasn't been loaded
+        (avoids MissingGreenlet in async contexts).
+        """
+        try:
+            return self.file.original_name if self.file else None
+        except Exception:
+            return None
+
     def can_transition_to(self, new_status: TaskStatus) -> bool:
         current = TaskStatus(self.status)
         return new_status in VALID_TRANSITIONS.get(current, set())

@@ -25,6 +25,7 @@ class TaskResponse(BaseModel):
     task_id: str
     user_id: str
     file_id: str
+    file_name: str | None = None
     task_group_id: str | None = None
     status: str
     progress: float

@@ -175,8 +175,19 @@ def _run_batch(c, files, language, hotwords, fmt, output_dir, callback,
 
     task_group_id = tasks[0].get("task_group_id") if tasks else None
     task_ids = [t["task_id"] for t in tasks]
-    file_name_map = {t["task_id"]: fp.name for t, (fp, _) in zip(tasks, upload_map)}
-    file_stem_map = {t["task_id"]: fp.stem for t, (fp, _) in zip(tasks, upload_map)}
+
+    file_name_map: dict[str, str] = {}
+    file_stem_map: dict[str, str] = {}
+    for i, t in enumerate(tasks):
+        tid = t["task_id"]
+        fn = t.get("file_name")
+        if fn:
+            file_name_map[tid] = fn
+            file_stem_map[tid] = Path(fn).stem
+        elif i < len(upload_map):
+            fp, _ = upload_map[i]
+            file_name_map[tid] = fp.name
+            file_stem_map[tid] = fp.stem
 
     if not c.quiet:
         out.success(f"已创建 {len(tasks)} 个任务 (批次: {task_group_id or 'N/A'})")
@@ -207,6 +218,7 @@ def _run_batch(c, files, language, hotwords, fmt, output_dir, callback,
 
     terminal = {"SUCCEEDED", "FAILED", "CANCELED"}
     completed: dict[str, dict] = {}
+    task_id_set = set(task_ids)
     start_time = time.time()
 
     while len(completed) < len(task_ids):
@@ -214,20 +226,26 @@ def _run_batch(c, files, language, hotwords, fmt, output_dir, callback,
             out.error(f"批量等待超时 ({wait_timeout}s)")
             break
 
-        for tid in task_ids:
-            if tid in completed:
-                continue
-            try:
-                task = c.client.get_task(tid)
-                if task["status"] in terminal:
-                    completed[tid] = task
+        try:
+            if task_group_id:
+                group_data = c.client.list_group_tasks(task_group_id, page_size=500)
+                batch_tasks = group_data.get("items", [])
+            else:
+                batch_tasks = [c.client.get_task(tid) for tid in task_ids if tid not in completed]
+
+            for t in batch_tasks:
+                tid = t["task_id"]
+                if tid in completed or tid not in task_id_set:
+                    continue
+                if t["status"] in terminal:
+                    completed[tid] = t
                     if not c.quiet:
                         elapsed = int(time.time() - start_time)
-                        status_icon = "✓" if task["status"] == "SUCCEEDED" else "✗"
-                        out.info(f"  [{elapsed}s] {status_icon} {file_name_map.get(tid, tid[:12])} → {task['status']} "
+                        status_icon = "✓" if t["status"] == "SUCCEEDED" else "✗"
+                        out.info(f"  [{elapsed}s] {status_icon} {file_name_map.get(tid, tid[:12])} → {t['status']} "
                                  f"({len(completed)}/{len(task_ids)})")
-            except APIError:
-                pass
+        except APIError:
+            pass
 
         if len(completed) < len(task_ids):
             time.sleep(poll_interval)

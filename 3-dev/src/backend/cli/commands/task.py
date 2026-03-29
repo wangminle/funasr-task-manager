@@ -225,7 +225,8 @@ def _download_group_results(c, group_id, formats, output_dir):
 
         if t["status"] == "SUCCEEDED":
             tid = t["task_id"]
-            stem = tid[:12]
+            raw_name = t.get("file_name") or ""
+            stem = Path(raw_name).stem if raw_name else tid[:12]
             for fmt in formats:
                 suffix = suffix_map.get(fmt, f".{fmt}")
                 try:

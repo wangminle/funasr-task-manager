@@ -92,9 +92,12 @@ async def get_group_results(
     return Response(content="\n".join(parts), media_type=media_types.get(format, "text/plain"))
 
 
-@router.delete("/{group_id}", status_code=200)
+@router.delete("/{group_id}")
 async def delete_task_group(group_id: str, db: DbSession, user_id: CurrentUser):
-    """Delete all tasks in a batch (active tasks are protected)."""
+    """Delete all tasks in a batch (active tasks are protected).
+
+    Returns 200 on full deletion, 207 Multi-Status when active tasks were skipped.
+    """
     active = {TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING}
 
     base_where = [Task.task_group_id == group_id, Task.user_id == user_id]
@@ -142,30 +145,39 @@ async def delete_task_group(group_id: str, db: DbSession, user_id: CurrentUser):
 
     deleted = len(tasks_to_delete)
     logger.info("task_group_deleted", group_id=group_id, deleted=deleted, skipped_active=active_count)
-    return {"deleted": deleted, "skipped_active": active_count, "total": total}
+
+    body = {"deleted": deleted, "skipped_active": active_count, "total": total,
+            "partial": active_count > 0}
+    status = 207 if active_count > 0 else 200
+    return JSONResponse(content=body, status_code=status)
 
 
 async def _group_stats(db, group_id: str, user_id: str) -> dict:
-    """Compute batch-level aggregate stats."""
+    """Compute batch-level aggregate stats with minimal SQL round-trips."""
     base = [Task.task_group_id == group_id, Task.user_id == user_id]
 
-    total = (await db.execute(select(func.count()).select_from(Task).where(*base))).scalar() or 0
-    if total == 0:
+    stmt = select(
+        Task.status,
+        func.count().label("cnt"),
+        func.avg(Task.progress).label("avg_progress"),
+    ).where(*base).group_by(Task.status)
+
+    rows = (await db.execute(stmt)).all()
+    if not rows:
         return {"task_group_id": group_id, "total": 0}
 
-    succeeded = (await db.execute(
-        select(func.count()).select_from(Task).where(*base, Task.status == TaskStatus.SUCCEEDED)
-    )).scalar() or 0
-    failed = (await db.execute(
-        select(func.count()).select_from(Task).where(*base, Task.status == TaskStatus.FAILED)
-    )).scalar() or 0
-    canceled = (await db.execute(
-        select(func.count()).select_from(Task).where(*base, Task.status == TaskStatus.CANCELED)
-    )).scalar() or 0
+    counts: dict[str, int] = {}
+    total = 0
+    progress_sum = 0.0
+    for status, cnt, avg_prog in rows:
+        counts[status] = cnt
+        total += cnt
+        progress_sum += (avg_prog or 0.0) * cnt
 
-    avg_progress = (await db.execute(
-        select(func.avg(Task.progress)).where(*base)
-    )).scalar() or 0.0
+    succeeded = counts.get(TaskStatus.SUCCEEDED, 0)
+    failed = counts.get(TaskStatus.FAILED, 0)
+    canceled = counts.get(TaskStatus.CANCELED, 0)
+    avg_progress = progress_sum / total if total else 0.0
 
     return {
         "task_group_id": group_id,
@@ -174,7 +186,7 @@ async def _group_stats(db, group_id: str, user_id: str) -> dict:
         "failed": failed,
         "canceled": canceled,
         "in_progress": total - succeeded - failed - canceled,
-        "progress": round(float(avg_progress), 4),
+        "progress": round(avg_progress, 4),
         "is_complete": (succeeded + failed + canceled) == total,
     }
 

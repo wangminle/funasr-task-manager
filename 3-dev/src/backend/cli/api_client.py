@@ -23,6 +23,7 @@ class ASRClient:
         if api_key:
             headers["X-API-Key"] = api_key
         self._client = httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
+        self._last_status: int | None = None
 
     def close(self) -> None:
         self._client.close()
@@ -35,6 +36,16 @@ class ASRClient:
                 detail = resp.text
             raise APIError(resp.status_code, str(detail))
         return resp
+
+    @property
+    def last_status_code(self) -> int | None:
+        """Status code of the most recent response (for 2xx variant checks)."""
+        return self._last_status
+
+    def _check_with_status(self, resp: httpx.Response) -> httpx.Response:
+        """Like _check, but also stores the HTTP status code for 2xx inspection."""
+        self._last_status = resp.status_code
+        return self._check(resp)
 
     # --- health ---
     def health(self) -> dict:
@@ -67,6 +78,7 @@ class ASRClient:
 
     def list_tasks(
         self, status: str | None = None, search: str | None = None,
+        group: str | None = None,
         page: int = 1, page_size: int = 20,
     ) -> dict:
         params: dict[str, Any] = {"page": page, "page_size": page_size}
@@ -74,6 +86,8 @@ class ASRClient:
             params["status"] = status
         if search:
             params["search"] = search
+        if group:
+            params["group"] = group
         return self._check(self._client.get("/api/v1/tasks", params=params)).json()
 
     def get_task(self, task_id: str) -> dict:
