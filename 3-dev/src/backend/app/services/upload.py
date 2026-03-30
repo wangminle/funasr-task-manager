@@ -1,5 +1,6 @@
 """File upload service - handles upload processing and metadata extraction."""
 
+from pathlib import Path
 from typing import BinaryIO, Protocol
 
 import aiofiles
@@ -12,6 +13,27 @@ from app.config import settings
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
+
+BITRATE_ESTIMATE: dict[str, int] = {
+    ".wav": 32_000, ".pcm": 32_000, ".flac": 24_000,
+    ".mp3": 16_000, ".m4a": 16_000, ".aac": 16_000, ".ogg": 16_000, ".wma": 16_000,
+    ".mp4": 20_000, ".mkv": 20_000, ".webm": 20_000,
+    ".avi": 20_000, ".mov": 20_000, ".wmv": 20_000,
+}
+
+
+def estimate_duration_from_size(size_bytes: int, filename: str) -> float | None:
+    """Rough queue hint based on file size and typical bitrate for the format.
+
+    NOT a precise duration — can deviate 2-5x for video files where the
+    audio-to-video byte ratio varies widely.  Used only as a scheduling
+    hint when ffprobe is unavailable.
+    """
+    ext = Path(filename).suffix.lower()
+    bps = BITRATE_ESTIMATE.get(ext)
+    if bps and size_bytes > 0:
+        return size_bytes / bps
+    return None
 
 STREAM_CHUNK_SIZE = 256 * 1024
 
@@ -83,4 +105,10 @@ async def _build_file_record(file_id, user_id, filename, size_bytes, storage_pat
         file_record.status = "META_READY"
     else:
         logger.warning("metadata_extraction_failed", file_id=file_id, error=meta.error)
+        estimated = estimate_duration_from_size(size_bytes, filename)
+        if estimated is not None:
+            file_record.duration_sec = estimated
+            logger.info("duration_estimated_from_size",
+                        file_id=file_id, estimated_sec=f"{estimated:.1f}",
+                        filename=filename, size_bytes=size_bytes)
     return file_record

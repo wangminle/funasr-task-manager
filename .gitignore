@@ -207,6 +207,7 @@ cython_debug/
 /blob-report/
 /playwright/.cache/
 /playwright/.auth/
+/.playwright-mcp/
 
 # Root-level test artifacts (should stay in frontend directory)
 /package.json

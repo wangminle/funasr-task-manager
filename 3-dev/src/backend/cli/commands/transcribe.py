@@ -177,17 +177,14 @@ def _run_batch(c, files, language, hotwords, fmt, output_dir, callback,
     task_ids = [t["task_id"] for t in tasks]
 
     file_name_map: dict[str, str] = {}
-    file_stem_map: dict[str, str] = {}
     for i, t in enumerate(tasks):
         tid = t["task_id"]
         fn = t.get("file_name")
         if fn:
             file_name_map[tid] = fn
-            file_stem_map[tid] = Path(fn).stem
         elif i < len(upload_map):
             fp, _ = upload_map[i]
             file_name_map[tid] = fp.name
-            file_stem_map[tid] = fp.stem
 
     if not c.quiet:
         out.success(f"已创建 {len(tasks)} 个任务 (批次: {task_group_id or 'N/A'})")
@@ -270,8 +267,8 @@ def _run_batch(c, files, language, hotwords, fmt, output_dir, callback,
             tid = task["task_id"]
             try:
                 content = c.client.get_result(tid, fmt=fmt)
-                stem = file_stem_map.get(tid, tid[:12])
-                dest = output_dir / f"{stem}_result{suffix}"
+                base_name = file_name_map.get(tid, tid[:12])
+                dest = output_dir / f"{base_name}_result{suffix}"
                 dest.write_text(content, encoding="utf-8")
                 results.append({"file": file_name_map.get(tid, ""), "task_id": tid,
                                 "status": "SUCCEEDED", "output": str(dest)})

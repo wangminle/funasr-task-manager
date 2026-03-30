@@ -38,6 +38,8 @@ class Settings(BaseSettings):
 
     cors_origins: str = "*"
 
+    preprocess_fallback_enabled: bool = True
+
     rate_limit_enabled: bool = False
     rate_limit_max_concurrent: int = 10
     rate_limit_max_daily: int = 100

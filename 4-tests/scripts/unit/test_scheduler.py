@@ -106,7 +106,7 @@ class TestCapacityAwareScheduling:
         assert decision_map["huge"] == "fast"
 
     def test_balanced_distribution_three_servers(self):
-        """With 3 heterogeneous servers, batch should distribute to minimize makespan."""
+        """With 3 heterogeneous servers, batch should distribute across all of them."""
         sched = TaskScheduler()
         tasks = [
             {"task_id": "t1", "audio_duration_sec": 5400},
@@ -127,7 +127,7 @@ class TestCapacityAwareScheduling:
         server_tasks = {}
         for d in decisions:
             server_tasks.setdefault(d.server_id, []).append(d.task_id)
-        assert len(server_tasks) >= 2, "Should use multiple servers"
+        assert len(server_tasks) == 3, "All 3 servers should receive tasks"
 
         longest_task = next(d for d in decisions if d.task_id == "t1")
         assert longest_task.server_id == "fast", "Longest task should go to fastest server"
@@ -193,6 +193,141 @@ class TestCapacityAwareScheduling:
             f"Capacity-aware makespan ({makespan:.0f}s) should be "
             f"much less than naive single-slowest ({naive_makespan:.0f}s)"
         )
+
+
+@pytest.mark.unit
+class TestQuotaAllocation:
+    """Tests for proportional quota allocation and minimum guarantee."""
+
+    def test_every_server_gets_at_least_one(self):
+        """Every ONLINE server with free slots must get >= 1 task."""
+        sched = TaskScheduler()
+        tasks = [{"task_id": f"t{i}", "audio_duration_sec": 100 * (i + 1)} for i in range(8)]
+        fast = _make_server("fast", concurrency=4, rtf=0.124)
+        medium = _make_server("medium", concurrency=4, rtf=0.656)
+        slow = _make_server("slow", concurrency=4, rtf=0.737)
+        decisions = sched.schedule_batch(tasks, [fast, medium, slow])
+
+        server_counts = {}
+        for d in decisions:
+            server_counts[d.server_id] = server_counts.get(d.server_id, 0) + 1
+        assert server_counts.get("fast", 0) >= 1
+        assert server_counts.get("medium", 0) >= 1
+        assert server_counts.get("slow", 0) >= 1, "Slowest server must get at least 1 task"
+
+    def test_faster_server_gets_more_tasks(self):
+        """Faster server should get proportionally more tasks."""
+        sched = TaskScheduler()
+        tasks = [{"task_id": f"t{i}", "audio_duration_sec": 300} for i in range(12)]
+        fast = _make_server("fast", concurrency=8, rtf=0.1)
+        slow = _make_server("slow", concurrency=8, rtf=0.5)
+        decisions = sched.schedule_batch(tasks, [fast, slow])
+
+        server_counts = {}
+        for d in decisions:
+            server_counts[d.server_id] = server_counts.get(d.server_id, 0) + 1
+        assert server_counts["fast"] > server_counts["slow"]
+
+    def test_single_task_single_server(self):
+        """1 task + 1 server: no quota issue."""
+        sched = TaskScheduler()
+        tasks = [{"task_id": "t1", "audio_duration_sec": 600}]
+        decisions = sched.schedule_batch(tasks, [_make_server("s1")])
+        assert len(decisions) == 1
+        assert decisions[0].server_id == "s1"
+
+    def test_more_servers_than_tasks(self):
+        """When tasks < servers, prefer fastest server — don't force spread."""
+        sched = TaskScheduler()
+        tasks = [
+            {"task_id": "t1", "audio_duration_sec": 600},
+            {"task_id": "t2", "audio_duration_sec": 300},
+        ]
+        s1 = _make_server("s1", concurrency=4, rtf=0.1)
+        s2 = _make_server("s2", concurrency=4, rtf=0.3)
+        s3 = _make_server("s3", concurrency=4, rtf=0.5)
+        decisions = sched.schedule_batch(tasks, [s1, s2, s3])
+        assert all(d.server_id == "s1" for d in decisions), (
+            "Both tasks should go to fastest server when tasks < servers"
+        )
+
+    def test_quota_respects_available_slots(self):
+        """Quota should not exceed server's free slot count."""
+        sched = TaskScheduler()
+        tasks = [{"task_id": f"t{i}", "audio_duration_sec": 300} for i in range(5)]
+        fast = _make_server("fast", concurrency=4, rtf=0.1, running=3)
+        slow = _make_server("slow", concurrency=4, rtf=0.5, running=0)
+        decisions = sched.schedule_batch(tasks, [fast, slow])
+        fast_count = sum(1 for d in decisions if d.server_id == "fast")
+        slow_count = sum(1 for d in decisions if d.server_id == "slow")
+        assert fast_count <= 1, "Fast server only has 1 free slot"
+        assert slow_count <= 4, "Slow server has 4 free slots"
+        assert len(decisions) == 5
+
+    def test_real_world_8_task_scenario(self):
+        """Reproduce the quant-course 8-task scenario: 10096 must get >= 1 task."""
+        sched = TaskScheduler()
+        tasks = [
+            {"task_id": "ep4", "audio_duration_sec": 1548},
+            {"task_id": "ep6", "audio_duration_sec": 1065},
+            {"task_id": "ep5", "audio_duration_sec": 871},
+            {"task_id": "ep7", "audio_duration_sec": 613},
+            {"task_id": "ep3", "audio_duration_sec": 516},
+            {"task_id": "ep2", "audio_duration_sec": 274},
+            {"task_id": "ep8", "audio_duration_sec": 194},
+            {"task_id": "ep1", "audio_duration_sec": 24},
+        ]
+        s95 = _make_server("funasr-10095", concurrency=4, rtf=0.124)
+        s97 = _make_server("funasr-10097", concurrency=4, rtf=0.656)
+        s96 = _make_server("funasr-10096", concurrency=4, rtf=0.737)
+        decisions = sched.schedule_batch(tasks, [s95, s97, s96])
+
+        server_counts = {}
+        for d in decisions:
+            server_counts[d.server_id] = server_counts.get(d.server_id, 0) + 1
+
+        assert server_counts.get("funasr-10095", 0) >= 1
+        assert server_counts.get("funasr-10097", 0) >= 1
+        assert server_counts.get("funasr-10096", 0) >= 1, (
+            "funasr-10096 must receive at least 1 task (was 0 before fix)"
+        )
+        assert server_counts["funasr-10095"] >= server_counts["funasr-10097"]
+        assert server_counts["funasr-10095"] >= server_counts["funasr-10096"]
+
+        longest = next(d for d in decisions if d.task_id == "ep4")
+        assert longest.server_id == "funasr-10095", "Longest task should still go to fastest server"
+
+    def test_small_batch_no_forced_spread(self):
+        """Regression: 2 tasks + 3 servers must NOT force tasks to slow nodes."""
+        sched = TaskScheduler()
+        tasks = [
+            {"task_id": "t1", "audio_duration_sec": 600},
+            {"task_id": "t2", "audio_duration_sec": 300},
+        ]
+        fast = _make_server("fast", concurrency=4, rtf=0.1)
+        medium = _make_server("medium", concurrency=4, rtf=0.3)
+        slow = _make_server("slow", concurrency=4, rtf=0.5)
+        decisions = sched.schedule_batch(tasks, [fast, medium, slow])
+
+        fast_makespan = max(d.estimated_finish for d in decisions if d.server_id == "fast")
+        forced_spread_makespan = 300 * 0.3 + 5.0
+        assert fast_makespan < forced_spread_makespan, (
+            f"Small batch makespan ({fast_makespan:.0f}s) must be better than "
+            f"forced-spread ({forced_spread_makespan:.0f}s)"
+        )
+
+    def test_allocate_quotas_directly(self):
+        """Test the quota calculation method directly."""
+        sched = TaskScheduler()
+        servers = [
+            _make_server("fast", concurrency=4, rtf=0.124),
+            _make_server("medium", concurrency=4, rtf=0.656),
+            _make_server("slow", concurrency=4, rtf=0.737),
+        ]
+        quotas = sched._allocate_quotas(8, servers)
+        assert sum(quotas.values()) == 8
+        assert all(q >= 1 for q in quotas.values())
+        assert quotas["fast"] > quotas["slow"]
 
 
 @pytest.mark.unit

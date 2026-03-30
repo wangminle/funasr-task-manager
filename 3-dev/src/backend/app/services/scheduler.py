@@ -4,10 +4,13 @@ Scheduling algorithm:
 1. Estimate processing time per task: p(i,s) = duration(i) * rtf(s) + overhead
    where rtf(s) uses per-server RTF baseline (from benchmark/history) for
    capacity-aware assignment — faster servers handle bigger files.
-2. Expand each server's FREE slots into virtual machines (respecting running_tasks)
-3. Sort tasks by estimated duration descending (LPT: Longest Processing Time First)
-4. Assign each task to the virtual machine with earliest expected finish time
-5. Online correction: update RTF rolling statistics after each task completes
+2. Allocate per-server task quotas proportional to speed (1/RTF), ensuring
+   every ONLINE server with free slots gets at least 1 task.
+3. Expand each server's FREE slots into virtual machines (respecting running_tasks)
+4. Sort tasks by estimated duration descending (LPT: Longest Processing Time First)
+5. Assign each task to the eligible slot with earliest expected finish time,
+   respecting per-server quota limits.
+6. Online correction: update RTF rolling statistics after each task completes
 """
 
 from __future__ import annotations
@@ -137,15 +140,87 @@ class TaskScheduler:
         rtf = self.get_effective_rtf(server)
         return audio_duration_sec * rtf + overhead
 
+    def _allocate_quotas(
+        self,
+        task_count: int,
+        servers: list[ServerProfile],
+    ) -> dict[str, int]:
+        """Allocate per-server task quotas proportional to speed (1/RTF).
+
+        Every server with free slots gets at least 1 task (when tasks >= servers).
+        Faster servers get proportionally more tasks.
+        Quotas are capped by each server's free slot count, with remainders
+        redistributed to servers that still have capacity.
+        """
+        if not servers or task_count <= 0:
+            return {}
+
+        servers_with_slots = [s for s in servers
+                              if max(s.max_concurrency - s.running_tasks, 0) > 0]
+        if not servers_with_slots:
+            return {}
+
+        free_map = {s.server_id: max(s.max_concurrency - s.running_tasks, 0)
+                    for s in servers_with_slots}
+        total_free = sum(free_map.values())
+        effective_count = min(task_count, total_free)
+
+        speeds = {}
+        for s in servers_with_slots:
+            rtf = max(self.get_base_rtf(s), 0.01)
+            speeds[s.server_id] = 1.0 / rtf
+
+        total_speed = sum(speeds.values())
+        enforce_min = effective_count >= len(servers_with_slots)
+        quotas: dict[str, int] = {}
+        for sid, spd in speeds.items():
+            raw = effective_count * spd / total_speed
+            quotas[sid] = max(1, round(raw)) if enforce_min else round(raw)
+
+        allocated = sum(quotas.values())
+        diff = effective_count - allocated
+        if diff > 0:
+            fastest = max(speeds, key=speeds.get)
+            quotas[fastest] += diff
+        elif diff < 0:
+            min_q = 1 if enforce_min else 0
+            for sid in sorted(speeds, key=speeds.get):
+                take = min(-diff, quotas[sid] - min_q)
+                quotas[sid] -= take
+                diff += take
+                if diff >= 0:
+                    break
+
+        for sid in list(quotas):
+            quotas[sid] = min(quotas[sid], free_map[sid])
+
+        remainder = effective_count - sum(quotas.values())
+        if remainder > 0:
+            for sid in sorted(speeds, key=speeds.get, reverse=True):
+                can_add = free_map[sid] - quotas[sid]
+                give = min(remainder, can_add)
+                quotas[sid] += give
+                remainder -= give
+                if remainder <= 0:
+                    break
+
+        logger.info("quota_allocation",
+                     task_count=task_count,
+                     quotas={sid: q for sid, q in quotas.items()},
+                     speeds={sid: f"{spd:.1f}" for sid, spd in speeds.items()})
+
+        return quotas
+
     def schedule_batch(
         self,
         tasks: list[dict],
         servers: list[ServerProfile],
     ) -> list[ScheduleDecision]:
-        """Schedule a batch of tasks using LPT + Earliest-Finish-Time.
+        """Schedule a batch of tasks using LPT + Earliest-Finish-Time with quota balancing.
 
-        Capacity-aware: uses per-server RTF baselines so that faster servers
-        (lower RTF) are assigned heavier tasks, minimizing makespan.
+        Two-phase approach:
+        1. Allocate per-server quotas proportional to speed, min 1 per server
+        2. Assign tasks via LPT + EFT within quota constraints
 
         tasks: list of dicts with keys: task_id, audio_duration_sec
         servers: list of ServerProfile (only ONLINE servers with running_tasks set)
@@ -173,6 +248,9 @@ class TaskScheduler:
 
         server_map = {s.server_id: s for s in online_servers}
 
+        quotas = self._allocate_quotas(len(tasks), online_servers)
+        assigned_count: dict[str, int] = {s.server_id: 0 for s in online_servers}
+
         task_estimates = []
         for t in tasks:
             dur = t.get("audio_duration_sec", 0) or 0
@@ -195,8 +273,13 @@ class TaskScheduler:
         for pos, task_info in enumerate(task_estimates):
             dur = task_info.get("audio_duration_sec", 0) or 0
 
+            eligible_slots = [s for s in slots
+                              if assigned_count.get(s.server_id, 0) < quotas.get(s.server_id, 0)]
+            if not eligible_slots:
+                eligible_slots = slots
+
             best_slot = min(
-                slots,
+                eligible_slots,
                 key=lambda s: s.earliest_free + self.estimate_processing_time(dur, server_map[s.server_id]),
             )
             srv = server_map[best_slot.server_id]
@@ -213,6 +296,7 @@ class TaskScheduler:
             )
             decisions.append(decision)
             best_slot.earliest_free += est_duration
+            assigned_count[best_slot.server_id] = assigned_count.get(best_slot.server_id, 0) + 1
 
         self._log_batch_plan(decisions, server_map, task_estimates)
         return decisions

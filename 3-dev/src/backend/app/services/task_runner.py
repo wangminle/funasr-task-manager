@@ -234,8 +234,16 @@ class BackgroundTaskRunner:
                 try:
                     audio_path = await ensure_wav(audio_path)
                 except RuntimeError as conv_err:
-                    await self._mark_task_failed(task_id, f"Audio preprocessing failed: {conv_err}")
-                    return
+                    if settings.preprocess_fallback_enabled:
+                        logger.warning(
+                            "audio_preprocessing_skipped",
+                            task_id=task_id,
+                            reason=str(conv_err),
+                            fallback="sending original file with wav_format=others",
+                        )
+                    else:
+                        await self._mark_task_failed(task_id, f"Audio preprocessing failed: {conv_err}")
+                        return
 
             profile = self._build_message_profile(task, audio_path)
             adapter = get_adapter(

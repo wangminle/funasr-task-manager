@@ -106,7 +106,7 @@ def check_ffprobe() -> DiagnosticCheck:
     return DiagnosticCheck(
         name="ffprobe",
         level="warning",
-        detail="ffprobe not found; audio duration estimation will use file-size heuristic",
+        detail="ffprobe not found; audio duration will use file-size heuristic (rough estimate, may be inaccurate for video files)",
     )
 
 

@@ -225,13 +225,12 @@ def _download_group_results(c, group_id, formats, output_dir):
 
         if t["status"] == "SUCCEEDED":
             tid = t["task_id"]
-            raw_name = t.get("file_name") or ""
-            stem = Path(raw_name).stem if raw_name else tid[:12]
+            base_name = t.get("file_name") or tid[:12]
             for fmt in formats:
                 suffix = suffix_map.get(fmt, f".{fmt}")
                 try:
                     content = c.client.get_result(tid, fmt=fmt)
-                    dest = output_dir / f"{stem}_result{suffix}"
+                    dest = output_dir / f"{base_name}_result{suffix}"
                     dest.write_text(content, encoding="utf-8")
                     item["outputs"][fmt] = str(dest)
                     downloaded += 1
