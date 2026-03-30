@@ -15,7 +15,7 @@
 └── API 集成开发              → 阅读下方 API 参考
 ```
 
-> **注**: 安装为全局命令后可使用 `funasr-cli` 替代 `python -m cli`。
+> **注**: `pip install -e .` 后可使用 `asr-cli` 替代 `python -m cli`（二者等价）。开发环境推荐 `python -m cli`，生产环境推荐 `asr-cli`。
 
 ---
 

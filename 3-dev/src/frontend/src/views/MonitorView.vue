@@ -102,6 +102,35 @@
       </el-row>
     </el-card>
 
+    <el-card shadow="never" class="mt-16">
+      <template #header>
+        <div class="card-header">
+          <span>系统诊断</span>
+          <el-button size="small" @click="fetchDiagnostics" :loading="diagLoading" :icon="Refresh">刷新诊断</el-button>
+        </div>
+      </template>
+      <el-alert v-if="diagError" :title="diagError" type="warning" :closable="false" style="margin-bottom: 12px;" />
+      <el-table v-else :data="diagChecks" stripe v-loading="diagLoading" empty-text="点击「刷新诊断」获取数据">
+        <el-table-column prop="name" label="检查项" width="200" />
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag :type="diagLevelType(row.level)" size="small" effect="dark">
+              {{ diagLevelIcon(row.level) }} {{ row.level }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="detail" label="说明" />
+      </el-table>
+      <el-alert
+        v-if="diagHasBlockingErrors"
+        title="存在阻断性问题，请立即处理！"
+        type="error"
+        :closable="false"
+        show-icon
+        style="margin-top: 12px;"
+      />
+    </el-card>
+
     <!-- 添加/编辑 服务器对话框 -->
     <el-dialog v-model="dialogVisible" :title="isEditing ? '编辑服务器' : '添加服务器'" width="500px" @close="resetForm">
       <el-form ref="formRef" :model="form" :rules="formRules" label-width="90px">
@@ -144,7 +173,7 @@ import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/compon
 import VChart from 'vue-echarts'
 import { Refresh, Plus, Monitor as MonitorIcon, WarningFilled, List, Timer, SuccessFilled, TrendCharts } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { listServers, listTasks, probeServer, registerServer, updateServer, getSystemStats } from '../api'
+import { listServers, listTasks, probeServer, registerServer, updateServer, getSystemStats, getDiagnostics } from '../api'
 
 use([CanvasRenderer, LineChart, GridComponent, TooltipComponent, LegendComponent])
 
@@ -239,6 +268,37 @@ async function fetchStats() {
     recordHistory()
   } catch (err) { console.warn('获取统计数据失败', err) }
 }
+const diagChecks = ref([])
+const diagHasBlockingErrors = ref(false)
+const diagLoading = ref(false)
+const diagError = ref('')
+
+async function fetchDiagnostics() {
+  diagLoading.value = true
+  diagError.value = ''
+  try {
+    const report = await getDiagnostics()
+    diagChecks.value = report.checks || []
+    diagHasBlockingErrors.value = report.has_blocking_errors || false
+  } catch (err) {
+    const status = err.response?.status
+    if (status === 401 || status === 403) {
+      diagError.value = '诊断接口需要管理员权限，请在设置页配置 Admin API Key'
+    } else {
+      diagError.value = `获取诊断数据失败: ${err.response?.data?.detail || err.message}`
+    }
+  } finally {
+    diagLoading.value = false
+  }
+}
+
+function diagLevelType(level) {
+  return { ok: 'success', warning: 'warning', error: 'danger' }[level] || 'info'
+}
+function diagLevelIcon(level) {
+  return { ok: '✓', warning: '⚠', error: '✗' }[level] || '?'
+}
+
 function serverStatusType(s) { return { ONLINE: 'success', OFFLINE: 'danger', DEGRADED: 'warning' }[s] || 'info' }
 function circuitBreakerType(s) { return { CLOSED: 'success', OPEN: 'danger', HALF_OPEN: 'warning' }[s] || 'success' }
 function statusTagType(s) { return { PENDING: 'info', PREPROCESSING: 'warning', QUEUED: 'warning', DISPATCHED: 'warning', TRANSCRIBING: '', SUCCEEDED: 'success', FAILED: 'danger', CANCELED: 'info' }[s] || 'info' }
@@ -325,7 +385,7 @@ async function handleSubmit() {
   }
 }
 
-onMounted(() => { fetchServers(); fetchTasks(); fetchStats(); pollTimer = setInterval(() => { fetchServers(); fetchTasks(); fetchStats() }, 5000) })
+onMounted(() => { fetchServers(); fetchTasks(); fetchStats(); fetchDiagnostics(); pollTimer = setInterval(() => { fetchServers(); fetchTasks(); fetchStats() }, 5000) })
 onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 </script>
 

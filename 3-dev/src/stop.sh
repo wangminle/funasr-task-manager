@@ -38,7 +38,7 @@ _kill_pid() {
     return 0
   fi
   kill "$pid" 2>/dev/null && echo "  ✓ 已停止 $label (PID $pid)" || true
-  for _ in $(seq 1 4); do
+  for _ in $(seq 1 10); do
     kill -0 "$pid" 2>/dev/null || return 0
     sleep 0.5
   done

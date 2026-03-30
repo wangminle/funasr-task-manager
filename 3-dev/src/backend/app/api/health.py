@@ -35,6 +35,7 @@ def _format_uptime() -> str:
 
 @router.get("/health")
 async def health_check() -> dict:
+    from app.main import get_schema_ok
     db_type = "PostgreSQL" if "postgresql" in settings.database_url else "SQLite"
     return {
         "status": "ok",
@@ -42,6 +43,7 @@ async def health_check() -> dict:
         "service": settings.app_name,
         "database_type": db_type,
         "auth_enabled": settings.auth_enabled,
+        "schema_ok": get_schema_ok(),
         "uptime": _format_uptime(),
     }
 

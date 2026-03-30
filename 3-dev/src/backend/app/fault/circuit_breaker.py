@@ -77,9 +77,10 @@ class CircuitBreaker:
     def pre_check(self) -> None:
         if not self.allow_request():
             remaining = 0.0
-            if self._state == CircuitState.OPEN:
-                elapsed = time.monotonic() - self._last_failure_time
-                remaining = max(self.recovery_timeout - elapsed, 0)
+            with self._lock:
+                if self._state == CircuitState.OPEN:
+                    elapsed = time.monotonic() - self._last_failure_time
+                    remaining = max(self.recovery_timeout - elapsed, 0)
             raise CircuitBreakerOpenError(self.server_id, remaining)
 
     def record_success(self) -> None:

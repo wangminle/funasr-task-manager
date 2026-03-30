@@ -16,6 +16,12 @@ from app.storage.repository import ServerRepository
 
 logger = get_logger(__name__)
 
+_schema_ok: bool = False
+
+
+def get_schema_ok() -> bool:
+    return _schema_ok
+
 
 async def _get_servers_for_heartbeat() -> list[dict]:
     async with async_session_factory() as session:
@@ -55,6 +61,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     settings.result_dir.mkdir(parents=True, exist_ok=True)
     settings.temp_dir.mkdir(parents=True, exist_ok=True)
+
+    global _schema_ok
+    try:
+        from app.services.diagnostics import check_schema
+        async with async_session_factory() as session:
+            result = await check_schema(session)
+            if result.level == "error":
+                logger.critical("schema_check_failed", detail=result.detail)
+                raise SystemExit(f"Schema check failed: {result.detail}")
+            _schema_ok = result.level == "ok"
+            if not _schema_ok:
+                logger.warning("schema_check_warning", detail=result.detail)
+            else:
+                logger.info("schema_check_passed")
+    except SystemExit:
+        raise
+    except Exception as e:
+        logger.warning("schema_check_skipped", error=str(e))
+        _schema_ok = False
 
     await heartbeat_service.start(_get_servers_for_heartbeat, _update_server_status)
     await task_runner.start()

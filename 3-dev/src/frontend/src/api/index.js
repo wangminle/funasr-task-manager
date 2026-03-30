@@ -136,3 +136,8 @@ export async function getSystemStats() {
   const { data } = await api.get('/stats')
   return data
 }
+
+export async function getDiagnostics() {
+  const { data } = await api.get('/diagnostics')
+  return data
+}

@@ -241,8 +241,9 @@ def _run_batch(c, files, language, hotwords, fmt, output_dir, callback,
                         status_icon = "✓" if t["status"] == "SUCCEEDED" else "✗"
                         out.info(f"  [{elapsed}s] {status_icon} {file_name_map.get(tid, tid[:12])} → {t['status']} "
                                  f"({len(completed)}/{len(task_ids)})")
-        except APIError:
-            pass
+        except APIError as poll_err:
+            if not c.quiet:
+                out.error(f"  轮询出错: {poll_err.detail} (将继续重试)")
 
         if len(completed) < len(task_ids):
             time.sleep(poll_interval)

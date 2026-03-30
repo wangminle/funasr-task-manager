@@ -1,5 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import process from 'node:process'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const backendRoot = resolve(__dirname, '../../backend')
 
 function resolvePythonCommand() {
   if (process.env.ASR_E2E_BACKEND_PYTHON) {
@@ -27,6 +32,7 @@ function runStep(command, args) {
   const result = spawnSync(command, args, {
     stdio: 'inherit',
     env: process.env,
+    cwd: backendRoot,
   })
 
   if (result.error) {
@@ -48,6 +54,7 @@ const serverProcess = spawn(
   {
     stdio: 'inherit',
     env: process.env,
+    cwd: backendRoot,
   },
 )
 

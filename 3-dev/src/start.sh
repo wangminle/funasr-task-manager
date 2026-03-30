@@ -61,9 +61,23 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
 fi
 echo "      依赖检查通过 ✓"
 
-# ------ 后端 ------
-echo "[1/3] 启动后端 (uvicorn)..."
+# ------ 数据库迁移 ------
+echo "[1/4] 数据库迁移..."
 cd "$BACKEND_DIR"
+if python -c "import alembic" &>/dev/null && [[ -f "alembic.ini" ]]; then
+  python -m alembic upgrade head 2>"$RUNTIME_DIR/alembic.log"
+  if [[ $? -eq 0 ]]; then
+    echo "      数据库迁移完成 ✓"
+  else
+    echo "  ✗ 数据库迁移失败，请查看日志: $RUNTIME_DIR/alembic.log"
+    exit 1
+  fi
+else
+  echo "      跳过迁移（alembic 未安装或无 alembic.ini）"
+fi
+
+# ------ 后端 ------
+echo "[2/4] 启动后端 (uvicorn)..."
 UVICORN_CMD=(python -m uvicorn app.main:app --host "$BIND_HOST" --port 8000)
 if [[ "$NO_RELOAD" != "1" ]]; then
   UVICORN_CMD+=(--reload)
@@ -76,7 +90,7 @@ echo "      后端 PID: $BACKEND_PID"
 
 # ------ 前端 ------
 if [[ $NO_FRONTEND -eq 0 ]]; then
-  echo "[2/3] 启动前端 (vite)..."
+  echo "[3/4] 启动前端 (vite)..."
   cd "$FRONTEND_DIR"
   nohup npx vite --host "$BIND_HOST" --port 5173 \
     >"$FRONTEND_OUT" 2>"$FRONTEND_LOG" &
@@ -84,11 +98,11 @@ if [[ $NO_FRONTEND -eq 0 ]]; then
   echo "frontend=$FRONTEND_PID" >> "$PID_FILE"
   echo "      前端 PID: $FRONTEND_PID"
 else
-  echo "[2/3] 跳过前端 (--no-frontend)"
+  echo "[3/4] 跳过前端 (--no-frontend)"
 fi
 
 # ------ 健康检查 ------
-echo "[3/3] 等待服务就绪..."
+echo "[4/4] 等待服务就绪..."
 sleep 4
 
 BACKEND_OK=0

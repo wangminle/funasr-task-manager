@@ -85,8 +85,17 @@
     <el-card v-if="createdTasks.length > 0" shadow="never" class="mt-16">
       <template #header>
         <div class="card-header">
-          <span>已创建任务 ({{ createdTasks.length }})</span>
-          <el-button type="primary" text @click="$router.push('/tasks')">查看任务列表 →</el-button>
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span>已创建任务 ({{ createdTasks.length }})</span>
+            <el-tag v-if="taskGroupId" type="primary" effect="plain" class="group-tag">
+              批次: {{ taskGroupId.slice(0, 12) }}...
+              <el-button type="primary" text size="small" style="margin-left: 4px; padding: 0;" @click="copyGroupId">复制</el-button>
+            </el-tag>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <el-button v-if="taskGroupId" type="success" text @click="$router.push('/tasks?group=' + taskGroupId)">按批次查看 →</el-button>
+            <el-button type="primary" text @click="$router.push('/tasks')">查看任务列表 →</el-button>
+          </div>
         </div>
       </template>
       <el-table :data="createdTasks" stripe data-testid="created-tasks-table">
@@ -114,6 +123,7 @@ import { uploadFile, createTasks } from '../api'
 const uploadRef = ref(null)
 const pendingFiles = ref([])
 const createdTasks = ref([])
+const taskGroupId = ref(null)
 const language = ref('zh')
 const submitting = ref(false)
 const asrOptions = ref({ use_punc: true, use_itn: true, use_spk: false })
@@ -159,9 +169,11 @@ async function submitAll() {
     const items = uploadedFiles.map(f => ({ file_id: f.fileId, language: language.value, options: opts }))
     const tasks = await createTasks(items)
     createdTasks.value = tasks
+    taskGroupId.value = tasks[0]?.task_group_id || null
     pendingFiles.value = []
     uploadRef.value?.clearFiles()
-    ElMessage.success(`成功创建 ${tasks.length} 个转写任务`)
+    const groupHint = taskGroupId.value ? ` (批次: ${taskGroupId.value.slice(0, 12)}...)` : ''
+    ElMessage.success(`成功创建 ${tasks.length} 个转写任务${groupHint}`)
   } catch (err) {
     ElMessage.error('提交失败: ' + (err.response?.data?.detail || err.message))
   } finally {
@@ -174,6 +186,14 @@ function formatSize(bytes) {
   if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB'
   if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB'
   return (bytes / 1073741824).toFixed(2) + ' GB'
+}
+
+function copyGroupId() {
+  if (!taskGroupId.value) return
+  navigator.clipboard.writeText(taskGroupId.value).then(
+    () => ElMessage.success('批次 ID 已复制'),
+    () => ElMessage.warning('复制失败，请手动复制')
+  )
 }
 
 function statusTagType(status) {
@@ -189,4 +209,5 @@ function statusTagType(status) {
 .upload-area { width: 100%; }
 .options-row { margin-bottom: 16px; }
 .option-label { display: block; font-size: 12px; color: #909399; margin-bottom: 4px; }
+.group-tag { font-family: 'Cascadia Code', 'JetBrains Mono', monospace; font-size: 12px; }
 </style>

@@ -15,6 +15,9 @@
           <span>任务列表</span>
           <div class="header-actions">
             <el-input v-model="searchQuery" placeholder="搜索任务ID / 文件名" clearable :prefix-icon="Search" style="width: 220px;" />
+            <el-input v-model="groupFilter" placeholder="按批次ID筛选" clearable style="width: 200px;" @clear="() => { currentPage = 1; fetchTasks() }" @keyup.enter="() => { currentPage = 1; fetchTasks() }">
+              <template #prefix><el-icon><Folder /></el-icon></template>
+            </el-input>
             <el-select v-model="statusFilter" placeholder="按状态筛选" clearable size="default" style="width: 160px;" @change="() => { currentPage = 1; fetchTasks() }">
               <el-option label="全部" value="" />
               <el-option label="待处理" value="PENDING" />
@@ -76,15 +79,19 @@
 
 <script setup>
 import { ref, watch, onMounted, onUnmounted } from 'vue'
-import { Refresh, Delete, Search } from '@element-plus/icons-vue'
+import { useRoute } from 'vue-router'
+import { Refresh, Delete, Search, Folder } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { listTasks, cancelTask, getTaskResult, deleteAllTasks, getSystemStats } from '../api'
+
+const route = useRoute()
 
 const tasks = ref([])
 const total = ref(0)
 const currentPage = ref(1)
 const pageSize = 20
 const statusFilter = ref('')
+const groupFilter = ref(route.query.group || '')
 const searchQuery = ref('')
 const loading = ref(false)
 const stats = ref([
@@ -123,6 +130,7 @@ async function fetchTasks() {
   try {
     const params = { page: currentPage.value, page_size: pageSize }
     if (statusFilter.value) params.status = statusFilter.value
+    if (groupFilter.value.trim()) params.group = groupFilter.value.trim()
     if (searchQuery.value.trim()) params.search = searchQuery.value.trim()
     const data = await listTasks(params)
     tasks.value = data.items
