@@ -42,6 +42,9 @@ alembic upgrade head
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+> **工作目录说明**
+> 后端默认把数据库和上传/结果/临时文件写到相对路径 `./data/`。因此开发环境请始终在 `3-dev/src/backend` 目录下启动后端，或使用 `3-dev/src/start.sh` / `3-dev/src/start.ps1`。按推荐方式启动时，运行时数据目录为 `3-dev/src/backend/data/`。如果从仓库根目录直接启动 `uvicorn app.main:app`，会在仓库根目录额外生成顶层 `data/` 目录。
+
 也可使用一键启停脚本（推荐开发环境）：
 
 ```powershell
@@ -536,6 +539,12 @@ docker compose exec web alembic upgrade head
 ```bash
 cd 3-dev/src/backend
 
+# 先做只读评估，确认当前 backend/data 状态
+python ../../../6-skills/reset-asr-db-before-test/scripts/reset_db.py --dry-run
+
+# 需要干净测试环境时执行重置
+python ../../../6-skills/reset-asr-db-before-test/scripts/reset_db.py
+
 # 全量测试
 python -m pytest "../../../4-tests/scripts/" -v --cov=app
 
@@ -556,6 +565,8 @@ npm run test:e2e:remote-standard
 # 压力测试
 locust -f "../../../4-tests/scripts/load/locustfile.py" --headless -u 50 -r 10 -t 5m
 ```
+
+测试前数据库重置技能位于 [6-skills/reset-asr-db-before-test/SKILL.md](6-skills/reset-asr-db-before-test/SKILL.md)。该技能默认针对 `3-dev/src/backend/data/` 工作，不会清理仓库根目录的历史 `data/` 目录。
 
 ## 项目结构
 
@@ -581,6 +592,8 @@ funasr-task-manager/
 │   ├── integration/                   # 集成测试
 │   ├── e2e/                           # 端到端测试
 │   └── load/                          # 压力测试
+├── 6-skills/
+│   └── reset-asr-db-before-test/      # 测试前数据库重置与 dry-run 评估技能
 └── README.md
 ```
 

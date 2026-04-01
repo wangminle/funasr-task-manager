@@ -71,7 +71,12 @@
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(f\"\"{s[''''server_id'''']}: {s[''''status'''']}\"\"\\) for s in d]\")",
       "Bash(python:*)",
       "Bash(ls -la /Users/fenix-macmini/Documents/VSCode/1-Cursor实战记录/5-FunASR-Practice/funasr-task-manager/3-dev/src/frontend/*.json /Users/fenix-macmini/Documents/VSCode/1-Cursor实战记录/5-FunASR-Practice/funasr-task-manager/3-dev/src/frontend/*.js)",
-      "Bash(ls -la /Users/fenix-macmini/Documents/VSCode/1-Cursor实战记录/5-FunASR-Practice/funasr-task-manager/3-dev/src/backend/*.toml /Users/fenix-macmini/Documents/VSCode/1-Cursor实战记录/5-FunASR-Practice/funasr-task-manager/3-dev/src/backend/requirements*.txt)"
+      "Bash(ls -la /Users/fenix-macmini/Documents/VSCode/1-Cursor实战记录/5-FunASR-Practice/funasr-task-manager/3-dev/src/backend/*.toml /Users/fenix-macmini/Documents/VSCode/1-Cursor实战记录/5-FunASR-Practice/funasr-task-manager/3-dev/src/backend/requirements*.txt)",
+      "Bash(mkdir:*)",
+      "Bash(chmod +x:*)",
+      "Bash(rm -f data/asr_tasks.db)",
+      "Bash(sqlite3 data/asr_tasks.db \".tables\")",
+      "Bash(sqlite3:*)"
     ]
   }
 }
