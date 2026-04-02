@@ -536,14 +536,30 @@ docker compose exec web alembic upgrade head
 
 ## 测试
 
+### 测试前环境准备
+
 ```bash
 cd 3-dev/src/backend
 
 # 先做只读评估，确认当前 backend/data 状态
 python ../../../6-skills/reset-asr-db-before-test/scripts/reset_db.py --dry-run
 
-# 需要干净测试环境时执行重置
+# 需要干净测试环境时执行重置（会自动检测数据库是否被后端占用）
 python ../../../6-skills/reset-asr-db-before-test/scripts/reset_db.py
+
+# 重置服务器配置并插入默认测试节点
+python ../../../6-skills/reset-asr-db-before-test/scripts/reset_db.py --reset-servers
+
+# CI 环境：跳过备份和确认
+python ../../../6-skills/reset-asr-db-before-test/scripts/reset_db.py --no-backup --force
+```
+
+详细参数和行为说明见 [6-skills/reset-asr-db-before-test/SKILL.md](6-skills/reset-asr-db-before-test/SKILL.md)。该技能默认针对 `3-dev/src/backend/data/` 工作，不会清理仓库根目录的历史 `data/` 目录。
+
+### 后端测试
+
+```bash
+cd 3-dev/src/backend
 
 # 全量测试
 python -m pytest "../../../4-tests/scripts/" -v --cov=app
@@ -557,21 +573,40 @@ python -m pytest "../../../4-tests/scripts/integration/" -v
 # E2E 测试
 python -m pytest "../../../4-tests/scripts/e2e/" -v
 
-# 浏览器 E2E（需切换到前端目录）
-cd ../frontend
-npm run test:e2e:smoke
-npm run test:e2e:remote-standard
-
 # 压力测试
 locust -f "../../../4-tests/scripts/load/locustfile.py" --headless -u 50 -r 10 -t 5m
 ```
 
-测试前数据库重置技能位于 [6-skills/reset-asr-db-before-test/SKILL.md](6-skills/reset-asr-db-before-test/SKILL.md)。该技能默认针对 `3-dev/src/backend/data/` 工作，不会清理仓库根目录的历史 `data/` 目录。
+### 浏览器 E2E 测试
+
+浏览器端到端测试覆盖真实用户路径：文件上传 → 批量转写 → 任务列表观察 → 结果下载 → 工件归档。提供 4 个测试配置（profile），按覆盖范围递增：
+
+| Profile | 用途 | 文件数 |
+|---------|------|--------|
+| `smoke` | 日常快速回归 | 3 |
+| `remote-standard` | 远端节点 / 受限带宽 | 5 |
+| `standard` | 功能合并前验证 | 4-6 |
+| `full` | 发布前全量验证 | 全部 |
+
+```bash
+cd 3-dev/src/frontend
+
+# 生成测试素材批次
+npm run test:e2e:prepare:smoke
+npm run test:e2e:prepare:remote-standard
+
+# 执行浏览器 E2E（自动启动前后端）
+npm run test:e2e:smoke
+npm run test:e2e:remote-standard
+```
+
+详细的流程编排、断言策略、跨平台适配和工件归档规范见 [6-skills/funasr-task-manager-web-e2e/SKILL.md](6-skills/funasr-task-manager-web-e2e/SKILL.md)。
 
 ## 项目结构
 
 ```
 funasr-task-manager/
+├── 2-design/                          # 设计文档与评审报告
 ├── 3-dev/src/
 │   ├── start.sh / start.ps1          # 一键启停脚本
 │   ├── stop.sh  / stop.ps1
@@ -590,12 +625,18 @@ funasr-task-manager/
 ├── 4-tests/scripts/
 │   ├── unit/                          # 单元测试
 │   ├── integration/                   # 集成测试
-│   ├── e2e/                           # 端到端测试
+│   ├── e2e/                           # 端到端测试（API/CLI 视角）
 │   └── load/                          # 压力测试
-├── 6-skills/
-│   └── reset-asr-db-before-test/      # 测试前数据库重置与 dry-run 评估技能
+├── 6-skills/                          # Agent 可复用的自动化技能
+│   ├── reset-asr-db-before-test/      # 测试前数据库重置与 dry-run 评估
+│   └── funasr-task-manager-web-e2e/   # 浏览器 E2E 测试流程编排与素材管理
+├── 7-data/                            # 本地数据（gitignore，不入库）
+│   ├── assets/                        # 测试素材（音视频文件）
+│   └── outputs/                       # 测试输出工件
 └── README.md
 ```
+
+`6-skills/` 目录存放面向 AI Agent 和开发者的可复用自动化技能。每个技能包含一份 `SKILL.md`（触发条件、操作流程、参数规则）和配套脚本。Agent 在对话中根据 SKILL.md 的 `description` 字段自动匹配并触发对应技能。
 
 ## 许可证
 

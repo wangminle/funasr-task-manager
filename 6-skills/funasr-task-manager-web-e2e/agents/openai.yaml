@@ -2,3 +2,38 @@ interface:
   display_name: "FunASR Web E2E"
   short_description: "为 funasr-task-manager 执行浏览器端到端测试"
   default_prompt: "Use $funasr-task-manager-web-e2e to run the project's browser-based end-to-end transcription workflow."
+
+profiles:
+  smoke:
+    description: "日常最小快速回归，3 个文件，覆盖无损音频/压缩音频/视频"
+    timeout_per_task_minutes: 5
+    timeout_total_minutes: 10
+  remote-standard:
+    description: "远端 FunASR 节点推荐批次，按体积排序的前 5 个文件"
+    timeout_per_task_minutes: 8
+    timeout_total_minutes: 20
+  standard:
+    description: "合并前本地验证，4-6 个文件，可能包含 100MB+ 素材"
+    timeout_per_task_minutes: 10
+    timeout_total_minutes: 30
+  full:
+    description: "发布前全量验证，覆盖全部可用素材"
+    timeout_per_task_minutes: 20
+    timeout_total_minutes: 90
+
+environment:
+  ASR_E2E_SERVER_HOST: "FunASR 服务器地址，仅在未注册节点时需要"
+  ASR_E2E_SERVER_PORT: "FunASR 服务器端口，仅在未注册节点时需要"
+  ASR_E2E_PROFILE: "测试配置名称，由 npm run test:e2e:* 自动设置"
+  ASR_E2E_BASE_URL: "前端基础地址，默认 http://127.0.0.1:5173"
+
+prerequisites:
+  - "后端健康: GET http://localhost:8000/health → status: ok"
+  - "前端可达: GET http://localhost:5173 → HTTP 200"
+  - "至少一台 FunASR 服务器在线: GET /api/v1/servers"
+  - "测试素材存在: 7-data/assets/1-测试audioFiles/"
+
+scripts:
+  build_fixture_batch: "scripts/build_fixture_batch.py"
+  semantic_baseline: "references/semantic-baseline.json"
+  project_context: "references/project-context.md"

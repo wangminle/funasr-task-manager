@@ -108,6 +108,53 @@ def summarize_database_files(db_path: str | Path) -> dict:
     }
 
 
+def check_database_in_use(db_path: str | Path) -> str | None:
+    """如果数据库正被其他进程占用，返回诊断信息；否则返回 None。"""
+    target = _path(db_path)
+    if not target.exists():
+        return None
+
+    if sys.platform != "win32":
+        try:
+            files = [target] + [
+                Path(f"{target}{s}")
+                for s in ("-wal", "-shm")
+                if Path(f"{target}{s}").exists()
+            ]
+            proc = subprocess.run(
+                ["lsof", "-t"] + [str(f) for f in files],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                pids = {p.strip() for p in proc.stdout.strip().splitlines()}
+                pids.discard(str(os.getpid()))
+                if pids:
+                    return (
+                        f"数据库文件正被其他进程占用 (PID: {', '.join(sorted(pids))})，"
+                        "请先停止后端服务再执行重置"
+                    )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    try:
+        conn = sqlite3.connect(str(target), timeout=1)
+        try:
+            conn.execute("BEGIN EXCLUSIVE")
+            conn.rollback()
+        except sqlite3.OperationalError:
+            return "数据库被锁定，请先停止占用数据库的进程"
+        except sqlite3.DatabaseError:
+            pass
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError:
+        pass
+
+    return None
+
+
 def database_exists(db_path: str | Path) -> bool:
     return _path(db_path).exists()
 
@@ -308,8 +355,22 @@ def evaluate_backend_data(
 ) -> dict:
     backend_path = _path(backend_dir)
     database_files = summarize_database_files(db_path)
-    servers = summarize_servers(db_path)
-    tasks = summarize_tasks(db_path)
+
+    db_corrupt = False
+    try:
+        servers = summarize_servers(db_path)
+    except sqlite3.DatabaseError:
+        db_corrupt = True
+        servers = {"count": 0, "by_status": {}, "items": [],
+                   "error": "数据库损坏，无法读取服务器配置"}
+
+    try:
+        tasks = summarize_tasks(db_path)
+    except sqlite3.DatabaseError:
+        db_corrupt = True
+        tasks = {"total": 0, "by_status": {}, "latest": [],
+                 "result_path_count": 0, "error": "数据库损坏，无法读取任务数据"}
+
     results = summarize_directory(results_dir)
     temp = summarize_directory(temp_dir)
     uploads = summarize_directory(uploads_dir)
@@ -328,7 +389,7 @@ def evaluate_backend_data(
         "note": "数据库会被重建，因此实际净释放空间通常略低于 full_reset_bytes。",
     }
 
-    return {
+    result = {
         "dry_run": True,
         "backend_dir": str(backend_path),
         "database_files": database_files,
@@ -340,6 +401,14 @@ def evaluate_backend_data(
         "estimated_savings": estimated_savings,
         "summary": build_summary_text(servers, database_files, results, temp, uploads, tasks, estimated_savings),
     }
+    if db_corrupt:
+        result["database_corrupt"] = True
+        result["summary"] = (
+            "⚠️ 数据库文件已损坏，无法读取现有数据。"
+            "建议执行重置（不带 --dry-run）以重建数据库。 "
+            + result["summary"]
+        )
+    return result
 
 
 def main(argv: list[str] | None = None):
@@ -379,6 +448,10 @@ def main(argv: list[str] | None = None):
             ),
         )
 
+    in_use = check_database_in_use(db_path)
+    if in_use:
+        output_result(False, f"无法重置: {in_use}")
+
     result_data = {}
     servers_backup = []
     had_existing_database = db_path.exists()
@@ -387,6 +460,9 @@ def main(argv: list[str] | None = None):
         try:
             servers_backup = export_servers(db_path)
             result_data["servers_preserved"] = len(servers_backup)
+        except sqlite3.DatabaseError:
+            servers_backup = []
+            result_data["servers_preservation_skipped"] = "数据库损坏，无法导出服务器配置，将创建空库"
         except Exception as e:
             output_result(False, f"导出服务器配置失败: {str(e)}")
 
@@ -420,8 +496,10 @@ def main(argv: list[str] | None = None):
         output_result(False, f"清理测试文件失败: {str(e)}")
 
     try:
-        if db_path.exists():
-            db_path.unlink()
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            target = Path(f"{db_path}{suffix}")
+            if target.exists():
+                target.unlink()
         run_alembic_upgrade(backend_dir, db_path)
         result_data["database_recreated"] = True
     except Exception as e:

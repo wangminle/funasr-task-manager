@@ -5,13 +5,31 @@
       "expected_language": "zh-CN",
       "keywords_all": [],
       "keywords_any": [],
-      "notes": "Fill keywords after you curate a stable transcript baseline."
+      "notes": "短音频测试样本。首次回归后从 7-data/outputs/e2e/ 抽取可接受文本，补充关键词。"
     },
     "tv-report-1.wav": {
       "expected_language": "zh-CN",
       "keywords_all": [],
       "keywords_any": [],
-      "notes": "Use keywords_any for looser ASR validation when exact phrasing drifts."
+      "notes": "电视新闻报道音频。建议补充新闻领域常见关键词以验证转写质量。"
+    },
+    "test.mp4": {
+      "expected_language": "zh-CN",
+      "keywords_all": [],
+      "keywords_any": [],
+      "notes": "短视频测试样本。验证视频预处理链路不会导致转写失败。首次回归后补充关键词。"
+    },
+    "办公平台20250724-144218.mp4": {
+      "expected_language": "zh-CN",
+      "keywords_all": [],
+      "keywords_any": [],
+      "notes": "办公场景录屏。文件名含中文，同时验证中文路径处理。首次回归后补充关键词。"
+    },
+    "tv-report-1.mp4": {
+      "expected_language": "zh-CN",
+      "keywords_all": [],
+      "keywords_any": [],
+      "notes": "电视新闻报道视频版本。与 tv-report-1.wav 为同源不同格式，可交叉验证转写一致性。"
     }
   }
 }

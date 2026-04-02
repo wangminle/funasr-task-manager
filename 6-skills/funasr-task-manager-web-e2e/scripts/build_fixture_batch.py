@@ -215,6 +215,25 @@ def build_manifest(
     }
 
 
+def format_list_table(fixtures: list[FixtureFile]) -> str:
+    header = f"{'文件名':<45} {'类型':<6} {'格式':<6} {'大小':>10}"
+    separator = "─" * len(header)
+    lines = [header, separator]
+    for f in sorted(fixtures, key=lambda x: (x.size_bytes, x.name.lower())):
+        lines.append(f"{f.name:<45} {f.media_type:<6} {f.extension:<6} {f.size_human:>10}")
+    lines.append(separator)
+    total_size = sum(f.size_bytes for f in fixtures)
+    total_human = fixtures[0].size_human if not fixtures else ""
+    size = float(total_size)
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024 or unit == "GB":
+            total_human = f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+            break
+        size /= 1024
+    lines.append(f"共 {len(fixtures)} 个文件，总大小 {total_human}")
+    return "\n".join(lines)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="为 funasr-task-manager 生成可复用的浏览器 E2E 测试素材批次。"
@@ -223,6 +242,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--assets-root", type=Path, help="测试素材目录，默认使用 7-data/assets/1-测试audioFiles")
     parser.add_argument("--output", type=Path, help="将结果写入指定 JSON 文件")
     parser.add_argument("--write", action="store_true", help="写入默认输出路径 7-data/outputs/e2e/fixture-batches/<profile>.json")
+    parser.add_argument("--list", action="store_true", dest="list_assets", help="仅列出素材目录中所有可用的音视频文件，不执行批次选择")
     return parser.parse_args()
 
 
@@ -237,6 +257,10 @@ def main() -> int:
     fixtures = discover_files(assets_root, workspace_root)
     if not fixtures:
         raise SystemExit(f"素材目录中没有可用的音视频文件: {assets_root}")
+
+    if args.list_assets:
+        print(format_list_table(fixtures))
+        return 0
 
     manifest = build_manifest(
         fixtures=fixtures,

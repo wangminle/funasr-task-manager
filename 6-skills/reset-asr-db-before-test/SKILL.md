@@ -26,6 +26,7 @@ python3 6-skills/reset-asr-db-before-test/scripts/reset_db.py
 - 本地调试前，需要清空任务、结果和临时文件
 - 跑 pytest、CLI 回归、浏览器 E2E 前，需要可重复的数据库初始状态
 - 上一次测试中断，导致 `3-dev/src/backend/data/asr_tasks.db` 缺失或状态不可信
+- 上一次测试异常中断导致数据库损坏，需要重建
 - 需要保留已有 ASR 服务器节点配置，但重新生成任务数据库
 - 需要彻底重置服务器节点配置并重新插入默认测试节点
 
@@ -33,15 +34,21 @@ python3 6-skills/reset-asr-db-before-test/scripts/reset_db.py
 
 默认执行：
 
-1. 如果旧数据库存在，则先备份到 `3-dev/src/backend/data/backups/`
-2. 清空 `results/` 和 `temp/`
-3. 删除并重建数据库
-4. 运行 Alembic 迁移到最新版本
-5. 默认保留已有服务器配置
-6. 默认不删除 `uploads/` 中的音视频文件
-7. 默认不插入新的测试服务器，除非显式指定 `--reset-servers`
+1. **检测数据库占用**：通过 `lsof`（Unix）和 SQLite 排他锁检测数据库是否被其他进程（如运行中的后端）占用。如果检测到占用，脚本会拒绝执行并报告占用进程的 PID
+2. 如果旧数据库存在且未损坏，导出已有服务器配置以便重建后恢复
+3. 如果旧数据库存在，则先备份到 `3-dev/src/backend/data/backups/`
+4. 清空 `results/` 和 `temp/`
+5. 删除数据库及其附属文件（`-wal`、`-shm`、`-journal`）并重建
+6. 运行 Alembic 迁移到最新版本
+7. 默认恢复已有服务器配置
+8. 默认不删除 `uploads/` 中的音视频文件
+9. 默认不插入新的测试服务器，除非显式指定 `--reset-servers`
 
-如果数据库文件原本不存在，脚本会直接创建一份新的空库并完成迁移，不会因为“找不到旧库”而失败。
+如果数据库文件原本不存在，脚本会直接创建一份新的空库并完成迁移，不会因为"找不到旧库"而失败。
+
+### 损坏数据库处理
+
+如果旧数据库文件存在但已损坏（`sqlite3.DatabaseError`），脚本不会因为"无法导出服务器配置"而退出。它会跳过服务器配置保留，在输出中标注 `servers_preservation_skipped`，然后继续执行备份→删库→迁移的完整流程。用户无需额外传 `--reset-servers` 就能从坏库状态恢复。
 
 ## Dry Run 评估
 
@@ -58,6 +65,8 @@ python 6-skills/reset-asr-db-before-test/scripts/reset_db.py --dry-run
 - `results/`、`temp/`、`uploads/` 目录的文件数量和大小
 - 当前任务总数、状态分布、最近任务摘要
 - 按当前重置逻辑预计可释放的空间
+
+如果数据库已损坏，dry-run 不会崩溃。它会在输出中设置 `database_corrupt: true`，将服务器和任务数据降级为零值，并在 `summary` 中提示用户执行不带 `--dry-run` 的重置来重建数据库。
 
 如果希望把 `uploads/` 也纳入估算，可以组合：
 
@@ -114,6 +123,8 @@ python 6-skills/reset-asr-db-before-test/scripts/reset_db.py --dry-run
 
 脚本输出 JSON，字段示例：
 
+**正常重置（保留服务器配置）：**
+
 ```json
 {
   "status": "success",
@@ -127,13 +138,40 @@ python 6-skills/reset-asr-db-before-test/scripts/reset_db.py --dry-run
 }
 ```
 
-dry-run 输出会额外包含 `servers`、`database_files`、`tasks`、`results`、`temp`、`uploads`、`estimated_savings` 和 `summary`。
+**数据库损坏时的重置：**
+
+```json
+{
+  "status": "success",
+  "message": "测试数据库重置完成，已准备好干净测试环境",
+  "data": {
+    "servers_preservation_skipped": "数据库损坏，无法导出服务器配置，将创建空库",
+    "backup_path": "/abs/path/to/asr_tasks_test_backup_20260401_123045.db",
+    "database_recreated": true,
+    "seed_data_inserted": false
+  }
+}
+```
+
+**数据库被占用时的拒绝：**
+
+```json
+{
+  "status": "failed",
+  "message": "无法重置: 数据库文件正被其他进程占用 (PID: 12345)，请先停止后端服务再执行重置",
+  "data": {}
+}
+```
+
+dry-run 输出会额外包含 `servers`、`database_files`、`tasks`、`results`、`temp`、`uploads`、`estimated_savings` 和 `summary`。如果数据库损坏，还会包含 `database_corrupt: true`。
 
 ## 安全约束
 
 - 这是测试辅助技能，不要用于生产数据库
+- 如果数据库正被后端进程占用，脚本会拒绝执行并报告占用进程的 PID，防止产生分叉状态
 - `--clear-uploads` 会删除上传文件，默认要求确认
 - 只有显式指定 `--reset-servers` 才会清空旧服务器配置
+- 删除数据库时会一并清理 `-wal`、`-shm`、`-journal` 附属文件，防止残留锁文件干扰新数据库
 
 ## 相关文件
 
