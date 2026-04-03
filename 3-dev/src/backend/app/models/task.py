@@ -22,10 +22,10 @@ class TaskStatus(StrEnum):
 
 VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.PENDING: {TaskStatus.PREPROCESSING, TaskStatus.CANCELED},
-    TaskStatus.PREPROCESSING: {TaskStatus.QUEUED, TaskStatus.FAILED},
+    TaskStatus.PREPROCESSING: {TaskStatus.QUEUED, TaskStatus.FAILED, TaskStatus.CANCELED},
     TaskStatus.QUEUED: {TaskStatus.DISPATCHED, TaskStatus.CANCELED, TaskStatus.FAILED},
-    TaskStatus.DISPATCHED: {TaskStatus.TRANSCRIBING, TaskStatus.FAILED},
-    TaskStatus.TRANSCRIBING: {TaskStatus.SUCCEEDED, TaskStatus.FAILED},
+    TaskStatus.DISPATCHED: {TaskStatus.TRANSCRIBING, TaskStatus.FAILED, TaskStatus.CANCELED},
+    TaskStatus.TRANSCRIBING: {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED},
     TaskStatus.SUCCEEDED: set(),
     TaskStatus.FAILED: {TaskStatus.PENDING},
     TaskStatus.CANCELED: set(),

@@ -26,7 +26,7 @@ class SystemStats(BaseModel):
 
 
 @router.get("/stats", response_model=SystemStats)
-async def get_system_stats(db: DbSession, _user: CurrentUser) -> SystemStats:
+async def get_system_stats(db: DbSession, user_id: CurrentUser) -> SystemStats:
     now = datetime.now(timezone.utc)
     since_24h = now - timedelta(hours=24)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -38,38 +38,49 @@ async def get_system_stats(db: DbSession, _user: CurrentUser) -> SystemStats:
 
     active_statuses = [TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING]
     slots_used_result = await db.execute(
-        select(func.count()).select_from(Task).where(Task.status.in_(active_statuses))
+        select(func.count()).select_from(Task).where(
+            Task.user_id == user_id,
+            Task.status.in_(active_statuses),
+        )
     )
     slots_used = slots_used_result.scalar() or 0
 
     queue_result = await db.execute(
         select(func.count()).select_from(Task).where(
-            Task.status.in_([TaskStatus.PENDING, TaskStatus.PREPROCESSING, TaskStatus.QUEUED])
+            Task.user_id == user_id,
+            Task.status.in_([TaskStatus.PENDING, TaskStatus.PREPROCESSING, TaskStatus.QUEUED]),
         )
     )
     queue_depth = queue_result.scalar() or 0
 
     today_completed = (await db.execute(
         select(func.count()).select_from(Task).where(
-            Task.status == TaskStatus.SUCCEEDED, Task.completed_at >= today_start
+            Task.user_id == user_id,
+            Task.status == TaskStatus.SUCCEEDED,
+            Task.completed_at >= today_start,
         )
     )).scalar() or 0
 
     today_failed = (await db.execute(
         select(func.count()).select_from(Task).where(
-            Task.status == TaskStatus.FAILED, Task.completed_at >= today_start
+            Task.user_id == user_id,
+            Task.status == TaskStatus.FAILED,
+            Task.completed_at >= today_start,
         )
     )).scalar() or 0
 
     finished_24h = (await db.execute(
         select(func.count()).select_from(Task).where(
+            Task.user_id == user_id,
             Task.status.in_([TaskStatus.SUCCEEDED, TaskStatus.FAILED]),
             Task.completed_at >= since_24h,
         )
     )).scalar() or 0
     succeeded_24h = (await db.execute(
         select(func.count()).select_from(Task).where(
-            Task.status == TaskStatus.SUCCEEDED, Task.completed_at >= since_24h
+            Task.user_id == user_id,
+            Task.status == TaskStatus.SUCCEEDED,
+            Task.completed_at >= since_24h,
         )
     )).scalar() or 0
     success_rate = (succeeded_24h / finished_24h * 100) if finished_24h > 0 else 100.0

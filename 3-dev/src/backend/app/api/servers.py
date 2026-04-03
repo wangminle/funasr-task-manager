@@ -203,11 +203,39 @@ async def update_server(server_id: str, body: ServerUpdateRequest, db: DbSession
 
 @router.delete("/{server_id}", status_code=204)
 async def delete_server(server_id: str, db: DbSession, admin: AdminUser):
+    from sqlalchemy import select as _sel, func as _fn
+    from app.models import Task, TaskStatus as _TS
+
+    active_count_stmt = (
+        _sel(_fn.count())
+        .select_from(Task)
+        .where(
+            Task.assigned_server_id == server_id,
+            Task.status.in_([_TS.DISPATCHED, _TS.TRANSCRIBING]),
+        )
+    )
+    active_count = (await db.execute(active_count_stmt)).scalar() or 0
+    if active_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Server {server_id} still has {active_count} active task(s) "
+                   "(DISPATCHED/TRANSCRIBING). Cancel or wait for them to finish before deleting.",
+        )
+
+    bound_stmt = (
+        _sel(Task)
+        .where(Task.assigned_server_id == server_id)
+        .limit(500)
+    )
+    bound_tasks = (await db.execute(bound_stmt)).scalars().all()
+    for task in bound_tasks:
+        task.assigned_server_id = None
+
     repo = ServerRepository(db)
     deleted = await repo.delete_server(server_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Server not found")
-    logger.info("server_deleted", server_id=server_id, by=admin)
+    logger.info("server_deleted", server_id=server_id, unbound_tasks=len(bound_tasks), by=admin)
 
 
 def _extract_modes(caps) -> list[str]:

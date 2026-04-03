@@ -321,11 +321,20 @@ class BackgroundTaskRunner:
             server_stmt = select(ServerInstance).where(ServerInstance.server_id == task.assigned_server_id)
             server = (await session.execute(server_stmt)).scalar_one_or_none()
             if server is None:
+                logger.warning("dispatch_server_missing", task_id=task_id,
+                               server_id=task.assigned_server_id)
+                await self._mark_task_failed(
+                    task_id,
+                    f"Assigned server {task.assigned_server_id} no longer exists",
+                )
                 return None
 
             file_stmt = select(File).where(File.file_id == task.file_id)
             file_record = (await session.execute(file_stmt)).scalar_one_or_none()
             if file_record is None:
+                logger.warning("dispatch_file_missing", task_id=task_id,
+                               file_id=task.file_id)
+                await self._mark_task_failed(task_id, f"File {task.file_id} not found")
                 return None
 
             return task, server, file_record

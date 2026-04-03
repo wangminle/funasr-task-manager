@@ -108,6 +108,39 @@ def summarize_database_files(db_path: str | Path) -> dict:
     }
 
 
+def _check_file_handle_in_use(file_path: Path) -> bool:
+    """Try to detect whether another process holds an open handle on *file_path*.
+
+    On Windows ``os.rename(f, f)`` raises ``PermissionError`` when another
+    process has the file open (even idle ``sqlite3.connect()``).  On POSIX
+    the same call is a no-op, so we additionally try to open the file with
+    an exclusive advisory lock via ``fcntl.flock``.
+    """
+    if not file_path.exists():
+        return False
+
+    if sys.platform == "win32":
+        try:
+            os.rename(str(file_path), str(file_path))
+            return False
+        except (PermissionError, OSError):
+            return True
+    else:
+        try:
+            import fcntl
+            fd = os.open(str(file_path), os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                return False
+            except (OSError, BlockingIOError):
+                return True
+            finally:
+                os.close(fd)
+        except (ImportError, OSError):
+            return False
+
+
 def check_database_in_use(db_path: str | Path) -> str | None:
     """如果数据库正被其他进程占用，返回诊断信息；否则返回 None。"""
     target = _path(db_path)
@@ -137,6 +170,18 @@ def check_database_in_use(db_path: str | Path) -> str | None:
                     )
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
+
+    db_files = [target] + [
+        Path(f"{target}{s}")
+        for s in ("-wal", "-shm", "-journal")
+        if Path(f"{target}{s}").exists()
+    ]
+    for f in db_files:
+        if _check_file_handle_in_use(f):
+            return (
+                f"数据库文件 {f.name} 正被其他进程占用（文件句柄未释放），"
+                "请先停止后端服务再执行重置"
+            )
 
     try:
         conn = sqlite3.connect(str(target), timeout=1)

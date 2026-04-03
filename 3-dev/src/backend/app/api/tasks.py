@@ -29,6 +29,9 @@ async def create_tasks(body: TaskCreateRequest, db: DbSession, user_id: CurrentU
     task_group_id = str(ULID()) if len(body.items) > 1 else None
     created_tasks: list[Task] = []
     for item in body.items:
+        if len(created_tasks) > 0:
+            rate_limiter.check_concurrent_tasks(user_id)
+            rate_limiter.check_daily_limit(user_id)
         file_record = await file_repo.get_file(item.file_id, user_id)
         if file_record is None:
             raise HTTPException(status_code=404, detail=f"File not found: {item.file_id}")
@@ -82,6 +85,7 @@ async def cancel_task(task_id: str, db: DbSession, user_id: CurrentUser):
     if not task.can_transition_to(TaskStatus.CANCELED):
         raise HTTPException(status_code=409, detail=f"Cannot cancel task in {task.status} status")
     await task_repo.update_task_status(task, TaskStatus.CANCELED)
+    rate_limiter.record_task_completed(user_id)
     return TaskResponse.model_validate(task)
 
 
