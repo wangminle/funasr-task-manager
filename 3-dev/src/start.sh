@@ -9,14 +9,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$SCRIPT_DIR/backend"
 FRONTEND_DIR="$SCRIPT_DIR/frontend"
-RUNTIME_DIR="$SCRIPT_DIR/../../.runtime"
-mkdir -p "$RUNTIME_DIR"
+RUNTIME_ROOT="$SCRIPT_DIR/../../runtime"
+LOGS_DIR="$RUNTIME_ROOT/logs"
+mkdir -p "$LOGS_DIR"
 
-BACKEND_LOG="$RUNTIME_DIR/backend.err.log"
-BACKEND_OUT="$RUNTIME_DIR/backend.out.log"
-FRONTEND_LOG="$RUNTIME_DIR/frontend.err.log"
-FRONTEND_OUT="$RUNTIME_DIR/frontend.out.log"
-PID_FILE="$RUNTIME_DIR/pids.txt"
+BACKEND_LOG="$LOGS_DIR/backend.err.log"
+BACKEND_OUT="$LOGS_DIR/backend.out.log"
+FRONTEND_LOG="$LOGS_DIR/frontend.err.log"
+FRONTEND_OUT="$LOGS_DIR/frontend.out.log"
+PID_FILE="$LOGS_DIR/pids.txt"
 
 NO_FRONTEND=0
 if [[ "${1:-}" == "--no-frontend" ]]; then
@@ -65,11 +66,11 @@ echo "      依赖检查通过 ✓"
 echo "[1/4] 数据库迁移..."
 cd "$BACKEND_DIR"
 if python -c "import alembic" &>/dev/null && [[ -f "alembic.ini" ]]; then
-  python -m alembic upgrade head 2>"$RUNTIME_DIR/alembic.log"
+  python -m alembic upgrade head 2>"$LOGS_DIR/alembic.log"
   if [[ $? -eq 0 ]]; then
     echo "      数据库迁移完成 ✓"
   else
-    echo "  ✗ 数据库迁移失败，请查看日志: $RUNTIME_DIR/alembic.log"
+    echo "  ✗ 数据库迁移失败，请查看日志: $LOGS_DIR/alembic.log"
     exit 1
   fi
 else

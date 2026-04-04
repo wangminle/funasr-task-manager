@@ -3,8 +3,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-RUNTIME_DIR="$SCRIPT_DIR/../../.runtime"
-PID_FILE="$RUNTIME_DIR/pids.txt"
+LOGS_DIR="$SCRIPT_DIR/../../runtime/logs"
+PID_FILE="$LOGS_DIR/pids.txt"
 
 EXPECTED_PATTERNS=("uvicorn" "vite" "node")
 

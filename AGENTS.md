@@ -8,10 +8,10 @@
 
 ## 2. 测试记录按测试类型分目录存放
 
-测试记录存放在 `7-data/outputs/` 下，按测试形式分目录：
+测试记录存放在 `4-tests/batch-testing/outputs/` 下，按测试形式分目录：
 
 ```
-7-data/outputs/
+4-tests/batch-testing/outputs/
 ├── cli/        # CLI 命令行测试记录
 ├── e2e/        # 端到端测试记录
 └── benchmark/  # 性能基准测试记录

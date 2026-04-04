@@ -16,8 +16,10 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parents[3]
 BACKEND_DIR = BASE_DIR / "3-dev" / "src" / "backend"
-BACKUP_DIR = BACKEND_DIR / "data" / "backups"
-DB_PATH = BACKEND_DIR / "data" / "asr_tasks.db"
+RUNTIME_DIR = BASE_DIR / "runtime"
+STORAGE_DIR = RUNTIME_DIR / "storage"
+BACKUP_DIR = STORAGE_DIR / "backups"
+DB_PATH = STORAGE_DIR / "asr_tasks.db"
 TEST_DATA_SQL = """
 -- 本地测试ASR服务器（默认本地3节点配置）
 INSERT INTO server_instances (server_id, host, port, protocol_version, max_concurrency, status, name, rtf_baseline) VALUES
@@ -469,15 +471,15 @@ def main(argv: list[str] | None = None):
     backend_dir = _path(BACKEND_DIR)
     backup_dir = _path(BACKUP_DIR)
     db_path = _path(DB_PATH)
-    data_dir = backend_dir / "data"
-    results_dir = data_dir / "results"
-    uploads_dir = data_dir / "uploads"
-    temp_dir = data_dir / "temp"
+    storage_dir = db_path.parent
+    results_dir = storage_dir / "results"
+    uploads_dir = storage_dir / "uploads"
+    temp_dir = storage_dir / "temp"
 
     if not (backend_dir / "alembic.ini").exists():
         output_result(False, "backend目录结构不正确，找不到 alembic.ini")
 
-    data_dir.mkdir(parents=True, exist_ok=True)
+    storage_dir.mkdir(parents=True, exist_ok=True)
 
     if args.dry_run:
         output_result(

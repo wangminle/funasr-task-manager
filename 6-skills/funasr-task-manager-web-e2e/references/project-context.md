@@ -116,7 +116,7 @@ CLI `transcribe` 命令传入多个文件时自动启用批量模式，一次性
 
 ## 测试素材策略
 
-测试素材位于 `7-data/assets/1-测试audioFiles/`。
+测试素材位于 `4-tests/batch-testing/assets/1-测试audioFiles/`。
 这些文件大小与格式不同，适合做分层回归，而不是每次都全量跑。
 
 ### 推荐批次
@@ -186,7 +186,7 @@ CLI `transcribe` 命令传入多个文件时自动启用批量模式，一次性
 维护流程建议：
 
 1. 先运行 smoke 或 remote-standard，确认链路稳定。
-2. 从 `7-data/outputs/e2e/<timestamp>/results/` 抽取当前可接受文本。
+2. 从 `4-tests/batch-testing/outputs/e2e/<timestamp>/results/` 抽取当前可接受文本。
 3. 为稳定样本补充 `keywords_all` 或 `keywords_any`，优先写短语，不写整段全文。
 4. 语音模型、协议版本或采样链路调整后，重新回归并更新关键词。
 
@@ -263,11 +263,11 @@ PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright npx playwright
 3. 安装 Playwright 浏览器：`npx playwright install chromium`
 4. 提供 FunASR 节点环境变量，或在流水线预先调用 `/api/v1/servers` 注册节点
 5. 执行 `npm run test:e2e:smoke`
-6. 归档 `7-data/outputs/e2e/` 为流水线工件
+6. 归档 `4-tests/batch-testing/outputs/e2e/` 为流水线工件
 
 ## 工件归档
 
-每次运行都应写入 `7-data/outputs/e2e/<timestamp>/`，至少包含：
+每次运行都应写入 `4-tests/batch-testing/outputs/e2e/<timestamp>/`，至少包含：
 
 - `fixture-batch.json`
 - `run-summary.json` 或 `run-summary.md`
@@ -276,7 +276,7 @@ PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright npx playwright
 
 以下目录属于本地测试工件，应保持 gitignore：
 
-- `7-data/outputs/e2e/`
+- `4-tests/batch-testing/outputs/e2e/`
 - `3-dev/src/frontend/test-results/`
 - `3-dev/src/frontend/playwright-report/`
 - `3-dev/src/frontend/blob-report/`

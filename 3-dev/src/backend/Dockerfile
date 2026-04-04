@@ -11,7 +11,9 @@ RUN pip install --no-cache-dir -e ".[postgres]"
 
 COPY . .
 
-RUN mkdir -p /app/data/uploads /app/data/results /app/data/temp
+RUN mkdir -p /app/runtime/storage/uploads /app/runtime/storage/results /app/runtime/storage/temp /app/runtime/logs
+
+ENV ASR_PROJECT_ROOT=/app
 
 EXPOSE 8000
 

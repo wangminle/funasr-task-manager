@@ -6,12 +6,15 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - ASR_DATABASE_URL=${ASR_DATABASE_URL:-sqlite+aiosqlite:///./data/asr_tasks.db}
+      - ASR_PROJECT_ROOT=/app
+      - ASR_STORAGE_ROOT=/app/runtime/storage
+      - ASR_LOG_DIR=/app/runtime/logs
+      - ASR_DATABASE_URL=${ASR_DATABASE_URL:-sqlite+aiosqlite:////app/runtime/storage/asr_tasks.db}
       - ASR_REDIS_URL=redis://redis:6379/0
       - ASR_LOG_FORMAT=json
       - ASR_LOG_LEVEL=INFO
     volumes:
-      - app-data:/app/data
+      - app-data:/app/runtime
     depends_on:
       - redis
     restart: unless-stopped

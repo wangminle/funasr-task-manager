@@ -190,6 +190,7 @@ cython_debug/
 
 # ASR runtime data (local only, never commit)
 /.runtime
+/runtime/
 /3-dev/src/backend/data/
 /3-dev/src/backend/data/asr_tasks.db
 /3-dev/src/backend/data/results/
@@ -197,10 +198,13 @@ cython_debug/
 /data/results/
 /data/uploads/
 /7-data/
+/4-tests/batch-testing/
 .DS_Store
 
 # test runtime data
 /4-tests/scripts/data/
+/4-tests/scripts/.pytest-state/
+/4-tests/scripts/pytest-cache-files-*/
 
 # Playwright
 /test-results/

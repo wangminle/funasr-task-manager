@@ -34,6 +34,7 @@ class BackgroundTaskRunner:
         self.preprocessing_delay_seconds = preprocessing_delay_seconds
         self._loop_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
+        self._dispatch_event = asyncio.Event()
         self._inflight: set[str] = set()
         self._inflight_lock = asyncio.Lock()
 
@@ -41,6 +42,7 @@ class BackgroundTaskRunner:
         if self._loop_task and not self._loop_task.done():
             return
         self._stop_event.clear()
+        self._dispatch_event.set()
         self._loop_task = asyncio.create_task(self._run_loop(), name="asr-background-task-runner")
         logger.info("task_runner_started")
 
@@ -48,6 +50,7 @@ class BackgroundTaskRunner:
         if self._loop_task is None:
             return
         self._stop_event.set()
+        self._dispatch_event.set()
         await self._loop_task
         self._loop_task = None
         logger.info("task_runner_stopped")
@@ -69,7 +72,7 @@ class BackgroundTaskRunner:
                     callback_tick = 0
             except Exception as e:
                 logger.exception("task_runner_loop_error", error=str(e))
-            await asyncio.sleep(self.poll_interval)
+            await self._wait_for_dispatch_signal()
 
     async def _retry_failed_tasks(self) -> None:
         """Reset FAILED tasks back to PENDING for automatic retry (up to max_retry_count)."""
@@ -96,6 +99,7 @@ class BackgroundTaskRunner:
                     await repo.update_task_status(task, TaskStatus.PENDING)
                     logger.info("task_retry_scheduled", task_id=task.task_id, retry=task.retry_count)
             await session.commit()
+        self._request_dispatch()
 
     async def _promote_preprocessing_tasks(self) -> None:
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.preprocessing_delay_seconds)
@@ -114,6 +118,7 @@ class BackgroundTaskRunner:
                 if task.can_transition_to(TaskStatus.QUEUED):
                     await repo.update_task_status(task, TaskStatus.QUEUED)
             await session.commit()
+        self._request_dispatch()
 
     async def _dispatch_queued_tasks(self) -> None:
         async with async_session_factory() as session:
@@ -187,7 +192,8 @@ class BackgroundTaskRunner:
 
             batch_input = [d[1] for d in dispatchable]
             decisions = global_scheduler.schedule_batch(batch_input, available_profiles)
-            decision_map = {d.task_id: d for d in decisions}
+            immediate_decisions = global_scheduler.select_dispatchable_now(decisions)
+            decision_map = {d.task_id: d for d in immediate_decisions}
 
             to_start: list[str] = []
             for task, _ in dispatchable:
@@ -358,6 +364,7 @@ class BackgroundTaskRunner:
             await session.commit()
             logger.info("task_transcription_succeeded", task_id=task_id)
             rate_limiter.record_task_completed(user_id)
+        self._request_dispatch()
         if pending_delivery:
             await self._try_deliver_outbox(*pending_delivery)
 
@@ -379,6 +386,7 @@ class BackgroundTaskRunner:
             await session.commit()
             logger.warning("task_transcription_failed", task_id=task_id, error=message[:300])
             rate_limiter.record_task_completed(user_id)
+        self._request_dispatch()
         if pending_delivery:
             await self._try_deliver_outbox(*pending_delivery)
 
@@ -566,6 +574,22 @@ class BackgroundTaskRunner:
                     logger.info("rtf_baseline_persisted", server_id=server_id, rtf=f"{new_rtf_p90:.4f}")
         except Exception as e:
             logger.warning("rtf_baseline_persist_failed", server_id=server_id, error=str(e))
+
+    def _request_dispatch(self) -> None:
+        self._dispatch_event.set()
+
+    async def _wait_for_dispatch_signal(self) -> None:
+        if self._stop_event.is_set():
+            return
+        if self._dispatch_event.is_set():
+            self._dispatch_event.clear()
+            return
+        try:
+            await asyncio.wait_for(self._dispatch_event.wait(), timeout=self.poll_interval)
+        except asyncio.TimeoutError:
+            return
+        finally:
+            self._dispatch_event.clear()
 
     async def _get_inflight_snapshot(self) -> set[str]:
         async with self._inflight_lock:

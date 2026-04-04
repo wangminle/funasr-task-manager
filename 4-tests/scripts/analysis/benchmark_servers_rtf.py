@@ -38,7 +38,7 @@ SERVERS = [
 ]
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-AUDIO_DIR = PROJECT_ROOT / "7-data" / "assets" / "1-测试audioFiles"
+AUDIO_DIR = PROJECT_ROOT / "4-tests" / "batch-testing" / "assets" / "1-测试audioFiles"
 
 TEST_FILES = [
     "tv-report-1.wav",
@@ -269,7 +269,7 @@ async def run_benchmark():
         print()
 
     # 保存结果到 JSON
-    output_dir = PROJECT_ROOT / "7-data" / "outputs" / "benchmark"
+    output_dir = PROJECT_ROOT / "4-tests" / "batch-testing" / "outputs" / "benchmark"
     output_dir.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d-%H%M%S")
     output_file = output_dir / f"server-rtf-comparison-{ts}.json"

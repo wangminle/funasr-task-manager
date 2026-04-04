@@ -4,8 +4,8 @@
 $ErrorActionPreference = "SilentlyContinue"
 
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$RuntimeDir = Join-Path $ScriptDir "..\..\.runtime"
-$PidFile    = Join-Path $RuntimeDir "pids.txt"
+$LogsDir    = Join-Path $ScriptDir "..\..\runtime\logs"
+$PidFile    = Join-Path $LogsDir "pids.txt"
 
 $ExpectedNames = @("python", "uvicorn", "node", "vite", "cmd")
 

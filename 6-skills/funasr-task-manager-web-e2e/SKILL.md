@@ -21,7 +21,7 @@ description: Build, run, or maintain browser-based end-to-end tests for the funa
 2. 优先使用前端 `npm run test:e2e:prepare:*` 命令生成素材批次，因为它们已处理了跨平台的 Python 命令差异。
 3. 尽量复用已有的前后端命令，不要发明第二套应用布局。
 4. 浏览器自动化优先使用 Playwright。
-5. 运行工件保存在 `7-data/outputs/e2e/<timestamp>/`。
+5. 运行工件保存在 `4-tests/batch-testing/outputs/e2e/<timestamp>/`。
 6. 正式的 Playwright 工程保持在 `3-dev/src/frontend/` 下；不要在仓库根目录额外添加 `playwright.config.*`、`tests/example.spec.*` 或 `e2e/example.spec.*` 脚手架。
 
 ## 工作流程
@@ -65,7 +65,7 @@ npm run test:e2e:prepare:full
 python3 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile smoke
 python3 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile remote-standard --write
 python3 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile standard --write
-python3 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile full --output 7-data/outputs/e2e/full-batch.json
+python3 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile full --output 4-tests/batch-testing/outputs/e2e/full-batch.json
 python3 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --list
 ```
 
@@ -73,7 +73,7 @@ python3 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --li
 python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile smoke
 python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile remote-standard --write
 python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile standard --write
-python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile full --output 7-data/outputs/e2e/full-batch.json
+python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile full --output 4-tests/batch-testing/outputs/e2e/full-batch.json
 python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --list
 ```
 
@@ -90,7 +90,7 @@ python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --lis
 1. 后端健康：`GET http://localhost:8000/health` → `status: "ok"`。
 2. 前端可达：`GET http://localhost:5173` → HTTP 200。
 3. 至少注册了一台 FunASR 服务器：`GET /api/v1/servers` → `len(servers) > 0`。
-4. 测试素材存在：`7-data/assets/1-测试audioFiles/` 包含音视频文件。
+4. 测试素材存在：`4-tests/batch-testing/assets/1-测试audioFiles/` 包含音视频文件。
 
 任何检查失败时，停止并报告缺失的前置条件，而不是继续运行到令人困惑的浏览器错误。
 
@@ -99,8 +99,8 @@ python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --lis
 - 优先使用项目已有的本地开发流程：后端 `http://localhost:8000`，前端 `http://localhost:5173`。
 - 复用仓库中现有的命令，不要发明额外的包装器。
 - 如果浏览器自动化依赖缺失，优先在 `3-dev/src/frontend/` 中添加，保持浏览器测试代码靠近前端工具链。
-- 浏览器测试输出、截图、trace、结果快照和运行摘要保存在 `7-data/outputs/e2e/`。
-- `7-data/outputs/e2e/`、`3-dev/src/frontend/test-results/`、`3-dev/src/frontend/playwright-report/` 视为本地工件，不入库。
+- 浏览器测试输出、截图、trace、结果快照和运行摘要保存在 `4-tests/batch-testing/outputs/e2e/`。
+- `4-tests/batch-testing/outputs/e2e/`、`3-dev/src/frontend/test-results/`、`3-dev/src/frontend/playwright-report/` 视为本地工件，不入库。
 - 如果尚未注册 FunASR 服务器，通过 `ASR_E2E_SERVER_HOST` 和 `ASR_E2E_SERVER_PORT` 指定；否则测试会复用第一个已注册的服务器。
 
 ### 5. 模拟真实用户路径

@@ -5,7 +5,7 @@
       "expected_language": "zh-CN",
       "keywords_all": [],
       "keywords_any": [],
-      "notes": "短音频测试样本。首次回归后从 7-data/outputs/e2e/ 抽取可接受文本，补充关键词。"
+      "notes": "短音频测试样本。首次回归后从 4-tests/batch-testing/outputs/e2e/ 抽取可接受文本，补充关键词。"
     },
     "tv-report-1.wav": {
       "expected_language": "zh-CN",

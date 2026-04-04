@@ -43,7 +43,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 > **工作目录说明**
-> 后端默认把数据库和上传/结果/临时文件写到相对路径 `./data/`。因此开发环境请始终在 `3-dev/src/backend` 目录下启动后端，或使用 `3-dev/src/start.sh` / `3-dev/src/start.ps1`。按推荐方式启动时，运行时数据目录为 `3-dev/src/backend/data/`。如果从仓库根目录直接启动 `uvicorn app.main:app`，会在仓库根目录额外生成顶层 `data/` 目录。
+> 后端默认把数据库、上传结果和临时文件写到仓库根目录的 `runtime/storage/`，日志与 PID 文件写到 `runtime/logs/`。这些默认路径已经与当前工作目录解耦，不会再因为从不同目录启动而把持久化数据写进 `3-dev/src/` 或仓库根目录的历史 `data/` 目录。
 
 也可使用一键启停脚本（推荐开发环境）：
 
@@ -541,7 +541,7 @@ docker compose exec web alembic upgrade head
 ```bash
 cd 3-dev/src/backend
 
-# 先做只读评估，确认当前 backend/data 状态
+# 先做只读评估，确认当前 runtime/storage 状态
 python ../../../6-skills/reset-asr-db-before-test/scripts/reset_db.py --dry-run
 
 # 需要干净测试环境时执行重置（会自动检测数据库是否被后端占用）
@@ -554,7 +554,7 @@ python ../../../6-skills/reset-asr-db-before-test/scripts/reset_db.py --reset-se
 python ../../../6-skills/reset-asr-db-before-test/scripts/reset_db.py --no-backup --force
 ```
 
-详细参数和行为说明见 [6-skills/reset-asr-db-before-test/SKILL.md](6-skills/reset-asr-db-before-test/SKILL.md)。该技能默认针对 `3-dev/src/backend/data/` 工作，不会清理仓库根目录的历史 `data/` 目录。
+详细参数和行为说明见 [6-skills/reset-asr-db-before-test/SKILL.md](6-skills/reset-asr-db-before-test/SKILL.md)。该技能默认针对 `runtime/storage/` 工作，不会扫描旧的 `3-dev/src/backend/data/` 或仓库根目录 `data/` 目录。
 
 ### 后端测试
 
@@ -622,17 +622,21 @@ funasr-task-manager/
 │   │   │   └── main.py                # 入口 + 全局选项
 │   │   └── alembic/                   # 数据库迁移
 │   └── frontend/                      # Vue 3 前端 + Playwright E2E
-├── 4-tests/scripts/
-│   ├── unit/                          # 单元测试
-│   ├── integration/                   # 集成测试
-│   ├── e2e/                           # 端到端测试（API/CLI 视角）
-│   └── load/                          # 压力测试
+├── 4-tests/
+│   ├── batch-testing/                 # 测试素材与批量测试工件（gitignore）
+│   │   ├── assets/                    # 音视频测试素材
+│   │   └── outputs/                   # cli / e2e / benchmark 输出
+│   └── scripts/
+│       ├── unit/                      # 单元测试
+│       ├── integration/               # 集成测试
+│       ├── e2e/                       # 端到端测试（API/CLI 视角）
+│       └── load/                      # 压力测试
 ├── 6-skills/                          # Agent 可复用的自动化技能
 │   ├── reset-asr-db-before-test/      # 测试前数据库重置与 dry-run 评估
 │   └── funasr-task-manager-web-e2e/   # 浏览器 E2E 测试流程编排与素材管理
-├── 7-data/                            # 本地数据（gitignore，不入库）
-│   ├── assets/                        # 测试素材（音视频文件）
-│   └── outputs/                       # 测试输出工件
+├── runtime/                           # 运行时目录（gitignore）
+│   ├── storage/                       # 数据库 / 上传 / 结果 / 临时文件
+│   └── logs/                          # 后端/前端日志、PID 与迁移日志
 └── README.md
 ```
 

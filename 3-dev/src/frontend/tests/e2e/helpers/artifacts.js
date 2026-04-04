@@ -15,7 +15,7 @@ export function createRunArtifacts(profile) {
     pad(now.getDate()),
   ].join('') + '-' + [pad(now.getHours()), pad(now.getMinutes()), pad(now.getSeconds())].join('')
 
-  const runDir = path.join(getWorkspaceRoot(), '7-data', 'outputs', 'e2e', timestamp)
+  const runDir = path.join(getWorkspaceRoot(), '4-tests', 'batch-testing', 'outputs', 'e2e', timestamp)
   const screenshotsDir = path.join(runDir, 'screenshots')
   const resultsDir = path.join(runDir, 'results')
 

@@ -11,7 +11,7 @@ export function getWorkspaceRoot() {
 }
 
 export function getFixtureBatchPath(profile = 'smoke') {
-  return path.join(getWorkspaceRoot(), '7-data', 'outputs', 'e2e', 'fixture-batches', `${profile}.json`)
+  return path.join(getWorkspaceRoot(), '4-tests', 'batch-testing', 'outputs', 'e2e', 'fixture-batches', `${profile}.json`)
 }
 
 export function loadFixtureBatch(profile = 'smoke') {

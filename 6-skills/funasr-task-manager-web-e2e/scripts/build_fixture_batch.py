@@ -65,11 +65,11 @@ def resolve_workspace_root() -> Path:
 
 
 def default_assets_root(workspace_root: Path) -> Path:
-    return workspace_root / "7-data" / "assets" / "1-测试audioFiles"
+    return workspace_root / "4-tests" / "batch-testing" / "assets" / "1-测试audioFiles"
 
 
 def default_output_path(workspace_root: Path, profile: str) -> Path:
-    return workspace_root / "7-data" / "outputs" / "e2e" / "fixture-batches" / f"{profile}.json"
+    return workspace_root / "4-tests" / "batch-testing" / "outputs" / "e2e" / "fixture-batches" / f"{profile}.json"
 
 
 def discover_files(assets_root: Path, workspace_root: Path) -> list[FixtureFile]:
@@ -239,9 +239,9 @@ def parse_args() -> argparse.Namespace:
         description="为 funasr-task-manager 生成可复用的浏览器 E2E 测试素材批次。"
     )
     parser.add_argument("--profile", choices=["smoke", "remote-standard", "standard", "full"], default="smoke")
-    parser.add_argument("--assets-root", type=Path, help="测试素材目录，默认使用 7-data/assets/1-测试audioFiles")
+    parser.add_argument("--assets-root", type=Path, help="测试素材目录，默认使用 4-tests/batch-testing/assets/1-测试audioFiles")
     parser.add_argument("--output", type=Path, help="将结果写入指定 JSON 文件")
-    parser.add_argument("--write", action="store_true", help="写入默认输出路径 7-data/outputs/e2e/fixture-batches/<profile>.json")
+    parser.add_argument("--write", action="store_true", help="写入默认输出路径 4-tests/batch-testing/outputs/e2e/fixture-batches/<profile>.json")
     parser.add_argument("--list", action="store_true", dest="list_assets", help="仅列出素材目录中所有可用的音视频文件，不执行批次选择")
     return parser.parse_args()
 

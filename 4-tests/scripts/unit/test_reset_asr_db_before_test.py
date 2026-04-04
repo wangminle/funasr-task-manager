@@ -98,9 +98,10 @@ def _load_script_module():
 
 def _prepare_backend(tmp_path: Path, create_db: bool = False, with_server: bool = False) -> tuple[Path, Path]:
     backend_dir = tmp_path / "backend"
-    data_dir = backend_dir / "data"
+    backend_dir.mkdir(parents=True, exist_ok=True)
+    data_dir = tmp_path / "runtime" / "storage"
     data_dir.mkdir(parents=True)
-    (backend_dir / "alembic.ini").write_text("sqlalchemy.url = sqlite+aiosqlite:///./data/asr_tasks.db\n", encoding="utf-8")
+    (backend_dir / "alembic.ini").write_text("sqlalchemy.url = sqlite+aiosqlite:////app/runtime/storage/asr_tasks.db\n", encoding="utf-8")
 
     db_path = data_dir / "asr_tasks.db"
     if create_db:
@@ -140,9 +141,10 @@ def _prepare_backend(tmp_path: Path, create_db: bool = False, with_server: bool 
 
 
 def _seed_operational_data(backend_dir: Path, db_path: Path):
-    results_dir = backend_dir / "data" / "results"
-    temp_dir = backend_dir / "data" / "temp"
-    uploads_dir = backend_dir / "data" / "uploads"
+    storage_dir = db_path.parent
+    results_dir = storage_dir / "results"
+    temp_dir = storage_dir / "temp"
+    uploads_dir = storage_dir / "uploads"
     results_dir.mkdir(parents=True, exist_ok=True)
     temp_dir.mkdir(parents=True, exist_ok=True)
     uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -160,7 +162,7 @@ def _seed_operational_data(backend_dir: Path, db_path: Path):
         INSERT INTO files (file_id, user_id, original_name, size_bytes, storage_path, status, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        ("F1", "U1", "demo.wav", 12345, "data/uploads/input.wav", "UPLOADED", "2026-04-01T08:00:00Z", "2026-04-01T08:00:00Z"),
+        ("F1", "U1", "demo.wav", 12345, "runtime/storage/uploads/input.wav", "UPLOADED", "2026-04-01T08:00:00Z", "2026-04-01T08:00:00Z"),
     )
     conn.executemany(
         """
@@ -170,7 +172,7 @@ def _seed_operational_data(backend_dir: Path, db_path: Path):
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            ("T1", "U1", "F1", "G1", "SUCCEEDED", 1.0, "existing-01", "zh", "data/results/task-1.txt", 0, "2026-04-01T08:10:00Z", "2026-04-01T08:12:00Z"),
+            ("T1", "U1", "F1", "G1", "SUCCEEDED", 1.0, "existing-01", "zh", "runtime/storage/results/task-1.txt", 0, "2026-04-01T08:10:00Z", "2026-04-01T08:12:00Z"),
             ("T2", "U1", "F1", "G1", "QUEUED", 0.2, "existing-01", "zh", None, 0, "2026-04-01T08:20:00Z", None),
         ],
     )
@@ -207,7 +209,7 @@ def test_recreates_missing_database_without_existing_db(tmp_path, monkeypatch):
     backend_dir, db_path = _prepare_backend(tmp_path, create_db=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(module, "BACKEND_DIR", str(backend_dir))
-    monkeypatch.setattr(module, "BACKUP_DIR", str(backend_dir / "data" / "backups"))
+    monkeypatch.setattr(module, "BACKUP_DIR", str(tmp_path / "runtime" / "storage" / "backups"))
     monkeypatch.setattr(module, "DB_PATH", str(db_path))
     monkeypatch.setattr(module.subprocess, "run", _fake_alembic_upgrade(db_path))
 
@@ -228,7 +230,7 @@ def test_preserves_existing_servers_when_not_resetting(tmp_path, monkeypatch):
     backend_dir, db_path = _prepare_backend(tmp_path, create_db=True, with_server=True)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(module, "BACKEND_DIR", str(backend_dir))
-    monkeypatch.setattr(module, "BACKUP_DIR", str(backend_dir / "data" / "backups"))
+    monkeypatch.setattr(module, "BACKUP_DIR", str(tmp_path / "runtime" / "storage" / "backups"))
     monkeypatch.setattr(module, "DB_PATH", str(db_path))
     monkeypatch.setattr(module.subprocess, "run", _fake_alembic_upgrade(db_path))
 
@@ -251,7 +253,7 @@ def test_seeds_default_servers_when_reset_servers_enabled(tmp_path, monkeypatch)
     backend_dir, db_path = _prepare_backend(tmp_path, create_db=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(module, "BACKEND_DIR", str(backend_dir))
-    monkeypatch.setattr(module, "BACKUP_DIR", str(backend_dir / "data" / "backups"))
+    monkeypatch.setattr(module, "BACKUP_DIR", str(tmp_path / "runtime" / "storage" / "backups"))
     monkeypatch.setattr(module, "DB_PATH", str(db_path))
     monkeypatch.setattr(module.subprocess, "run", _fake_alembic_upgrade(db_path))
 

@@ -2,7 +2,7 @@
 
 Supports both SQLite (aiosqlite) and PostgreSQL (asyncpg).
 Set ASR_DATABASE_URL to switch between them:
-  - sqlite+aiosqlite:///./data/asr_tasks.db    (default, single instance)
+    - sqlite+aiosqlite:////.../runtime/storage/asr_tasks.db    (default, single instance)
   - postgresql+asyncpg://user:pw@host:5432/db   (high-concurrency, multi-instance)
 
 Install PostgreSQL support: pip install "asr-task-manager[postgres]"

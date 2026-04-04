@@ -11,16 +11,17 @@ $ErrorActionPreference = "Stop"
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $BackendDir  = Join-Path $ScriptDir "backend"
 $FrontendDir = Join-Path $ScriptDir "frontend"
-$RuntimeDir  = Join-Path $ScriptDir "..\..\.runtime"
+$RuntimeRoot = Join-Path $ScriptDir "..\..\runtime"
+$LogsDir     = Join-Path $RuntimeRoot "logs"
 
-if (-not (Test-Path $RuntimeDir)) { New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null }
-$RuntimeDir = (Resolve-Path $RuntimeDir).Path
+if (-not (Test-Path $LogsDir)) { New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null }
+$LogsDir = (Resolve-Path $LogsDir).Path
 
-$BackendOut  = Join-Path $RuntimeDir "backend.out.log"
-$BackendErr  = Join-Path $RuntimeDir "backend.err.log"
-$FrontendOut = Join-Path $RuntimeDir "frontend.out.log"
-$FrontendErr = Join-Path $RuntimeDir "frontend.err.log"
-$PidFile     = Join-Path $RuntimeDir "pids.txt"
+$BackendOut  = Join-Path $LogsDir "backend.out.log"
+$BackendErr  = Join-Path $LogsDir "backend.err.log"
+$FrontendOut = Join-Path $LogsDir "frontend.out.log"
+$FrontendErr = Join-Path $LogsDir "frontend.err.log"
+$PidFile     = Join-Path $LogsDir "pids.txt"
 
 if ($env:ASR_NO_RELOAD -eq "1") { $NoReload = $true }
 if ($env:ASR_BIND_HOST)         { $BindHost = $env:ASR_BIND_HOST }
@@ -93,6 +94,8 @@ if (-not $NoReload) { $uvicornArgs += " --reload" }
 
 $backendProc = Start-Process -FilePath python -ArgumentList $uvicornArgs `
     -WorkingDirectory $BackendDir `
+    -RedirectStandardOutput $BackendOut `
+    -RedirectStandardError $BackendErr `
     -WindowStyle Hidden -PassThru
 
 "backend=$($backendProc.Id)" | Set-Content $PidFile
@@ -105,6 +108,8 @@ if (-not $NoFrontend) {
     $frontendProc = Start-Process -FilePath cmd.exe `
         -ArgumentList "/c npx vite --host $BindHost --port 5173" `
         -WorkingDirectory $FrontendDir `
+        -RedirectStandardOutput $FrontendOut `
+        -RedirectStandardError $FrontendErr `
         -WindowStyle Hidden -PassThru
 
     "frontend=$($frontendProc.Id)" | Add-Content $PidFile

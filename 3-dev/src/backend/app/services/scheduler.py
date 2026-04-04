@@ -32,6 +32,7 @@ CALIBRATION_THRESHOLD = 0.3
 PENALTY_INCREASE_RATE = 0.2
 PENALTY_DECREASE_RATE = 0.1
 CONSECUTIVE_FAST_THRESHOLD = 10
+IMMEDIATE_START_TOLERANCE = 1e-9
 
 
 @dataclass
@@ -300,6 +301,16 @@ class TaskScheduler:
 
         self._log_batch_plan(decisions, server_map, task_estimates)
         return decisions
+
+    def select_dispatchable_now(
+        self,
+        decisions: list[ScheduleDecision],
+    ) -> list[ScheduleDecision]:
+        """Return only the first-wave tasks whose planned start time is immediate."""
+        return [
+            decision for decision in decisions
+            if decision.estimated_start <= IMMEDIATE_START_TOLERANCE
+        ]
 
     def _log_batch_plan(
         self,

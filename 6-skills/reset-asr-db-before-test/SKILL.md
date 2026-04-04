@@ -7,7 +7,7 @@ description: Use when preparing a clean backend database state for local debuggi
 
 在这个仓库里，需要在测试前把后端 SQLite 数据库恢复到干净状态时使用本技能。
 
-本技能显式针对 `3-dev/src/backend/data/` 工作，而不是仓库根目录的历史 `data/` 目录。后者通常是从错误工作目录启动后端时产生的遗留数据。
+本技能显式针对 `runtime/storage/` 工作，而不是历史上放在 `3-dev/src/backend/data/` 或仓库根目录 `data/` 的旧目录。
 
 这个技能封装的是一个可执行脚本，而不是已经注册好的聊天斜杠命令。实际脚本位于 `scripts/` 目录。手动执行时，直接运行下面的命令：
 
@@ -25,7 +25,7 @@ python3 6-skills/reset-asr-db-before-test/scripts/reset_db.py
 
 - 本地调试前，需要清空任务、结果和临时文件
 - 跑 pytest、CLI 回归、浏览器 E2E 前，需要可重复的数据库初始状态
-- 上一次测试中断，导致 `3-dev/src/backend/data/asr_tasks.db` 缺失或状态不可信
+- 上一次测试中断，导致 `runtime/storage/asr_tasks.db` 缺失或状态不可信
 - 上一次测试异常中断导致数据库损坏，需要重建
 - 需要保留已有 ASR 服务器节点配置，但重新生成任务数据库
 - 需要彻底重置服务器节点配置并重新插入默认测试节点
@@ -36,7 +36,7 @@ python3 6-skills/reset-asr-db-before-test/scripts/reset_db.py
 
 1. **检测数据库占用**：通过 `lsof`（Unix）和 SQLite 排他锁检测数据库是否被其他进程（如运行中的后端）占用。如果检测到占用，脚本会拒绝执行并报告占用进程的 PID
 2. 如果旧数据库存在且未损坏，导出已有服务器配置以便重建后恢复
-3. 如果旧数据库存在，则先备份到 `3-dev/src/backend/data/backups/`
+3. 如果旧数据库存在，则先备份到 `runtime/storage/backups/`
 4. 清空 `results/` 和 `temp/`
 5. 删除数据库及其附属文件（`-wal`、`-shm`、`-journal`）并重建
 6. 运行 Alembic 迁移到最新版本
@@ -52,7 +52,7 @@ python3 6-skills/reset-asr-db-before-test/scripts/reset_db.py
 
 ## Dry Run 评估
 
-如果只想评估当前 backend data 的状态，而不真的执行清理，使用：
+如果只想评估当前 runtime storage 的状态，而不真的执行清理，使用：
 
 ```bash
 python 6-skills/reset-asr-db-before-test/scripts/reset_db.py --dry-run
@@ -76,7 +76,7 @@ python 6-skills/reset-asr-db-before-test/scripts/reset_db.py --dry-run --clear-u
 
 注意：`--dry-run` 只读取和评估，不会触发备份、删库、迁移或目录清理。
 
-如果仓库根目录已经存在顶层 `data/` 目录，`--dry-run` 不会扫描它；需要先确认你要处理的是推荐运行目录 `3-dev/src/backend/data/` 还是历史遗留目录。
+如果仓库里还残留旧的 `3-dev/src/backend/data/` 或仓库根目录 `data/`，`--dry-run` 不会扫描它们；该脚本只处理推荐目录 `runtime/storage/`。
 
 ## 常用命令
 

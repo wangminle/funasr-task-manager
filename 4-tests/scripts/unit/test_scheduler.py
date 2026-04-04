@@ -264,6 +264,22 @@ class TestQuotaAllocation:
         assert slow_count <= 4, "Slow server has 4 free slots"
         assert len(decisions) == 5
 
+    def test_select_dispatchable_now_limits_to_current_free_slots(self):
+        """Only first-wave tasks should be started immediately."""
+        sched = TaskScheduler()
+        tasks = [{"task_id": f"t{i}", "audio_duration_sec": 300 + i * 10} for i in range(8)]
+        fast = _make_server("fast", concurrency=2, rtf=0.1)
+        medium = _make_server("medium", concurrency=1, rtf=0.2)
+        slow = _make_server("slow", concurrency=1, rtf=0.5)
+
+        decisions = sched.schedule_batch(tasks, [fast, medium, slow])
+        immediate = sched.select_dispatchable_now(decisions)
+
+        assert len(decisions) == 8
+        assert len(immediate) == 4
+        assert all(d.estimated_start == 0.0 for d in immediate)
+        assert all(d.task_id in {decision.task_id for decision in decisions} for d in immediate)
+
     def test_real_world_8_task_scenario(self):
         """Reproduce the quant-course 8-task scenario: 10096 must get >= 1 task."""
         sched = TaskScheduler()

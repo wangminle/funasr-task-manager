@@ -15,6 +15,15 @@ if str(backend_root) not in sys.path:
 from app.models.base import Base  # noqa: E402
 
 
+def pytest_configure(config):
+    state_dir = Path(config.rootpath) / ".pytest-state"
+    cache_dir = state_dir / "cache"
+    basetemp_dir = state_dir / "tmp"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    basetemp_dir.mkdir(parents=True, exist_ok=True)
+    config.option.basetemp = str(basetemp_dir)
+
+
 @pytest.fixture(scope="session")
 def anyio_backend():
     return "asyncio"

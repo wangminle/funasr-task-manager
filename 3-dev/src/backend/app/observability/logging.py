@@ -8,6 +8,8 @@ from typing import Literal
 
 import structlog
 
+from app.config import settings
+
 
 def setup_logging(level: str = "INFO", fmt: Literal["json", "console"] = "console") -> None:
     shared_processors: list[structlog.types.Processor] = [
@@ -76,19 +78,11 @@ def setup_logging(level: str = "INFO", fmt: Literal["json", "console"] = "consol
 
 
 def _default_log_file() -> str | None:
-    """Resolve default log path: <project>/.runtime/backend.err.log
-
-    Layout: <project>/3-dev/src/backend/app/observability/logging.py (6 levels)
-    """
+    """Resolve default log path under runtime/logs."""
     try:
-        here = Path(__file__).resolve()
-        project_root = here
-        for _ in range(6):
-            project_root = project_root.parent
-        runtime_dir = project_root / ".runtime"
-        if project_root.exists() and (project_root / "README.md").exists():
-            runtime_dir.mkdir(parents=True, exist_ok=True)
-            return str(runtime_dir / "backend.err.log")
+        logs_dir = Path(settings.logs_dir)
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        return str(logs_dir / "backend.app.log")
     except Exception:
         pass
     return None
