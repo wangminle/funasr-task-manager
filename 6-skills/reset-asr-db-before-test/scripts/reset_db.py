@@ -27,6 +27,8 @@ INSERT INTO server_instances (server_id, host, port, protocol_version, max_concu
 ('asr-local-02', '127.0.0.1', 10096, 'v2_new', 4, 'ONLINE', '本地测试节点2', 0.35),
 ('asr-local-03', '127.0.0.1', 10097, 'v2_new', 4, 'ONLINE', '本地测试节点3', 0.42);
 """
+DEFAULT_TEST_SERVER_COUNT = 3
+POST_RESET_EMPTY_TABLES = ("files", "tasks", "task_events", "callback_outbox")
 
 
 def output_result(success: bool, message: str, data: dict | None = None):
@@ -235,6 +237,15 @@ def get_table_columns(db_path: str | Path, table_name: str) -> list[str]:
     return []
 
 
+def get_table_row_count(db_path: str | Path, table_name: str) -> int:
+    conn = sqlite3.connect(_path(db_path))
+    cursor = conn.cursor()
+    cursor.execute(f'SELECT COUNT(*) FROM "{table_name}"')
+    count = int(cursor.fetchone()[0])
+    conn.close()
+    return count
+
+
 def export_servers(db_path: str | Path) -> list[dict]:
     """导出已有服务器配置。"""
     if not table_exists(db_path, "server_instances"):
@@ -314,6 +325,85 @@ def reset_directory(path: str | Path):
     if directory.exists():
         shutil.rmtree(directory)
     directory.mkdir(parents=True, exist_ok=True)
+
+
+def inspect_directory_state(path: str | Path) -> dict:
+    directory = _path(path)
+    if not directory.exists():
+        return {
+            "path": str(directory),
+            "exists": False,
+            "file_count": 0,
+            "dir_count": 0,
+            "direct_children": 0,
+            "is_empty": True,
+        }
+
+    files = [file_path for file_path in directory.rglob("*") if file_path.is_file()]
+    dirs = [dir_path for dir_path in directory.rglob("*") if dir_path.is_dir()]
+    return {
+        "path": str(directory),
+        "exists": True,
+        "file_count": len(files),
+        "dir_count": len(dirs),
+        "direct_children": sum(1 for _ in directory.iterdir()),
+        "is_empty": not files and not dirs,
+    }
+
+
+def collect_post_reset_verification(
+    db_path: str | Path,
+    results_dir: str | Path,
+    temp_dir: str | Path,
+    uploads_dir: str | Path,
+    include_uploads: bool,
+    expected_server_count: int | None,
+) -> dict:
+    directories = {
+        "results": inspect_directory_state(results_dir),
+        "temp": inspect_directory_state(temp_dir),
+    }
+    if include_uploads:
+        directories["uploads"] = inspect_directory_state(uploads_dir)
+
+    table_counts: dict[str, int] = {}
+    non_empty_tables: dict[str, int] = {}
+    for table_name in POST_RESET_EMPTY_TABLES:
+        if table_exists(db_path, table_name):
+            count = get_table_row_count(db_path, table_name)
+            table_counts[table_name] = count
+            if count > 0:
+                non_empty_tables[table_name] = count
+
+    server_count = None
+    if table_exists(db_path, "server_instances"):
+        server_count = get_table_row_count(db_path, "server_instances")
+
+    problems: list[str] = []
+    for directory_name, state in directories.items():
+        if not state["is_empty"]:
+            problems.append(
+                f"{directory_name} 目录未清空: {state['file_count']} 个文件, {state['dir_count']} 个子目录"
+            )
+
+    for table_name, count in non_empty_tables.items():
+        problems.append(f"数据表 {table_name} 仍有 {count} 条记录")
+
+    if expected_server_count is not None and server_count != expected_server_count:
+        problems.append(
+            f"server_instances 数量异常: 期望 {expected_server_count}, 实际 {server_count}"
+        )
+
+    return {
+        "ok": not problems,
+        "directories": directories,
+        "table_counts": table_counts,
+        "server_instances": {
+            "expected": expected_server_count,
+            "actual": server_count,
+        },
+        "problems": problems,
+    }
 
 
 def run_alembic_upgrade(backend_dir: str | Path, db_path: str | Path) -> None:
@@ -569,6 +659,26 @@ def main(argv: list[str] | None = None):
             output_result(False, f"插入测试数据失败: {str(e)}")
     else:
         result_data["seed_data_inserted"] = False
+
+    expected_server_count: int | None = None
+    if args.reset_servers:
+        expected_server_count = 0 if args.skip_seed_servers else DEFAULT_TEST_SERVER_COUNT
+    else:
+        expected_server_count = len(servers_backup)
+
+    verification = collect_post_reset_verification(
+        db_path=db_path,
+        results_dir=results_dir,
+        temp_dir=temp_dir,
+        uploads_dir=uploads_dir,
+        include_uploads=args.clear_uploads,
+        expected_server_count=expected_server_count,
+    )
+    result_data["post_reset_verification"] = verification
+    if not verification["ok"]:
+        output_result(False, "重置后复核失败：仍有目录或数据未清空，请检查 details", result_data)
+
+    result_data["post_reset_verified"] = True
 
     output_result(
         True,

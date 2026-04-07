@@ -17,7 +17,7 @@ from app.observability.logging import get_logger
 from app.services.audio_preprocessor import ensure_wav, needs_conversion
 from app.services.callback import create_outbox_record, deliver_callback, get_retry_delay, MAX_CALLBACK_RETRIES
 from app.services.result_formatter import to_json, to_srt, to_txt
-from app.services.scheduler import ServerProfile, scheduler as global_scheduler
+from app.services.scheduler import ScheduleDecision, ServerProfile, SlotQueue, scheduler as global_scheduler
 from app.storage.database import async_session_factory
 from app.storage.file_manager import save_result
 from app.storage.repository import TaskRepository
@@ -37,6 +37,9 @@ class BackgroundTaskRunner:
         self._dispatch_event = asyncio.Event()
         self._inflight: set[str] = set()
         self._inflight_lock = asyncio.Lock()
+        self._slot_queues: dict[str, SlotQueue] = {}
+        self._planned_task_ids: set[str] = set()
+        self._planned_available_server_ids: frozenset[str] = frozenset()
 
     async def start(self) -> None:
         if self._loop_task and not self._loop_task.done():
@@ -131,6 +134,7 @@ class BackgroundTaskRunner:
             )
             servers = list((await session.execute(servers_stmt)).scalars().all())
             if not servers:
+                self._clear_slot_queues()
                 return
 
             inflight = await self._get_inflight_snapshot()
@@ -190,20 +194,92 @@ class BackgroundTaskRunner:
             if not dispatchable:
                 return
 
-            batch_input = [d[1] for d in dispatchable]
-            decisions = global_scheduler.schedule_batch(batch_input, available_profiles)
-            immediate_decisions = global_scheduler.select_dispatchable_now(decisions)
-            decision_map = {d.task_id: d for d in immediate_decisions}
+            # --- Slot-queue-aware planning and dispatch ---
+            current_available_ids = frozenset(sp.server_id for sp in available_profiles)
+            has_unplanned = not self._slot_queues or any(
+                t.task_id not in self._planned_task_ids for t, _ in dispatchable
+            )
+            servers_changed = current_available_ids != self._planned_available_server_ids
+
+            if has_unplanned or servers_changed:
+                self._clear_slot_queues()
+                batch_input = [d[1] for d in dispatchable]
+                decisions = global_scheduler.schedule_batch(batch_input, available_profiles)
+                if decisions:
+                    self._slot_queues = global_scheduler.build_slot_queues(decisions)
+                    self._planned_task_ids = {d.task_id for d in decisions}
+                    self._planned_available_server_ids = current_available_ids
+
+            if not self._slot_queues:
+                return
+
+            task_map = {t.task_id: t for t, _ in dispatchable}
+            free_slots = {sp.server_id: max(sp.max_concurrency - sp.running_tasks, 0)
+                          for sp in available_profiles}
+            profile_map = {sp.server_id: sp for sp in available_profiles}
 
             to_start: list[str] = []
-            for task, _ in dispatchable:
-                decision = decision_map.get(task.task_id)
-                if decision is None:
+
+            # Phase A: dispatch from pre-planned slot queues
+            for sq in list(self._slot_queues.values()):
+                if free_slots.get(sq.server_id, 0) <= 0:
                     continue
-                task.assigned_server_id = decision.server_id
-                task.eta_seconds = int(decision.estimated_duration)
-                await repo.update_task_status(task, TaskStatus.DISPATCHED)
-                to_start.append(task.task_id)
+                while sq.decisions and free_slots.get(sq.server_id, 0) > 0:
+                    decision = sq.decisions[0]
+                    task = task_map.get(decision.task_id)
+                    if task is None or task.task_id in inflight or not task.can_transition_to(TaskStatus.DISPATCHED):
+                        sq.decisions.pop(0)
+                        self._planned_task_ids.discard(decision.task_id)
+                        continue
+                    task.assigned_server_id = decision.server_id
+                    task.eta_seconds = int(decision.estimated_duration)
+                    await repo.update_task_status(task, TaskStatus.DISPATCHED)
+                    to_start.append(task.task_id)
+                    sq.decisions.pop(0)
+                    self._planned_task_ids.discard(decision.task_id)
+                    free_slots[decision.server_id] -= 1
+                    break
+
+            # Phase B: work stealing — idle slots steal from other queues' tails
+            for sp in available_profiles:
+                sid = sp.server_id
+                if free_slots.get(sid, 0) <= 0:
+                    continue
+                own_active_queues = sum(
+                    1 for sq in self._slot_queues.values()
+                    if sq.server_id == sid and sq.decisions
+                )
+                stealable_slots = free_slots.get(sid, 0) - own_active_queues
+                if stealable_slots <= 0:
+                    continue
+                stolen_count = 0
+                while stolen_count < stealable_slots:
+                    result = self._find_steal_candidate(sp, profile_map, task_map, inflight)
+                    if result is None:
+                        break
+                    decision, source_sq, est_stolen = result
+                    task = task_map.get(decision.task_id)
+                    if task is None or task.task_id in inflight or not task.can_transition_to(TaskStatus.DISPATCHED):
+                        source_sq.decisions.remove(decision)
+                        self._planned_task_ids.discard(decision.task_id)
+                        continue
+                    task.assigned_server_id = sid
+                    task.eta_seconds = int(est_stolen)
+                    await repo.update_task_status(task, TaskStatus.DISPATCHED)
+                    to_start.append(task.task_id)
+                    source_sq.decisions.remove(decision)
+                    self._planned_task_ids.discard(decision.task_id)
+                    free_slots[sid] -= 1
+                    stolen_count += 1
+                    logger.info("work_steal",
+                                task_id=decision.task_id,
+                                from_server=source_sq.server_id,
+                                to_server=sid,
+                                est_original=f"{decision.estimated_duration:.1f}s",
+                                est_stolen=f"{est_stolen:.1f}s")
+
+            # Cleanup exhausted queues
+            self._slot_queues = {k: sq for k, sq in self._slot_queues.items() if sq.decisions}
 
             if not to_start:
                 return
@@ -364,6 +440,7 @@ class BackgroundTaskRunner:
             await session.commit()
             logger.info("task_transcription_succeeded", task_id=task_id)
             rate_limiter.record_task_completed(user_id)
+        self._clear_slot_queues()
         self._request_dispatch()
         if pending_delivery:
             await self._try_deliver_outbox(*pending_delivery)
@@ -386,6 +463,7 @@ class BackgroundTaskRunner:
             await session.commit()
             logger.warning("task_transcription_failed", task_id=task_id, error=message[:300])
             rate_limiter.record_task_completed(user_id)
+        self._clear_slot_queues()
         self._request_dispatch()
         if pending_delivery:
             await self._try_deliver_outbox(*pending_delivery)
@@ -574,6 +652,49 @@ class BackgroundTaskRunner:
                     logger.info("rtf_baseline_persisted", server_id=server_id, rtf=f"{new_rtf_p90:.4f}")
         except Exception as e:
             logger.warning("rtf_baseline_persist_failed", server_id=server_id, error=str(e))
+
+    def _find_steal_candidate(
+        self,
+        idle_profile: ServerProfile,
+        profile_map: dict[str, ServerProfile],
+        task_map: dict[str, "Task"],
+        inflight: set[str],
+    ) -> tuple[ScheduleDecision, SlotQueue, float] | None:
+        """Find a task to steal for an idle server.
+
+        Scans other servers' queue tails (shortest tasks first, due to LPT ordering).
+        Returns (decision, source_queue, est_processing_time_on_idle) or None.
+        """
+        best: tuple[ScheduleDecision, SlotQueue, float] | None = None
+        best_improvement = 0.0
+
+        for sq in self._slot_queues.values():
+            if sq.server_id == idle_profile.server_id or not sq.decisions:
+                continue
+            for decision in reversed(sq.decisions):
+                if decision.task_id in inflight:
+                    continue
+                task = task_map.get(decision.task_id)
+                if task is None:
+                    continue
+                est_stolen = global_scheduler.estimate_processing_time(
+                    decision.audio_duration_sec, idle_profile)
+                decision_idx = sq.decisions.index(decision)
+                source_remaining = (
+                    sum(d.estimated_duration for d in sq.decisions[:decision_idx])
+                    + decision.estimated_duration
+                )
+                improvement = source_remaining - est_stolen
+                if improvement > 0 and improvement > best_improvement:
+                    best = (decision, sq, est_stolen)
+                    best_improvement = improvement
+                break
+        return best
+
+    def _clear_slot_queues(self) -> None:
+        self._slot_queues.clear()
+        self._planned_task_ids.clear()
+        self._planned_available_server_ids = frozenset()
 
     def _request_dispatch(self) -> None:
         self._dispatch_event.set()

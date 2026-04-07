@@ -43,6 +43,7 @@ python3 6-skills/reset-asr-db-before-test/scripts/reset_db.py
 7. 默认恢复已有服务器配置
 8. 默认不删除 `uploads/` 中的音视频文件
 9. 默认不插入新的测试服务器，除非显式指定 `--reset-servers`
+10. 执行结束后自动做重置复核：检查 `results/`、`temp/`、以及启用 `--clear-uploads` 时的 `uploads/` 是否真正清空，同时检查任务相关业务表是否归零、服务器数量是否符合预期；任一项失败都会直接返回 `failed`
 
 如果数据库文件原本不存在，脚本会直接创建一份新的空库并完成迁移，不会因为"找不到旧库"而失败。
 
@@ -133,7 +134,8 @@ python 6-skills/reset-asr-db-before-test/scripts/reset_db.py --dry-run
     "backup_path": "/abs/path/to/asr_tasks_test_backup_20260401_123045.db",
     "servers_preserved": 2,
     "database_recreated": true,
-    "seed_data_inserted": false
+    "seed_data_inserted": false,
+    "post_reset_verified": true
   }
 }
 ```
@@ -148,7 +150,26 @@ python 6-skills/reset-asr-db-before-test/scripts/reset_db.py --dry-run
     "servers_preservation_skipped": "数据库损坏，无法导出服务器配置，将创建空库",
     "backup_path": "/abs/path/to/asr_tasks_test_backup_20260401_123045.db",
     "database_recreated": true,
-    "seed_data_inserted": false
+    "seed_data_inserted": false,
+    "post_reset_verified": true
+  }
+}
+```
+
+**重置后复核失败：**
+
+```json
+{
+  "status": "failed",
+  "message": "重置后复核失败：仍有目录或数据未清空，请检查 details",
+  "data": {
+    "post_reset_verification": {
+      "ok": false,
+      "problems": [
+        "uploads 目录未清空: 3 个文件, 1 个子目录",
+        "数据表 tasks 仍有 2 条记录"
+      ]
+    }
   }
 }
 ```

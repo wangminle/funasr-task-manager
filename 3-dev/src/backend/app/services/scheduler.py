@@ -4,8 +4,9 @@ Scheduling algorithm:
 1. Estimate processing time per task: p(i,s) = duration(i) * rtf(s) + overhead
    where rtf(s) uses per-server RTF baseline (from benchmark/history) for
    capacity-aware assignment — faster servers handle bigger files.
-2. Allocate per-server task quotas proportional to speed (1/RTF), ensuring
-   every ONLINE server with free slots gets at least 1 task.
+2. Allocate per-server task quotas strictly proportional to speed (1/RTF).
+   Faster servers get proportionally more tasks; slow servers may receive 0
+   when their speed share rounds down. No minimum-per-server guarantee.
 3. Expand each server's FREE slots into virtual machines (respecting running_tasks)
 4. Sort tasks by estimated duration descending (LPT: Longest Processing Time First)
 5. Assign each task to the eligible slot with earliest expected finish time,
@@ -55,6 +56,15 @@ class ScheduleDecision:
     estimated_duration: float
     estimated_finish: float
     queue_position: int = 0
+    audio_duration_sec: float = 0.0
+
+
+@dataclass
+class SlotQueue:
+    """Ordered task queue for a single virtual slot on a server."""
+    server_id: str
+    slot_index: int
+    decisions: list[ScheduleDecision] = field(default_factory=list)
 
 
 @dataclass
@@ -146,12 +156,13 @@ class TaskScheduler:
         task_count: int,
         servers: list[ServerProfile],
     ) -> dict[str, int]:
-        """Allocate per-server task quotas proportional to speed (1/RTF).
+        """Allocate per-server task quotas strictly proportional to speed (1/RTF).
 
-        Every server with free slots gets at least 1 task (when tasks >= servers).
-        Faster servers get proportionally more tasks.
-        Quotas are capped by each server's free slot count, with remainders
-        redistributed to servers that still have capacity.
+        Quotas are purely proportional to server speed with no minimum guarantee.
+        Slow servers may receive 0 tasks when their speed share rounds down.
+        Rounding remainders go to the fastest server first.
+        Quotas are capped by each server's free slot count, with excess
+        redistributed to faster servers first.
         """
         if not servers or task_count <= 0:
             return {}
@@ -172,11 +183,10 @@ class TaskScheduler:
             speeds[s.server_id] = 1.0 / rtf
 
         total_speed = sum(speeds.values())
-        enforce_min = effective_count >= len(servers_with_slots)
         quotas: dict[str, int] = {}
         for sid, spd in speeds.items():
             raw = effective_count * spd / total_speed
-            quotas[sid] = max(1, round(raw)) if enforce_min else round(raw)
+            quotas[sid] = round(raw)
 
         allocated = sum(quotas.values())
         diff = effective_count - allocated
@@ -184,9 +194,8 @@ class TaskScheduler:
             fastest = max(speeds, key=speeds.get)
             quotas[fastest] += diff
         elif diff < 0:
-            min_q = 1 if enforce_min else 0
             for sid in sorted(speeds, key=speeds.get):
-                take = min(-diff, quotas[sid] - min_q)
+                take = min(-diff, quotas[sid])
                 quotas[sid] -= take
                 diff += take
                 if diff >= 0:
@@ -220,7 +229,7 @@ class TaskScheduler:
         """Schedule a batch of tasks using LPT + Earliest-Finish-Time with quota balancing.
 
         Two-phase approach:
-        1. Allocate per-server quotas proportional to speed, min 1 per server
+        1. Allocate per-server quotas strictly proportional to speed (no minimum guarantee)
         2. Assign tasks via LPT + EFT within quota constraints
 
         tasks: list of dicts with keys: task_id, audio_duration_sec
@@ -294,6 +303,7 @@ class TaskScheduler:
                 estimated_duration=est_duration,
                 estimated_finish=best_slot.earliest_free + est_duration,
                 queue_position=pos + 1,
+                audio_duration_sec=dur,
             )
             decisions.append(decision)
             best_slot.earliest_free += est_duration
@@ -311,6 +321,27 @@ class TaskScheduler:
             decision for decision in decisions
             if decision.estimated_start <= IMMEDIATE_START_TOLERANCE
         ]
+
+    def build_slot_queues(
+        self,
+        decisions: list[ScheduleDecision],
+    ) -> dict[str, SlotQueue]:
+        """Group decisions into per-slot ordered queues for incremental dispatch.
+
+        Each key is "server_id:slot_index". Decisions within a queue are
+        ordered by estimated_start (ascending), so popping from the head
+        gives the next task to dispatch when that slot becomes free.
+        """
+        queues: dict[str, SlotQueue] = {}
+        for d in sorted(decisions, key=lambda x: x.estimated_start):
+            key = f"{d.server_id}:{d.slot_index}"
+            if key not in queues:
+                queues[key] = SlotQueue(
+                    server_id=d.server_id,
+                    slot_index=d.slot_index,
+                )
+            queues[key].decisions.append(d)
+        return queues
 
     def _log_batch_plan(
         self,

@@ -197,10 +197,10 @@ class TestCapacityAwareScheduling:
 
 @pytest.mark.unit
 class TestQuotaAllocation:
-    """Tests for proportional quota allocation and minimum guarantee."""
+    """Tests for speed-proportional quota allocation (makespan-priority, no min guarantee)."""
 
-    def test_every_server_gets_at_least_one(self):
-        """Every ONLINE server with free slots must get >= 1 task."""
+    def test_proportional_allocation_heterogeneous_servers(self):
+        """With 8 tasks across 3 heterogeneous servers, fast server should dominate."""
         sched = TaskScheduler()
         tasks = [{"task_id": f"t{i}", "audio_duration_sec": 100 * (i + 1)} for i in range(8)]
         fast = _make_server("fast", concurrency=4, rtf=0.124)
@@ -211,9 +211,9 @@ class TestQuotaAllocation:
         server_counts = {}
         for d in decisions:
             server_counts[d.server_id] = server_counts.get(d.server_id, 0) + 1
-        assert server_counts.get("fast", 0) >= 1
-        assert server_counts.get("medium", 0) >= 1
-        assert server_counts.get("slow", 0) >= 1, "Slowest server must get at least 1 task"
+        assert server_counts.get("fast", 0) >= 4, "Fast server (5x faster) should get at least 4 of 8 tasks"
+        assert server_counts["fast"] > server_counts.get("medium", 0)
+        assert server_counts["fast"] > server_counts.get("slow", 0)
 
     def test_faster_server_gets_more_tasks(self):
         """Faster server should get proportionally more tasks."""
@@ -280,8 +280,8 @@ class TestQuotaAllocation:
         assert all(d.estimated_start == 0.0 for d in immediate)
         assert all(d.task_id in {decision.task_id for decision in decisions} for d in immediate)
 
-    def test_real_world_8_task_scenario(self):
-        """Reproduce the quant-course 8-task scenario: 10096 must get >= 1 task."""
+    def test_real_world_8_task_fast_server_dominates(self):
+        """Reproduce the quant-course 8-task scenario: fast server should dominate."""
         sched = TaskScheduler()
         tasks = [
             {"task_id": "ep4", "audio_duration_sec": 1548},
@@ -302,13 +302,8 @@ class TestQuotaAllocation:
         for d in decisions:
             server_counts[d.server_id] = server_counts.get(d.server_id, 0) + 1
 
-        assert server_counts.get("funasr-10095", 0) >= 1
-        assert server_counts.get("funasr-10097", 0) >= 1
-        assert server_counts.get("funasr-10096", 0) >= 1, (
-            "funasr-10096 must receive at least 1 task (was 0 before fix)"
-        )
-        assert server_counts["funasr-10095"] >= server_counts["funasr-10097"]
-        assert server_counts["funasr-10095"] >= server_counts["funasr-10096"]
+        assert server_counts["funasr-10095"] >= server_counts.get("funasr-10097", 0)
+        assert server_counts["funasr-10095"] >= server_counts.get("funasr-10096", 0)
 
         longest = next(d for d in decisions if d.task_id == "ep4")
         assert longest.server_id == "funasr-10095", "Longest task should still go to fastest server"
@@ -332,8 +327,8 @@ class TestQuotaAllocation:
             f"forced-spread ({forced_spread_makespan:.0f}s)"
         )
 
-    def test_allocate_quotas_directly(self):
-        """Test the quota calculation method directly."""
+    def test_allocate_quotas_proportional(self):
+        """Quotas should be strictly proportional to speed, fast server gets most."""
         sched = TaskScheduler()
         servers = [
             _make_server("fast", concurrency=4, rtf=0.124),
@@ -342,8 +337,53 @@ class TestQuotaAllocation:
         ]
         quotas = sched._allocate_quotas(8, servers)
         assert sum(quotas.values()) == 8
-        assert all(q >= 1 for q in quotas.values())
         assert quotas["fast"] > quotas["slow"]
+        assert quotas["fast"] >= quotas["medium"]
+
+    def test_backfill_small_batch_all_to_fast(self):
+        """Backfill scenario: 3 remaining tasks with extreme speed diff → all to fast."""
+        sched = TaskScheduler()
+        fast = _make_server("fast", concurrency=4, rtf=0.1)
+        medium = _make_server("medium", concurrency=4, rtf=0.8)
+        slow = _make_server("slow", concurrency=4, rtf=0.95)
+        quotas = sched._allocate_quotas(3, [fast, medium, slow])
+        assert sum(quotas.values()) == 3
+        assert quotas["fast"] >= 2, (
+            f"Fast server (10x faster) should get at least 2 of 3, got {quotas['fast']}"
+        )
+
+    def test_backfill_single_task_to_fastest(self):
+        """Backfill: 1 remaining task always goes to the server with best EFT."""
+        sched = TaskScheduler()
+        tasks = [{"task_id": "remaining", "audio_duration_sec": 120}]
+        fast = _make_server("fast", concurrency=4, rtf=0.1)
+        slow = _make_server("slow", concurrency=4, rtf=0.5)
+        decisions = sched.schedule_batch(tasks, [fast, slow])
+        assert decisions[0].server_id == "fast"
+
+    def test_extreme_speed_diff_slow_gets_zero_quota(self):
+        """With extreme speed difference, slowest server may get 0 quota."""
+        sched = TaskScheduler()
+        fast = _make_server("fast", concurrency=4, rtf=0.05)
+        slow = _make_server("slow", concurrency=4, rtf=2.0)
+        quotas = sched._allocate_quotas(4, [fast, slow])
+        assert sum(quotas.values()) == 4
+        assert quotas["fast"] >= 3, "20:1 speed ratio → fast should get almost all"
+
+    def test_quota_sum_always_equals_effective_count(self):
+        """Quota sum must always equal min(task_count, total_free)."""
+        sched = TaskScheduler()
+        servers = [
+            _make_server("s1", concurrency=4, rtf=0.1),
+            _make_server("s2", concurrency=4, rtf=0.3),
+            _make_server("s3", concurrency=4, rtf=0.7),
+        ]
+        for task_count in [1, 3, 5, 8, 12, 15, 25]:
+            quotas = sched._allocate_quotas(task_count, servers)
+            expected = min(task_count, 12)
+            assert sum(quotas.values()) == expected, (
+                f"task_count={task_count}: sum={sum(quotas.values())} != {expected}"
+            )
 
 
 @pytest.mark.unit
@@ -429,3 +469,65 @@ class TestCapacityComparison:
     def test_compare_empty(self):
         sched = TaskScheduler()
         assert sched.compare_server_capacity([]) == []
+
+
+@pytest.mark.unit
+class TestSlotQueues:
+    """Tests for build_slot_queues grouping and ordering."""
+
+    def test_groups_by_slot_key(self):
+        from app.services.scheduler import ScheduleDecision
+        sched = TaskScheduler()
+        decisions = [
+            ScheduleDecision("t1", "s1", 0, 0.0, 10.0, 10.0, 1, 60.0),
+            ScheduleDecision("t2", "s1", 1, 0.0, 12.0, 12.0, 1, 80.0),
+            ScheduleDecision("t3", "s1", 0, 10.0, 8.0, 18.0, 2, 50.0),
+            ScheduleDecision("t4", "s2", 0, 0.0, 15.0, 15.0, 1, 100.0),
+        ]
+        queues = sched.build_slot_queues(decisions)
+        assert len(queues) == 3
+        assert "s1:0" in queues
+        assert "s1:1" in queues
+        assert "s2:0" in queues
+        assert len(queues["s1:0"].decisions) == 2
+        assert len(queues["s1:1"].decisions) == 1
+        assert queues["s1:0"].decisions[0].task_id == "t1"
+        assert queues["s1:0"].decisions[1].task_id == "t3"
+
+    def test_ordered_by_estimated_start(self):
+        from app.services.scheduler import ScheduleDecision
+        sched = TaskScheduler()
+        decisions = [
+            ScheduleDecision("late", "s1", 0, 20.0, 5.0, 25.0, 3, 30.0),
+            ScheduleDecision("early", "s1", 0, 0.0, 10.0, 10.0, 1, 60.0),
+            ScheduleDecision("mid", "s1", 0, 10.0, 8.0, 18.0, 2, 50.0),
+        ]
+        queues = sched.build_slot_queues(decisions)
+        q = queues["s1:0"]
+        assert [d.task_id for d in q.decisions] == ["early", "mid", "late"]
+
+    def test_empty_decisions(self):
+        sched = TaskScheduler()
+        queues = sched.build_slot_queues([])
+        assert queues == {}
+
+    def test_audio_duration_preserved(self):
+        from app.services.scheduler import ScheduleDecision
+        sched = TaskScheduler()
+        decisions = [
+            ScheduleDecision("t1", "s1", 0, 0.0, 10.0, 10.0, 1, 120.5),
+        ]
+        queues = sched.build_slot_queues(decisions)
+        assert queues["s1:0"].decisions[0].audio_duration_sec == 120.5
+
+    def test_schedule_batch_populates_audio_duration(self):
+        sched = TaskScheduler()
+        tasks = [
+            {"task_id": "t1", "audio_duration_sec": 60.0},
+            {"task_id": "t2", "audio_duration_sec": 120.0},
+        ]
+        servers = [_make_server("s1", rtf=0.2, concurrency=4)]
+        decisions = sched.schedule_batch(tasks, servers)
+        dur_map = {d.task_id: d.audio_duration_sec for d in decisions}
+        assert dur_map["t1"] == 60.0
+        assert dur_map["t2"] == 120.0
