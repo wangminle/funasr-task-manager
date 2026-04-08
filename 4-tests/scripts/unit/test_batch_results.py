@@ -79,6 +79,34 @@ class TestBatchResultDownload:
         txt_files = list(tmp_path.glob("*_result.txt"))
         assert len(txt_files) == 2
 
+    def test_group_download_uses_runtime_download_dir_by_default(self, mock_client, tmp_path, monkeypatch):
+        """Default group download location should resolve under runtime/storage/downloads."""
+        monkeypatch.setenv("ASR_PROJECT_ROOT", str(tmp_path))
+        mock_client.get_task_group.return_value = {
+            "task_group_id": "GRP01", "total": 1, "succeeded": 1,
+            "failed": 0, "canceled": 0, "in_progress": 0,
+            "progress": 1.0, "is_complete": True,
+        }
+        mock_client.list_group_tasks.return_value = {
+            "task_group_id": "GRP01",
+            "items": [_make_task("T001")],
+            "total": 1, "page": 1, "page_size": 100,
+        }
+        mock_client.get_result.return_value = "转写文本内容"
+
+        result = runner.invoke(app, [
+            "--server", "http://test:8000", "--quiet",
+            "task", "result", "--group", "GRP01",
+            "--format", "txt",
+        ])
+        assert result.exit_code == 0
+
+        download_dir = tmp_path / "runtime" / "storage" / "downloads"
+        summary_path = download_dir / "batch-summary.json"
+        assert summary_path.exists()
+        assert json.loads(summary_path.read_text(encoding="utf-8"))["output_directory"] == str(download_dir)
+        assert len(list(download_dir.glob("*_result.txt"))) == 1
+
     def test_multi_format_download(self, mock_client, tmp_path):
         """Download results in multiple formats."""
         mock_client.get_task_group.return_value = {

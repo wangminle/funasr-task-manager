@@ -27,6 +27,8 @@ class ServerInstance(Base):
     supported_modes: Mapped[str | None] = mapped_column(String(64))
     max_concurrency: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=4)
     rtf_baseline: Mapped[float | None] = mapped_column(Float)
+    throughput_rtf: Mapped[float | None] = mapped_column(Float)
+    benchmark_concurrency: Mapped[int | None] = mapped_column(SmallInteger)
     penalty_factor: Mapped[float] = mapped_column(Float, default=0.1)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=ServerStatus.OFFLINE)
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

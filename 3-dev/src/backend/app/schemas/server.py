@@ -34,6 +34,8 @@ class ServerResponse(BaseModel):
     supported_modes: str | None = None
     max_concurrency: int
     rtf_baseline: float | None = None
+    throughput_rtf: float | None = None
+    benchmark_concurrency: int | None = None
     penalty_factor: float = 0.1
     status: str
     last_heartbeat: datetime | None = None
@@ -56,9 +58,29 @@ class ServerProbeResponse(BaseModel):
     probe_level: str = "CONNECT_ONLY"
     probe_notes: list[str] = []
     probe_duration_ms: float = 0.0
-    benchmark_rtf: float | None = None
+
+
+class ConcurrencyGradientItem(BaseModel):
+    concurrency: int
+    per_file_rtf: float
+    throughput_rtf: float
+    wall_clock_sec: float
+    total_audio_sec: float
+
+
+class ServerBenchmarkItem(BaseModel):
+    server_id: str
+    reachable: bool = False
+    responsive: bool = False
+    error: str | None = None
+    single_rtf: float | None = None
+    throughput_rtf: float | None = None
+    benchmark_concurrency: int | None = None
     benchmark_audio_sec: float | None = None
     benchmark_elapsed_sec: float | None = None
+    benchmark_samples: list[str] = []
+    benchmark_notes: list[str] = []
+    concurrency_gradient: list[ConcurrencyGradientItem] = []
 
 
 class ServerCapacityItem(BaseModel):
@@ -69,5 +91,5 @@ class ServerCapacityItem(BaseModel):
 
 
 class ServerBenchmarkResponse(BaseModel):
-    results: list[ServerProbeResponse]
+    results: list[ServerBenchmarkItem]
     capacity_comparison: list[ServerCapacityItem]

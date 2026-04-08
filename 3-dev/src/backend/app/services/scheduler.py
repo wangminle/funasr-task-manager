@@ -74,6 +74,7 @@ class ServerProfile:
     port: int
     max_concurrency: int
     rtf_baseline: float | None = None
+    throughput_rtf: float | None = None
     penalty_factor: float = 0.1
     status: str = "ONLINE"
     running_tasks: int = 0
@@ -141,6 +142,18 @@ class TaskScheduler:
             default=server.rtf_baseline or DEFAULT_RTF,
         )
 
+    def get_throughput_speed(self, server: ServerProfile) -> float:
+        """Get throughput-based speed for quota allocation.
+
+        Uses throughput_rtf (concurrent benchmark) if available, otherwise
+        falls back to rtf_baseline (single-thread) as a conservative estimate.
+        """
+        tp_rtf = server.throughput_rtf
+        if tp_rtf and tp_rtf > 0:
+            return 1.0 / tp_rtf
+        base = server.rtf_baseline or DEFAULT_RTF
+        return 1.0 / max(base, 0.01)
+
     def estimate_processing_time(
         self,
         audio_duration_sec: float,
@@ -179,8 +192,7 @@ class TaskScheduler:
 
         speeds = {}
         for s in servers_with_slots:
-            rtf = max(self.get_base_rtf(s), 0.01)
-            speeds[s.server_id] = 1.0 / rtf
+            speeds[s.server_id] = self.get_throughput_speed(s)
 
         total_speed = sum(speeds.values())
         quotas: dict[str, int] = {}
@@ -504,26 +516,34 @@ class TaskScheduler:
     def compare_server_capacity(self, servers: list[ServerProfile]) -> list[dict]:
         """Return per-server capacity comparison (for diagnostics/UI).
 
-        Each entry: server_id, rtf, relative_speed (1.0 = fastest), acceleration_ratio.
+        Uses throughput_rtf for speed comparison when available, falls back to rtf_baseline.
+        Each entry: server_id, rtf (single-thread), throughput_rtf, relative_speed, acceleration_ratio.
         """
         if not servers:
             return []
         entries = []
         for srv in servers:
-            rtf = self.get_base_rtf(srv)
-            entries.append({"server_id": srv.server_id, "rtf": rtf, "server": srv})
+            single_rtf = self.get_base_rtf(srv)
+            tp_speed = self.get_throughput_speed(srv)
+            entries.append({
+                "server_id": srv.server_id,
+                "rtf": single_rtf,
+                "throughput_rtf": srv.throughput_rtf,
+                "tp_speed": tp_speed,
+                "server": srv,
+            })
 
-        min_rtf = min(e["rtf"] for e in entries)
+        max_speed = max(e["tp_speed"] for e in entries)
         result = []
         for e in entries:
-            ratio = min_rtf / e["rtf"] if e["rtf"] > 0 else 0
+            ratio = e["tp_speed"] / max_speed if max_speed > 0 else 0
             result.append({
                 "server_id": e["server_id"],
                 "rtf": round(e["rtf"], 4),
                 "relative_speed": round(ratio, 3),
-                "acceleration_ratio": round(1.0 / e["rtf"], 2) if e["rtf"] > 0 else 0,
+                "acceleration_ratio": round(e["tp_speed"], 2),
             })
-        result.sort(key=lambda x: x["rtf"])
+        result.sort(key=lambda x: x["relative_speed"], reverse=True)
         return result
 
 

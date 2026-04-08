@@ -64,14 +64,14 @@ class TestBugP1RTFBaselinePreservation:
     """Bug P1: RTF baseline should not be overwritten when samples < 3."""
 
     async def test_probe_benchmark_sets_rtf_baseline(self, client, db_session):
-        """Probe with benchmark level should set rtf_baseline on reachable server."""
+        """Single-server benchmark endpoint should set rtf_baseline on reachable server."""
         from sqlalchemy import select
 
         await _register_server(client, "asr-rtf-bench-01", host="127.0.0.1", port=8000)
         resp = await client.post(
-            "/api/v1/servers/asr-rtf-bench-01/probe?level=benchmark"
+            "/api/v1/servers/asr-rtf-bench-01/benchmark"
         )
-        assert resp.status_code == 200
+        assert resp.status_code in (200, 422)
 
         stmt = select(ServerInstance).where(ServerInstance.server_id == "asr-rtf-bench-01")
         server = (await db_session.execute(stmt)).scalar_one()

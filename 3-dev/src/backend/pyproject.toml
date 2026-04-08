@@ -29,10 +29,6 @@ dependencies = [
 asr-cli = "cli.main:app"
 
 [project.optional-dependencies]
-distributed = [
-    "dramatiq[redis]>=1.17.0",
-    "redis>=5.2.0",
-]
 postgres = [
     "asyncpg>=0.30.0",
 ]

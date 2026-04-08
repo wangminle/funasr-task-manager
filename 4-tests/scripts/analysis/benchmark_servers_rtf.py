@@ -1,8 +1,8 @@
 """
 三台 FunASR 服务器 RTF 对比基准测试
 ====================================
-用同一个音频文件依次发送给 10095/10096/10097，
-测量各自的解码耗时和 RTF，验证 Docker CPU 负载图中的差异。
+使用公开 benchmark 样本目录中的两个真实文件依次发送给 10095/10096/10097，
+测量各自的解码耗时和 RTF。
 
 用法:
     cd 3-dev/src/backend
@@ -38,11 +38,11 @@ SERVERS = [
 ]
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-AUDIO_DIR = PROJECT_ROOT / "4-tests" / "batch-testing" / "assets" / "1-测试audioFiles"
+AUDIO_DIR = PROJECT_ROOT / "3-dev" / "benchmark" / "samples"
 
 TEST_FILES = [
+    "test.mp4",
     "tv-report-1.wav",
-    "teslaFSD12.x-trial.mp4",
 ]
 
 CHUNK_SIZE = 65536  # 64KB per chunk
@@ -267,6 +267,39 @@ async def run_benchmark():
         print(f"    最慢: {slowest['server_name']} ({slowest['elapsed_sec']:.2f}s)")
         print(f"    差距: {ratio:.2f}x")
         print()
+
+    # ─── 并发吞吐量测试 ────────────────────────────────────────────
+    print()
+    print("=" * 72)
+    print("  📊 并发吞吐量 RTF 测试 (梯度: 1→2→4→8)")
+    print("=" * 72)
+
+    wav_file = AUDIO_DIR / "tv-report-1.wav"
+    if wav_file.exists():
+        wav_data, wav_sr, wav_fmt, wav_dur = read_audio(wav_file)
+        for srv in SERVERS:
+            tag = f"[{srv['name']}]"
+            print(f"\n{tag} 梯度并发测试:")
+            for n in [1, 2, 4, 8]:
+                tasks_list = [
+                    transcribe_single(SERVER_HOST, srv["port"], wav_data, wav_sr, wav_fmt, f"concurrent-{i}")
+                    for i in range(n)
+                ]
+                t_start = time.perf_counter()
+                results_concurrent = await asyncio.gather(*tasks_list, return_exceptions=True)
+                wall_clock = time.perf_counter() - t_start
+
+                errors = [r for r in results_concurrent if isinstance(r, Exception)]
+                per_file_rtf = wall_clock / wav_dur if wav_dur > 0 else 0
+                total_audio = wav_dur * n
+                tp_rtf = wall_clock / total_audio if total_audio > 0 else 0
+                print(f"  N={n}: wall={wall_clock:.2f}s, "
+                      f"per_file_rtf={per_file_rtf:.4f}, "
+                      f"throughput_rtf={tp_rtf:.4f}, "
+                      f"errors={len(errors)}")
+                await asyncio.sleep(2)
+    else:
+        print(f"  [SKIP] 并发测试文件不存在: {wav_file}")
 
     # 保存结果到 JSON
     output_dir = PROJECT_ROOT / "4-tests" / "batch-testing" / "outputs" / "benchmark"

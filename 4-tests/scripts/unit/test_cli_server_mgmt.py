@@ -69,7 +69,6 @@ class TestServerProbe:
             "reachable": True,
             "responsive": True,
             "inferred_server_type": "funasr_main",
-            "benchmark_rtf": 0.124,
             "probe_duration_ms": 2500.0,
             "supports_offline": True,
             "supports_2pass": True,
@@ -77,10 +76,10 @@ class TestServerProbe:
         }
         result = runner.invoke(app, [
             "--server", "http://test:8000", "--quiet",
-            "server", "probe", "asr-01", "--level", "benchmark",
+            "server", "probe", "asr-01", "--level", "twopass_full",
         ])
         assert result.exit_code == 0
-        mock_client.probe_server.assert_called_once_with("asr-01", level="benchmark")
+        mock_client.probe_server.assert_called_once_with("asr-01", level="twopass_full")
 
     def test_probe_api_error(self, mock_client):
         from cli.api_client import APIError
@@ -94,15 +93,30 @@ class TestServerProbe:
 
 @pytest.mark.unit
 class TestServerBenchmark:
+    def test_single_server_benchmark_success(self, mock_client):
+        mock_client.benchmark_server.return_value = {
+            "server_id": "asr-01", "reachable": True, "responsive": True,
+            "single_rtf": 0.124, "throughput_rtf": 0.031, "benchmark_concurrency": 4,
+            "benchmark_audio_sec": 300.0,
+            "benchmark_elapsed_sec": 37.2, "benchmark_samples": ["test.mp4", "tv-report-1.wav"],
+            "benchmark_notes": [], "error": None, "concurrency_gradient": [],
+        }
+        result = runner.invoke(app, [
+            "--server", "http://test:8000", "--quiet",
+            "server", "benchmark", "asr-01",
+        ])
+        assert result.exit_code == 0
+        mock_client.benchmark_server.assert_called_once_with("asr-01")
+
     def test_benchmark_success(self, mock_client):
         mock_client.benchmark_servers.return_value = {
             "results": [
-                {"server_id": "asr-01", "reachable": True, "benchmark_rtf": 0.124},
-                {"server_id": "asr-02", "reachable": True, "benchmark_rtf": 0.737},
+                {"server_id": "asr-01", "reachable": True, "responsive": True, "single_rtf": 0.124, "throughput_rtf": 0.031, "benchmark_concurrency": 4, "benchmark_audio_sec": 300.0, "benchmark_elapsed_sec": 37.2, "benchmark_samples": ["test.mp4", "tv-report-1.wav"], "benchmark_notes": [], "concurrency_gradient": []},
+                {"server_id": "asr-02", "reachable": True, "responsive": True, "single_rtf": 0.737, "throughput_rtf": 0.184, "benchmark_concurrency": 4, "benchmark_audio_sec": 300.0, "benchmark_elapsed_sec": 221.1, "benchmark_samples": ["test.mp4", "tv-report-1.wav"], "benchmark_notes": [], "concurrency_gradient": []},
             ],
             "capacity_comparison": [
-                {"server_id": "asr-01", "rtf": 0.124, "relative_speed": 1.0, "acceleration_ratio": 8.06},
-                {"server_id": "asr-02", "rtf": 0.737, "relative_speed": 0.168, "acceleration_ratio": 1.36},
+                {"server_id": "asr-01", "rtf": 0.124, "relative_speed": 1.0, "acceleration_ratio": 32.26},
+                {"server_id": "asr-02", "rtf": 0.737, "relative_speed": 0.168, "acceleration_ratio": 5.43},
             ],
         }
         result = runner.invoke(app, [
@@ -123,9 +137,9 @@ class TestServerBenchmark:
 
     def test_benchmark_json_output(self, mock_client):
         mock_client.benchmark_servers.return_value = {
-            "results": [{"server_id": "s1", "reachable": True, "benchmark_rtf": 0.5}],
+            "results": [{"server_id": "s1", "reachable": True, "responsive": True, "single_rtf": 0.5, "throughput_rtf": 0.125, "benchmark_concurrency": 4, "benchmark_audio_sec": 300.0, "benchmark_elapsed_sec": 150.0, "benchmark_samples": ["test.mp4", "tv-report-1.wav"], "benchmark_notes": [], "concurrency_gradient": []}],
             "capacity_comparison": [
-                {"server_id": "s1", "rtf": 0.5, "relative_speed": 1.0, "acceleration_ratio": 2.0}
+                {"server_id": "s1", "rtf": 0.5, "relative_speed": 1.0, "acceleration_ratio": 8.0}
             ],
         }
         result = runner.invoke(app, [

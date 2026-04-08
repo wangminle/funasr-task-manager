@@ -102,6 +102,29 @@ class TestTranscribeBatchMode:
         ])
         assert result.exit_code == 0
 
+    def test_single_file_uses_runtime_download_dir_by_default(self, audio_files, mock_client, tmp_path, monkeypatch):
+        """Default download location should resolve under runtime/storage/downloads."""
+        mock_client.upload_file.return_value = {"file_id": "fid0"}
+        mock_client.create_tasks.return_value = [_make_task("tid0", status="PREPROCESSING")]
+
+        def mock_get_task(task_id):
+            return _make_task(task_id, status="SUCCEEDED")
+
+        monkeypatch.setenv("ASR_PROJECT_ROOT", str(tmp_path))
+        mock_client.get_task.side_effect = mock_get_task
+        mock_client.get_result.return_value = "transcribed text"
+
+        result = runner.invoke(app, [
+            "--server", "http://test:8000", "--quiet",
+            "transcribe", str(audio_files[0]),
+            "--language", "zh", "--format", "txt",
+        ])
+        assert result.exit_code == 0
+
+        expected = tmp_path / "runtime" / "storage" / "downloads" / f"{audio_files[0].stem}_result.txt"
+        assert expected.exists()
+        assert expected.read_text(encoding="utf-8") == "transcribed text"
+
     def test_batch_no_wait(self, audio_files, mock_client):
         """--no-wait should return immediately."""
         group_id = "GRP_0000000000000000000001"

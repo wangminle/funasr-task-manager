@@ -148,8 +148,15 @@ class ASRClient:
             f"/api/v1/servers/{server_id}/probe", params={"level": level}
         )).json()
 
-    def benchmark_servers(self) -> dict:
-        return self._check(self._client.post("/api/v1/servers/benchmark")).json()
+    def benchmark_server(self, server_id: str, timeout: float = 960.0) -> dict:
+        return self._check(self._client.post(
+            f"/api/v1/servers/{server_id}/benchmark", timeout=timeout,
+        )).json()
+
+    def benchmark_servers(self, timeout: float = 960.0) -> dict:
+        return self._check(self._client.post(
+            "/api/v1/servers/benchmark", timeout=timeout,
+        )).json()
 
     def update_server(self, server_id: str, data: dict) -> dict:
         return self._check(self._client.patch(f"/api/v1/servers/{server_id}", json=data)).json()

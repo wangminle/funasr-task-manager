@@ -10,6 +10,7 @@ import typer
 
 from cli.api_client import APIError
 from cli import output as out
+from cli.path_utils import get_default_download_dir
 
 app = typer.Typer()
 
@@ -159,7 +160,12 @@ def result(
     group: Optional[str] = typer.Option(None, "--group", "-g", help="批次 ID（下载整批结果）"),
     fmt: str = typer.Option("json", "--format", "-f", help="结果格式: json/txt/srt 或逗号分隔多格式如 txt,json,srt"),
     save: Optional[Path] = typer.Option(None, "--save", help="保存到文件"),
-    output_dir: Path = typer.Option(".", "--output-dir", "-d", help="批量结果输出目录"),
+    output_dir: Optional[Path] = typer.Option(
+        None,
+        "--output-dir",
+        "-d",
+        help="批量结果下载目录（默认写入仓库根目录 runtime/storage/downloads）",
+    ),
 ):
     """下载转写结果。支持 --group 下载整批结果，支持多格式同时导出。"""
     from cli.main import get_ctx
@@ -167,7 +173,7 @@ def result(
 
     if group:
         formats = [f.strip() for f in fmt.split(",") if f.strip()]
-        _download_group_results(c, group, formats, output_dir)
+        _download_group_results(c, group, formats, output_dir or get_default_download_dir())
         return
 
     if not task_id:
@@ -215,6 +221,7 @@ def _download_group_results(c, group_id, formats, output_dir):
     downloaded = 0
     summary_items = []
 
+    seen_names: dict[str, int] = {}
     for t in tasks:
         item = {
             "task_id": t["task_id"],
@@ -226,11 +233,17 @@ def _download_group_results(c, group_id, formats, output_dir):
         if t["status"] == "SUCCEEDED":
             tid = t["task_id"]
             base_name = t.get("file_name") or tid[:12]
+            if base_name in seen_names:
+                seen_names[base_name] += 1
+                dedup_name = f"{base_name}_{seen_names[base_name]}"
+            else:
+                seen_names[base_name] = 0
+                dedup_name = base_name
             for fmt in formats:
                 suffix = suffix_map.get(fmt, f".{fmt}")
                 try:
                     content = c.client.get_result(tid, fmt=fmt)
-                    dest = output_dir / f"{base_name}_result{suffix}"
+                    dest = output_dir / f"{dedup_name}_result{suffix}"
                     dest.write_text(content, encoding="utf-8")
                     item["outputs"][fmt] = str(dest)
                     downloaded += 1

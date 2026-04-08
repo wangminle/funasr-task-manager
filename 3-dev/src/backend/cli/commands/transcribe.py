@@ -14,6 +14,7 @@ import typer
 
 from cli.api_client import APIError
 from cli import output as out
+from cli.path_utils import get_default_download_dir
 
 
 def transcribe(
@@ -22,7 +23,12 @@ def transcribe(
     language: str = typer.Option("auto", "--language", "-l", help="识别语言"),
     hotwords: Optional[str] = typer.Option(None, "--hotwords", help="热词，逗号分隔"),
     fmt: str = typer.Option("json", "--format", "-f", help="结果格式: json/txt/srt"),
-    output_dir: Path = typer.Option(".", "--output-dir", "-d", help="结果输出目录"),
+    output_dir: Optional[Path] = typer.Option(
+        None,
+        "--output-dir",
+        "-d",
+        help="结果下载目录（默认写入仓库根目录 runtime/storage/downloads）",
+    ),
     save: Optional[Path] = typer.Option(None, "--save", help="保存到指定文件（单文件时）"),
     callback: Optional[str] = typer.Option(None, "--callback", help="回调地址"),
     no_wait: bool = typer.Option(False, "--no-wait", help="不等待完成"),
@@ -45,12 +51,13 @@ def transcribe(
         raise typer.Exit(1)
 
     use_batch = batch or len(existing) > 1
+    resolved_output_dir = output_dir or get_default_download_dir()
 
     if use_batch:
-        _run_batch(c, existing, language, hotwords, fmt, output_dir, callback,
+        _run_batch(c, existing, language, hotwords, fmt, resolved_output_dir, callback,
                    no_wait, poll_interval, wait_timeout, download, json_summary)
     else:
-        _run_single(c, existing[0], language, hotwords, fmt, output_dir, save,
+        _run_single(c, existing[0], language, hotwords, fmt, resolved_output_dir, save,
                     callback, no_wait, poll_interval, wait_timeout)
 
 
@@ -264,12 +271,19 @@ def _run_batch(c, files, language, hotwords, fmt, output_dir, callback,
         suffix = {"json": ".json", "txt": ".txt", "srt": ".srt"}.get(fmt, ".json")
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        seen_names: dict[str, int] = {}
         for task in succeeded:
             tid = task["task_id"]
             try:
                 content = c.client.get_result(tid, fmt=fmt)
                 base_name = file_name_map.get(tid, tid[:12])
-                dest = output_dir / f"{base_name}_result{suffix}"
+                if base_name in seen_names:
+                    seen_names[base_name] += 1
+                    dedup_name = f"{base_name}_{seen_names[base_name]}"
+                else:
+                    seen_names[base_name] = 0
+                    dedup_name = base_name
+                dest = output_dir / f"{dedup_name}_result{suffix}"
                 dest.write_text(content, encoding="utf-8")
                 results.append({"file": file_name_map.get(tid, ""), "task_id": tid,
                                 "status": "SUCCEEDED", "output": str(dest)})

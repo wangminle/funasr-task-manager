@@ -12,7 +12,9 @@ from app.deps import DbSession
 from app.models import ServerInstance, ServerStatus
 from app.schemas.server import (
     ServerBenchmarkResponse,
+    ServerBenchmarkItem,
     ServerCapacityItem,
+    ConcurrencyGradientItem,
     ServerProbeResponse,
     ServerRegisterRequest,
     ServerResponse,
@@ -20,6 +22,7 @@ from app.schemas.server import (
 )
 from app.services.scheduler import ServerProfile, scheduler as global_scheduler
 from app.services.server_probe import ProbeLevel, ServerCapabilities, probe_server
+from app.services.server_benchmark import benchmark_server_full_with_ssl_fallback
 from app.storage.repository import ServerRepository
 from app.auth.token import verify_admin
 from app.observability.logging import get_logger
@@ -77,7 +80,7 @@ async def list_servers(db: DbSession, admin: AdminUser):
 
 @router.post("/benchmark", response_model=ServerBenchmarkResponse)
 async def benchmark_all_servers(db: DbSession, admin: AdminUser):
-    """Benchmark all ONLINE servers to measure RTF and update capacity baselines."""
+    """Run full benchmark (single-thread RTF + concurrent throughput RTF) for all ONLINE servers."""
     repo = ServerRepository(db)
     all_servers = await repo.list_all_servers()
     online_servers = [s for s in all_servers if s.status == ServerStatus.ONLINE]
@@ -85,25 +88,39 @@ async def benchmark_all_servers(db: DbSession, admin: AdminUser):
     if not online_servers:
         raise HTTPException(status_code=422, detail="No online servers to benchmark")
 
-    results: list[ServerProbeResponse] = []
+    results: list[ServerBenchmarkItem] = []
     for server in online_servers:
-        caps = await _probe_with_ssl_fallback(
-            server.host, server.port, ProbeLevel.BENCHMARK, 30.0,
-        )
-        if not caps.reachable:
+        try:
+            bench = await benchmark_server_full_with_ssl_fallback(
+                server.host, server.port,
+                max_concurrency=server.max_concurrency,
+                timeout=900.0,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Benchmark 配置错误（非服务器连通性问题）: {exc}",
+            )
+
+        if not bench.reachable:
             server.status = ServerStatus.OFFLINE
             logger.warning("benchmark_server_unreachable",
-                           server_id=server.server_id, error=caps.error)
-            results.append(ServerProbeResponse(server_id=server.server_id, **caps.to_dict()))
-            continue
+                           server_id=server.server_id, error=bench.error)
+        else:
+            if bench.single_rtf is not None:
+                server.rtf_baseline = bench.single_rtf
+            if bench.throughput_rtf is not None:
+                server.throughput_rtf = bench.throughput_rtf
+            if bench.benchmark_concurrency is not None:
+                server.benchmark_concurrency = bench.benchmark_concurrency
 
-        if caps.benchmark_rtf is not None:
-            server.rtf_baseline = caps.benchmark_rtf
-        if caps.inferred_server_type != "unknown":
-            server.server_type = caps.inferred_server_type
-        modes = _extract_modes(caps)
-        server.supported_modes = ",".join(modes) if modes else None
-        results.append(ServerProbeResponse(server_id=server.server_id, **caps.to_dict()))
+        item_data = bench.to_dict()
+        gradient_raw = item_data.pop("concurrency_gradient", [])
+        results.append(ServerBenchmarkItem(
+            server_id=server.server_id,
+            concurrency_gradient=[ConcurrencyGradientItem(**g) for g in gradient_raw],
+            **item_data,
+        ))
 
     await db.commit()
 
@@ -112,7 +129,9 @@ async def benchmark_all_servers(db: DbSession, admin: AdminUser):
         ServerProfile(
             server_id=s.server_id, host=s.host, port=s.port,
             max_concurrency=s.max_concurrency,
-            rtf_baseline=s.rtf_baseline, penalty_factor=s.penalty_factor,
+            rtf_baseline=s.rtf_baseline,
+            throughput_rtf=s.throughput_rtf,
+            penalty_factor=s.penalty_factor,
         )
         for s in still_online
     ]
@@ -128,14 +147,56 @@ async def benchmark_all_servers(db: DbSession, admin: AdminUser):
     )
 
 
+@router.post("/{server_id}/benchmark", response_model=ServerBenchmarkItem)
+async def benchmark_server_endpoint(server_id: str, db: DbSession, admin: AdminUser):
+    """Run full benchmark (single + concurrent) for one registered server."""
+    repo = ServerRepository(db)
+    server = await repo.get_server(server_id)
+    if server is None:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    try:
+        bench = await benchmark_server_full_with_ssl_fallback(
+            server.host, server.port,
+            max_concurrency=server.max_concurrency,
+            timeout=900.0,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Benchmark 配置错误（非服务器连通性问题）: {exc}",
+        )
+
+    server.status = ServerStatus.ONLINE if bench.reachable else ServerStatus.OFFLINE
+    if bench.single_rtf is not None:
+        server.rtf_baseline = bench.single_rtf
+    if bench.throughput_rtf is not None:
+        server.throughput_rtf = bench.throughput_rtf
+    if bench.benchmark_concurrency is not None:
+        server.benchmark_concurrency = bench.benchmark_concurrency
+    await db.commit()
+
+    item_data = bench.to_dict()
+    gradient_raw = item_data.pop("concurrency_gradient", [])
+    return ServerBenchmarkItem(
+        server_id=server_id,
+        concurrency_gradient=[ConcurrencyGradientItem(**g) for g in gradient_raw],
+        **item_data,
+    )
+
+
 @router.post("/{server_id}/probe", response_model=ServerProbeResponse)
 async def probe_server_endpoint(
     server_id: str,
     db: DbSession,
     admin: AdminUser,
-    level: str = Query("offline_light", pattern="^(connect_only|offline_light|twopass_full|benchmark)$"),
+    level: str = Query(
+        "offline_light",
+        pattern="^(connect_only|offline_light|twopass_full)$",
+        description="probe 仅用于 WebSocket 连通性与能力探测，不执行 benchmark。",
+    ),
 ):
-    """Probe a registered server's capabilities and optionally update its metadata."""
+    """Probe a registered server for connectivity and capabilities only."""
     repo = ServerRepository(db)
     server = await repo.get_server(server_id)
     if server is None:
@@ -145,9 +206,8 @@ async def probe_server_endpoint(
         "connect_only": ProbeLevel.CONNECT_ONLY,
         "offline_light": ProbeLevel.OFFLINE_LIGHT,
         "twopass_full": ProbeLevel.TWOPASS_FULL,
-        "benchmark": ProbeLevel.BENCHMARK,
     }
-    timeout = 30.0 if level == "benchmark" else 12.0
+    timeout = 12.0
     caps = await _probe_with_ssl_fallback(
         server.host, server.port, probe_level_map[level], timeout,
     )
@@ -162,16 +222,10 @@ async def probe_server_endpoint(
     else:
         server.status = ServerStatus.OFFLINE
 
-    if caps.benchmark_rtf is not None:
-        server.rtf_baseline = caps.benchmark_rtf
-        logger.info("rtf_baseline_updated_from_benchmark",
-                     server_id=server_id, rtf=f"{caps.benchmark_rtf:.4f}")
-
     await db.commit()
 
     logger.info("server_probed", server_id=server_id, reachable=caps.reachable,
-                inferred_type=caps.inferred_server_type,
-                benchmark_rtf=caps.benchmark_rtf)
+                inferred_type=caps.inferred_server_type)
 
     return ServerProbeResponse(
         server_id=server_id,

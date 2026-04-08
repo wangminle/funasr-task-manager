@@ -35,14 +35,6 @@ class TestServerProbeAPI:
         resp = await client.post("/api/v1/servers/nonexistent/probe")
         assert resp.status_code == 404
 
-    async def test_probe_with_benchmark_level(self, client):
-        sid = await _register_server(client, "asr-probe-bench-01")
-        resp = await client.post(f"/api/v1/servers/{sid}/probe?level=benchmark")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "benchmark_rtf" in data
-
-
 @pytest.mark.integration
 class TestServerUpdateAPI:
     async def test_update_max_concurrency(self, client):
@@ -78,3 +70,7 @@ class TestServerBenchmarkAPI:
     async def test_benchmark_no_online_servers(self, client):
         resp = await client.post("/api/v1/servers/benchmark")
         assert resp.status_code == 422
+
+    async def test_single_server_benchmark_nonexistent(self, client):
+        resp = await client.post("/api/v1/servers/nonexistent/benchmark")
+        assert resp.status_code == 404

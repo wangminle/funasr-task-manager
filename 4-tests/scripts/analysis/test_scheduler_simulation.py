@@ -334,10 +334,10 @@ def main():
   Replace the assign_single_task() loop with schedule_batch() when multiple
   tasks are queued. This enables global LPT optimization.
 
-  Fix 3: Add RTF benchmark probe on server registration
+    Fix 3: Add explicit RTF benchmark flow for server calibration
   ────────────────────────────────────────────────────────────────────────────────
-  Extend server_probe.py with a new ProbeLevel.BENCHMARK that:
-  1. Sends a short (~10s) reference audio clip to the server
+    Add a dedicated benchmark service / endpoint that:
+    1. Sends fixed public benchmark samples to the server
   2. Measures actual processing time
   3. Calculates RTF = processing_time / audio_duration
   4. Stores as rtf_baseline in ServerInstance

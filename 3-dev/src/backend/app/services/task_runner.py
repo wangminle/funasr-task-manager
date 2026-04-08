@@ -163,6 +163,7 @@ class BackgroundTaskRunner:
                     port=srv.port,
                     max_concurrency=srv.max_concurrency,
                     rtf_baseline=srv.rtf_baseline,
+                    throughput_rtf=srv.throughput_rtf,
                     penalty_factor=srv.penalty_factor,
                     running_tasks=running_count.get(srv.server_id, 0),
                 )

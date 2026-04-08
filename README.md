@@ -71,8 +71,10 @@ cd 3-dev/src/backend
 # 上传并转写一个文件（自动上传→创建任务→等待→下载结果）
 python -m cli transcribe recording.mp4 --language zh --format txt
 
+# 默认会把 CLI 下载副本写到仓库根目录 runtime/storage/downloads/
+
 # 指定输出目录
-python -m cli transcribe meeting.wav --format srt --output-dir ./results/
+python -m cli transcribe meeting.wav --format srt --output-dir ./runtime/storage/downloads/manual/
 ```
 
 ---
@@ -84,11 +86,11 @@ python -m cli transcribe meeting.wav --format srt --output-dir ./results/
 多文件时自动启用批量模式，一次性上传并创建所有任务，后端并行调度到多台 ASR 服务器：
 
 ```bash
-# 转写目录下所有 wav 文件
-python -m cli transcribe *.wav --format txt --output-dir ./results/
+# 转写目录下所有 wav 文件（默认下载到 runtime/storage/downloads/）
+python -m cli transcribe *.wav --format txt
 
 # 转写指定文件
-python -m cli transcribe ep01.mp4 ep02.mp4 ep03.mp4 --format srt --output-dir ./srt/
+python -m cli transcribe ep01.mp4 ep02.mp4 ep03.mp4 --format srt --output-dir ./runtime/storage/downloads/srt/
 
 # 强制批量模式（即使只有 1 个文件）
 python -m cli transcribe single.wav --batch --format json
@@ -97,13 +99,17 @@ python -m cli transcribe single.wav --batch --format json
 python -m cli transcribe *.mp3 --no-wait --json-summary
 
 # 完成后下载多种格式结果 + 生成摘要
-python -m cli task result --group <group_id> --format txt,json,srt --output-dir ./results/
+python -m cli task result --group <group_id> --format txt,json,srt
 ```
+
+说明：服务端原始持久化始终写入仓库根目录 `runtime/storage/uploads/` 和 `runtime/storage/results/`；CLI 的 `--output-dir` 只是额外下载一份副本，默认放到 `runtime/storage/downloads/`，避免误写到 `3-dev/src/backend/` 当前工作目录。
+
+公开 benchmark 样本统一放在 `3-dev/benchmark/samples/`（已纳入版本控制），当前固定样本为 `test.mp4` 和 `tv-report-1.wav`。
 
 批量下载后的输出目录结构：
 
 ```
-results/
+runtime/storage/downloads/
 ├── batch-summary.json          # 批次摘要（所有任务状态和输出路径）
 ├── ep01_result.txt
 ├── ep01_result.srt
@@ -171,8 +177,8 @@ Web UI 支持拖拽多文件上传和批量任务管理。访问 `http://localho
 python -m cli transcribe audio.wav
 python -m cli transcribe audio.wav --language zh --format srt --save output.srt
 
-# 批量（自动并行调度到多台服务器）
-python -m cli transcribe *.wav --format txt --output-dir ./results/
+# 批量（自动并行调度到多台服务器，默认下载到 runtime/storage/downloads/）
+python -m cli transcribe *.wav --format txt
 
 # 异步提交
 python -m cli transcribe *.mp3 --no-wait --json-summary
@@ -183,7 +189,7 @@ python -m cli transcribe *.mp3 --no-wait --json-summary
 | `--language, -l` | 识别语言，默认 `auto` |
 | `--hotwords` | 热词列表，逗号分隔 |
 | `--format, -f` | 结果格式: `json`/`txt`/`srt` |
-| `--output-dir, -d` | 输出目录 |
+| `--output-dir, -d` | 下载副本目录，默认 `runtime/storage/downloads/` |
 | `--save` | 单文件时保存到指定路径 |
 | `--no-wait` | 只提交不等待 |
 | `--batch` | 强制批量模式 |
@@ -210,8 +216,8 @@ python -m cli task info <task_id>
 # 下载单个任务结果
 python -m cli task result <task_id> --format srt --save output.srt
 
-# 下载整批结果（支持多格式同时导出）
-python -m cli task result --group <group_id> --format txt,json,srt --output-dir ./results/
+# 下载整批结果（支持多格式同时导出，默认下载到 runtime/storage/downloads/）
+python -m cli task result --group <group_id> --format txt,json,srt
 
 # 等待任务完成
 python -m cli task wait <task_id1> <task_id2>
@@ -238,9 +244,11 @@ python -m cli server register --id asr-01 --host 192.168.1.100 --port 10095 --pr
 
 # 探测节点连通性和能力
 python -m cli server probe asr-01
-python -m cli server probe asr-01 --level benchmark    # 含性能测试
 
-# 全量性能基准测试
+# 单节点真实 benchmark（仅使用公开样本）
+python -m cli server benchmark asr-01
+
+# 全量性能基准测试（对所有在线节点使用公开样本，刷新 RTF 基线）
 python -m cli server benchmark
 
 # 更新节点配置
@@ -255,10 +263,11 @@ python -m cli server delete asr-01
 
 | 级别 | 说明 |
 |------|------|
-| `connect_only` | 仅检查网络连通性 |
+| `connect_only` | 仅检查 WebSocket / 网络连通性，不做性能测试 |
 | `offline_light` | 连通性 + 离线转写能力探测（默认） |
 | `twopass_full` | 完整双通道探测 |
-| `benchmark` | 性能基准测试（含 RTF 计算） |
+
+`probe` 只做连通性与能力探测，不参与 benchmark，也不会更新任何 RTF 基线。
 
 ### 系统命令
 
@@ -315,8 +324,9 @@ python -m cli config list
 | **节点管理** | | |
 | POST | `/api/v1/servers` | 注册 ASR 节点 |
 | GET | `/api/v1/servers` | 节点列表 |
-| POST | `/api/v1/servers/{server_id}/probe` | 探测节点 |
-| POST | `/api/v1/servers/benchmark` | 全量 benchmark |
+| POST | `/api/v1/servers/{server_id}/probe` | 探测单节点连通性与能力，不执行 benchmark |
+| POST | `/api/v1/servers/{server_id}/benchmark` | 对单节点执行真实 benchmark |
+| POST | `/api/v1/servers/benchmark` | 对所有在线节点执行真实 benchmark 并刷新 RTF 基线 |
 | PATCH | `/api/v1/servers/{server_id}` | 更新节点配置 |
 | DELETE | `/api/v1/servers/{server_id}` | 注销节点 |
 | **系统** | | |
@@ -361,6 +371,9 @@ curl -o results.zip http://localhost:8000/api/v1/task-groups/<group_id>/results?
 # 探测节点
 curl -X POST http://localhost:8000/api/v1/servers/asr-01/probe?level=offline_light
 
+# 对单节点执行真实 benchmark（仅使用公开样本 test.mp4 + tv-report-1.wav）
+curl -X POST http://localhost:8000/api/v1/servers/asr-01/benchmark
+
 # 系统诊断
 curl http://localhost:8000/api/v1/diagnostics
 ```
@@ -384,7 +397,7 @@ python -m cli server register --id asr-gpu-02 --host 10.0.0.2 --port 10095 --pro
 python -m cli server probe asr-gpu-01
 python -m cli server probe asr-gpu-02
 
-# 3. 性能基准测试（自动计算 RTF 并更新调度权重）
+# 3. 性能基准测试（使用公开样本，自动计算 RTF 并更新调度权重）
 python -m cli server benchmark
 
 # 4. 查看节点状态
@@ -424,7 +437,7 @@ python -m cli doctor
 │ database_schema     │  ✅  │ version 002            │
 │ alembic_version     │  ✅  │ 002_fix_outbox         │
 │ ffprobe             │  ⚠️  │ not found              │
-│ upload_dir          │  ✅  │ ./uploads/ writable    │
+│ upload_dir          │  ✅  │ runtime/storage/uploads writable │
 │ asr_servers         │  ✅  │ 2/2 online             │
 └─────────────────────┴──────┴────────────────────────┘
 ✅ 系统诊断通过，无阻断性问题
@@ -474,11 +487,14 @@ python -m cli config set api_key dev-token-user1
 **Q: ffprobe 告警可以忽略吗？**
 可以。缺少 ffprobe 时，系统使用文件大小估算音频时长，调度精度略降。安装 ffmpeg 后会自动检测。
 
+**Q: benchmark 用的是什么样本？**
+当前统一使用 `3-dev/benchmark/samples/` 下的 `test.mp4` 和 `tv-report-1.wav`（已纳入版本控制，克隆即可用）。`probe` 仅做 WebSocket 连通性探测，不发送真实音频、不计算 RTF；`benchmark` 使用上述两个真实样本执行端到端转写来测量 RTF。
+
 **Q: 如何查看某个批次的所有任务？**
 `python -m cli task list --group <group_id>` 或 `curl http://localhost:8000/api/v1/task-groups/<group_id>/tasks`
 
 **Q: 如何一次性下载所有结果？**
-`python -m cli task result --group <group_id> --format txt,srt --output-dir ./results/` 会下载所有格式并生成 `batch-summary.json` 摘要文件。
+`python -m cli task result --group <group_id> --format txt,srt` 会把所有格式下载到 `runtime/storage/downloads/` 并生成 `batch-summary.json` 摘要文件；如果你只想导出副本到别处，再显式指定 `--output-dir`。
 
 **Q: 任务创建后处于 PREPROCESSING 状态很久？**
 检查是否有 ASR 服务器在线：`python -m cli server list`。如果没有在线节点，任务会排队等待。
@@ -610,6 +626,8 @@ npm run test:e2e:remote-standard
 funasr-task-manager/
 ├── 2-design/                          # 设计文档与评审报告
 ├── 3-dev/src/
+│   ├── benchmark/                    # 公开 benchmark 样本（纳入版本控制）
+│   │   └── samples/                  # test.mp4 + tv-report-1.wav
 │   ├── start.sh / start.ps1          # 一键启停脚本
 │   ├── stop.sh  / stop.ps1
 │   ├── backend/

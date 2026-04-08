@@ -27,12 +27,14 @@ def server_list(ctx: typer.Context):
     out.render(
         c.output_format, data=servers,
         title="ASR 节点列表",
-        columns=["server_id", "名称", "地址", "协议", "状态", "槽位", "RTF"],
+        columns=["server_id", "名称", "地址", "状态", "槽位", "单线程RTF", "吞吐量RTF", "测试并发"],
         rows=[
             [s["server_id"], s.get("name", ""), f"{s['host']}:{s['port']}",
-             s.get("protocol_version", ""), s.get("status", ""),
+             s.get("status", ""),
              str(s.get("max_concurrency", "")),
-             str(s.get("rtf_baseline", "-") or "-")]
+             str(s.get("rtf_baseline", "-") or "-"),
+             str(s.get("throughput_rtf", "-") or "-"),
+             str(s.get("benchmark_concurrency", "-") or "-")]
             for s in servers
         ],
     )
@@ -94,10 +96,13 @@ def probe(
     server_id: str = typer.Argument(..., help="节点 ID"),
     level: str = typer.Option(
         "offline_light", "--level", "-l",
-        help="探测级别: connect_only/offline_light/twopass_full/benchmark",
+        help="探测级别: connect_only(仅 WebSocket)/offline_light/twopass_full",
     ),
 ):
-    """探测 ASR 节点能力和连通性。"""
+    """探测 ASR 节点能力和连通性。
+
+    probe 仅用于连通性和协议能力检查，不更新 benchmark 结果或 RTF 基线。
+    """
     from cli.main import get_ctx
     c = get_ctx(ctx)
 
@@ -126,7 +131,6 @@ def probe(
             ["支持 offline", "✅" if result.get("supports_offline") else "-"],
             ["支持 2pass", "✅" if result.get("supports_2pass") else "-"],
             ["支持 online", "✅" if result.get("supports_online") else "-"],
-            ["Benchmark RTF", str(result.get("benchmark_rtf", "-") or "-")],
             ["探测耗时", f"{result.get('probe_duration_ms', 0):.0f}ms"],
         ],
     )
@@ -136,16 +140,26 @@ def probe(
 
 
 @app.command(name="benchmark")
-def benchmark(ctx: typer.Context):
-    """对所有在线节点执行性能基准测试。"""
+def benchmark(
+    ctx: typer.Context,
+    server_id: Optional[str] = typer.Argument(None, help="可选：仅对单个节点执行 benchmark"),
+):
+    """使用公开 benchmark 样本对单个或全部在线节点执行真实 RTF 基准测试。"""
     from cli.main import get_ctx
     c = get_ctx(ctx)
 
     if not c.quiet:
-        out.info("正在对所有在线节点执行 benchmark...")
+        if server_id:
+            out.info(f"正在对节点 {server_id} 执行全量 benchmark（单线程 + 并发梯度测试）...")
+        else:
+            out.info("正在对所有在线节点执行全量 benchmark（单线程 + 并发梯度测试）...")
 
     try:
-        data = c.client.benchmark_servers()
+        if server_id:
+            item = c.client.benchmark_server(server_id)
+            data = {"results": [item], "capacity_comparison": []}
+        else:
+            data = c.client.benchmark_servers()
     except APIError as e:
         out.error(e.detail)
         raise typer.Exit(1)
@@ -156,20 +170,54 @@ def benchmark(ctx: typer.Context):
     if not c.quiet:
         out.success(f"Benchmark 完成: {len(results)} 个节点")
 
+    for item in results:
+        gradient = item.get("concurrency_gradient", [])
+        if gradient and not c.quiet:
+            sid = item.get("server_id", "")
+            out.info(f"\n--- {sid} 梯度并发测试 ---")
+            out.render(
+                c.output_format, data=gradient,
+                title=f"{sid} 并发梯度",
+                columns=["并发数", "单文件RTF", "吞吐量RTF", "Wall Clock(s)", "总音频(s)"],
+                rows=[
+                    [str(g.get("concurrency", "")),
+                     f"{g.get('per_file_rtf', 0):.4f}",
+                     f"{g.get('throughput_rtf', 0):.4f}",
+                     f"{g.get('wall_clock_sec', 0):.2f}",
+                     f"{g.get('total_audio_sec', 0):.1f}"]
+                    for g in gradient
+                ],
+            )
+
     if capacity:
         out.render(
-            c.output_format, data=data, title="节点性能对比",
-            columns=["server_id", "RTF", "加速比", "相对速度"],
+            c.output_format, data=data, title="节点性能对比（基于吞吐量RTF）",
+            columns=["server_id", "单线程RTF", "吞吐量RTF", "测试并发", "吞吐速度", "相对速度"],
             rows=[
-                [item.get("server_id", ""),
-                 f"{item.get('rtf', 0):.4f}",
-                 f"{item.get('acceleration_ratio', 0):.1f}x",
-                 f"{item.get('relative_speed', 0)*100:.0f}%"]
-                for item in capacity
+                [r.get("server_id", ""),
+                 next((f"{i.get('single_rtf', '-')}" for i in results
+                       if i.get("server_id") == r.get("server_id")), "-"),
+                 next((f"{i.get('throughput_rtf', '-')}" for i in results
+                       if i.get("server_id") == r.get("server_id")), "-"),
+                 next((f"{i.get('benchmark_concurrency', '-')}" for i in results
+                       if i.get("server_id") == r.get("server_id")), "-"),
+                 f"{r.get('acceleration_ratio', 0):.1f}x",
+                 f"{r.get('relative_speed', 0)*100:.0f}%"]
+                for r in capacity
             ],
         )
     else:
-        out.render(c.output_format, data=data)
+        out.render(
+            c.output_format, data=data, title="节点 benchmark 结果",
+            columns=["server_id", "单线程RTF", "吞吐量RTF", "测试并发", "样本"],
+            rows=[[
+                item.get("server_id", ""),
+                str(item.get("single_rtf", "-") or "-"),
+                str(item.get("throughput_rtf", "-") or "-"),
+                str(item.get("benchmark_concurrency", "-") or "-"),
+                ", ".join(item.get("benchmark_samples", [])),
+            ] for item in results],
+        )
 
 
 @app.command(name="update")
