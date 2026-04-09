@@ -76,10 +76,12 @@ class ServerBenchmarkItem(BaseModel):
     single_rtf: float | None = None
     throughput_rtf: float | None = None
     benchmark_concurrency: int | None = None
+    recommended_concurrency: int | None = None
     benchmark_audio_sec: float | None = None
     benchmark_elapsed_sec: float | None = None
     benchmark_samples: list[str] = []
     benchmark_notes: list[str] = []
+    gradient_complete: bool = True
     concurrency_gradient: list[ConcurrencyGradientItem] = []
 
 

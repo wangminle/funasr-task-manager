@@ -99,8 +99,9 @@
 |------|------|------|
 | POST | `/api/v1/servers` | 注册 ASR 节点 |
 | GET | `/api/v1/servers` | 节点列表 |
-| POST | `/api/v1/servers/{server_id}/probe` | 探测（connect_only/offline_light/twopass_full/benchmark） |
-| POST | `/api/v1/servers/benchmark` | 全量 benchmark |
+| POST | `/api/v1/servers/{server_id}/probe` | 探测连通性与能力（connect_only/offline_light/twopass_full），不执行 benchmark |
+| POST | `/api/v1/servers/{server_id}/benchmark` | 单节点 benchmark（单线程 RTF + 梯度并发吞吐量） |
+| POST | `/api/v1/servers/benchmark` | 全量 benchmark（所有在线节点） |
 | PATCH | `/api/v1/servers/{server_id}` | 更新配置（max_concurrency/name） |
 
 ### 系统诊断 API

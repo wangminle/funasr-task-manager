@@ -586,3 +586,119 @@ class TestStealImprovementCalculation:
 
         result = runner._find_steal_candidate(idle_profile, profile_map, task_map, set())
         assert result is None, "Should not steal when idle server is slower than source"
+
+
+@pytest.mark.unit
+class TestRetryFailedToQueued:
+    """Verify FAILED tasks are retried directly to QUEUED (not PENDING).
+
+    Bug fix: previously _retry_failed_tasks set status to PENDING, but
+    _dispatch_queued_tasks only picks up QUEUED tasks, causing retries
+    to get stuck indefinitely.
+    """
+
+    def test_failed_can_transition_to_queued(self):
+        """State machine must allow FAILED → QUEUED."""
+        from app.models.task import VALID_TRANSITIONS
+        assert TaskStatus.QUEUED in VALID_TRANSITIONS[TaskStatus.FAILED]
+
+    def test_failed_cannot_transition_to_pending(self):
+        """FAILED → PENDING should no longer be allowed."""
+        from app.models.task import VALID_TRANSITIONS
+        assert TaskStatus.PENDING not in VALID_TRANSITIONS[TaskStatus.FAILED]
+
+    async def test_retry_sets_queued_not_pending(self, db_engine, monkeypatch):
+        """_retry_failed_tasks must set FAILED tasks to QUEUED so the
+        dispatcher picks them up on the next cycle."""
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+
+        from app.config import settings
+        monkeypatch.setattr(settings, "max_retry_count", 3)
+
+        async with session_factory() as session:
+            session.add(_file("f-retry", duration_sec=60.0))
+            task = _task("t-retry", "f-retry", TaskStatus.QUEUED)
+            task.status = TaskStatus.FAILED.value
+            task.retry_count = 0
+            task.error_code = "TRANSCRIBE_ERROR"
+            task.error_message = "InvalidMessage: did not receive a valid HTTP response"
+            session.add(task)
+            await session.commit()
+
+        runner = BackgroundTaskRunner()
+        await runner._retry_failed_tasks()
+
+        async with session_factory() as session:
+            retried = (await session.execute(
+                select(Task).where(Task.task_id == "t-retry")
+            )).scalar_one()
+            assert retried.status == TaskStatus.QUEUED.value, (
+                f"Expected QUEUED after retry, got {retried.status}"
+            )
+            assert retried.retry_count == 1
+            assert retried.assigned_server_id is None
+            assert retried.error_code is None
+            assert retried.error_message is None
+
+    async def test_retry_respects_max_retry_count(self, db_engine, monkeypatch):
+        """Tasks at max_retry_count should NOT be retried."""
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+
+        from app.config import settings
+        monkeypatch.setattr(settings, "max_retry_count", 3)
+
+        async with session_factory() as session:
+            session.add(_file("f-maxed", duration_sec=60.0))
+            task = _task("t-maxed", "f-maxed", TaskStatus.QUEUED)
+            task.status = TaskStatus.FAILED.value
+            task.retry_count = 3
+            session.add(task)
+            await session.commit()
+
+        runner = BackgroundTaskRunner()
+        await runner._retry_failed_tasks()
+
+        async with session_factory() as session:
+            still_failed = (await session.execute(
+                select(Task).where(Task.task_id == "t-maxed")
+            )).scalar_one()
+            assert still_failed.status == TaskStatus.FAILED.value
+            assert still_failed.retry_count == 3
+
+    async def test_retried_task_gets_dispatched(self, db_engine, monkeypatch):
+        """End-to-end: FAILED → retry → QUEUED → dispatched by next cycle."""
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+        monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
+
+        from app.config import settings
+        monkeypatch.setattr(settings, "max_retry_count", 3)
+
+        async with session_factory() as session:
+            session.add(_server("srv-retry", 2))
+            session.add(_file("f-e2e", duration_sec=60.0))
+            task = _task("t-e2e", "f-e2e", TaskStatus.QUEUED)
+            task.status = TaskStatus.FAILED.value
+            task.retry_count = 0
+            task.error_message = "transient error"
+            session.add(task)
+            await session.commit()
+
+        runner = BackgroundTaskRunner()
+        started: list[str] = []
+        monkeypatch.setattr(runner, "_execute_task", lambda tid: started.append(tid) or asyncio.sleep(0))
+
+        await runner._retry_failed_tasks()
+        await runner._dispatch_queued_tasks()
+        await asyncio.sleep(0)
+
+        assert "t-e2e" in started, "Retried task should be dispatched"
+
+        async with session_factory() as session:
+            task = (await session.execute(
+                select(Task).where(Task.task_id == "t-e2e")
+            )).scalar_one()
+            assert task.status == TaskStatus.DISPATCHED.value
+            assert task.assigned_server_id == "srv-retry"

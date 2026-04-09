@@ -220,7 +220,6 @@ def _run_batch(c, files, language, hotwords, fmt, output_dir, callback,
     if not c.quiet:
         out.info(f"[3/4] 等待 {len(task_ids)} 个任务完成...")
 
-    terminal = {"SUCCEEDED", "FAILED", "CANCELED"}
     completed: dict[str, dict] = {}
     task_id_set = set(task_ids)
     start_time = time.time()
@@ -241,7 +240,8 @@ def _run_batch(c, files, language, hotwords, fmt, output_dir, callback,
                 tid = t["task_id"]
                 if tid in completed or tid not in task_id_set:
                     continue
-                if t["status"] in terminal:
+                is_terminal = t.get("is_terminal", t["status"] in ("SUCCEEDED", "CANCELED"))
+                if is_terminal:
                     completed[tid] = t
                     if not c.quiet:
                         elapsed = int(time.time() - start_time)
@@ -258,6 +258,12 @@ def _run_batch(c, files, language, hotwords, fmt, output_dir, callback,
     succeeded = [t for t in completed.values() if t["status"] == "SUCCEEDED"]
     failed = [t for t in completed.values() if t["status"] != "SUCCEEDED"]
     not_finished = len(task_ids) - len(completed)
+
+    server_usage: dict[str, int] = {}
+    for t in completed.values():
+        sid = t.get("assigned_server_id")
+        if sid:
+            server_usage[sid] = server_usage.get(sid, 0) + 1
 
     if not c.quiet:
         elapsed = int(time.time() - start_time)
@@ -313,17 +319,20 @@ def _run_batch(c, files, language, hotwords, fmt, output_dir, callback,
             "failed": len(failed),
             "timeout": not_finished,
             "elapsed_seconds": int(time.time() - start_time),
+            "server_usage": server_usage,
             "results": results,
         }
         out.print_json(summary)
     else:
+        usage_str = ", ".join(f"{k}: {v}" for k, v in sorted(server_usage.items()))
         out.render(
             c.output_format, data=results,
             title=f"批量转写结果 (批次: {task_group_id or 'N/A'})",
             columns=["文件", "task_id", "状态", "输出"],
             rows=[[r.get("file", ""), r.get("task_id", "")[:12] + "...",
                    r.get("status", ""), r.get("output", "-")] for r in results],
-            footer=f"成功 {len(succeeded)} / 失败 {len(failed)} / 超时 {not_finished}",
+            footer=f"成功 {len(succeeded)} / 失败 {len(failed)} / 超时 {not_finished}"
+                   + (f"\n  调度分布: {usage_str}" if server_usage else ""),
         )
 
     if failed or not_finished or upload_failures:

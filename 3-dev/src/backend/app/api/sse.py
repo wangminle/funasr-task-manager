@@ -16,6 +16,7 @@ from collections.abc import AsyncGenerator
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.config import settings
 from app.deps import CurrentUser, DbSession
 from app.models import TaskStatus
 from app.storage.repository import TaskRepository
@@ -74,6 +75,7 @@ async def _progress_stream(
                 current_result_path = task.result_path
                 current_error_code = task.error_code
                 current_error_message = task.error_message
+                current_retry_count = task.retry_count
 
             status_changed = current_status != last_status
             progress_changed = abs(progress - last_progress) > 0.01
@@ -101,8 +103,12 @@ async def _progress_stream(
                 last_progress = progress
                 keepalive_counter = 0
 
-                terminal = {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED}
-                if TaskStatus(current_status) in terminal:
+                is_terminal = current_status in (
+                    TaskStatus.SUCCEEDED, TaskStatus.CANCELED,
+                )
+                if current_status == TaskStatus.FAILED:
+                    is_terminal = current_retry_count >= settings.max_retry_count
+                if is_terminal:
                     yield _format_sse("complete", {
                         "task_id": task_id,
                         "final_status": current_status,

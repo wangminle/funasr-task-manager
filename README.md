@@ -413,6 +413,7 @@ python -m cli server list
 | **最早完工时间** | 考虑当前队列负载，选择预估最早完成的节点 |
 | **槽位队列预规划** | 首轮为每个虚拟并发槽位生成有序任务队列，补位时直接从本槽位取下一个 |
 | **工作窃取** | 快节点空闲且自身队列清空时，可从其他节点队列尾部窃取更快完成的短任务 |
+| **自动重试** | 瞬时故障（网络超时、协议错误）的任务自动从 FAILED 回到 QUEUED 重新调度，回调和并发槽位仅在真正终态时释放 |
 | **自动探测** | 服务器协议版本（v1_old/v2_new）自动探测 |
 | **断路器** | CLOSED→OPEN→HALF_OPEN 三态切换，故障服务器自动隔离 |
 
@@ -495,6 +496,9 @@ python -m cli config set api_key dev-token-user1
 
 **Q: 如何一次性下载所有结果？**
 `python -m cli task result --group <group_id> --format txt,srt` 会把所有格式下载到 `runtime/storage/downloads/` 并生成 `batch-summary.json` 摘要文件；如果你只想导出副本到别处，再显式指定 `--output-dir`。
+
+**Q: 任务显示 FAILED 但随后又变成 SUCCEEDED 了？**
+系统内置自动重试机制。任务首次失败（如网络抖动）后会自动从 FAILED 重新排队，在未达到最大重试次数前属于可恢复状态。API 响应中的 `is_terminal` 字段标识任务是否已到达真正终态——SUCCEEDED 和 CANCELED 总是终态，FAILED 仅在重试耗尽后才是终态。SSE 流和 CLI 批量轮询都依赖此字段判断何时停止观察。
 
 **Q: 任务创建后处于 PREPROCESSING 状态很久？**
 检查是否有 ASR 服务器在线：`python -m cli server list`。如果没有在线节点，任务会排队等待。

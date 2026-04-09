@@ -11,7 +11,7 @@ from app.config import settings
 from app.observability.logging import setup_logging, get_logger
 from app.services.task_runner import task_runner
 from app.services.heartbeat import heartbeat_service
-from app.storage.database import async_session_factory
+from app.storage.database import async_session_factory, verify_db_writable
 from app.storage.repository import ServerRepository
 
 logger = get_logger(__name__)
@@ -61,6 +61,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     settings.result_dir.mkdir(parents=True, exist_ok=True)
     settings.temp_dir.mkdir(parents=True, exist_ok=True)
+
+    if not await verify_db_writable():
+        db_path = settings.database_url.split("///")[-1] if "///" in settings.database_url else "unknown"
+        logger.critical(
+            "database_readonly_at_startup",
+            db_path=db_path,
+            hint="Check file permissions and ensure no file-sync tool "
+                 "(Syncthing/极空间/Dropbox) is syncing the runtime/ directory. "
+                 "Add runtime/ to .stignore or the sync exclusion list.",
+        )
+        raise SystemExit(
+            f"Database is readonly: {db_path}\n"
+            "Likely cause: a file-sync tool replaced the DB file. "
+            "Exclude runtime/ from sync and restart."
+        )
 
     global _schema_ok
     try:

@@ -93,7 +93,6 @@ async def benchmark_all_servers(db: DbSession, admin: AdminUser):
         try:
             bench = await benchmark_server_full_with_ssl_fallback(
                 server.host, server.port,
-                max_concurrency=server.max_concurrency,
                 timeout=900.0,
             )
         except (FileNotFoundError, ValueError) as exc:
@@ -107,12 +106,7 @@ async def benchmark_all_servers(db: DbSession, admin: AdminUser):
             logger.warning("benchmark_server_unreachable",
                            server_id=server.server_id, error=bench.error)
         else:
-            if bench.single_rtf is not None:
-                server.rtf_baseline = bench.single_rtf
-            if bench.throughput_rtf is not None:
-                server.throughput_rtf = bench.throughput_rtf
-            if bench.benchmark_concurrency is not None:
-                server.benchmark_concurrency = bench.benchmark_concurrency
+            _apply_benchmark_result(server, bench)
 
         item_data = bench.to_dict()
         gradient_raw = item_data.pop("concurrency_gradient", [])
@@ -158,7 +152,6 @@ async def benchmark_server_endpoint(server_id: str, db: DbSession, admin: AdminU
     try:
         bench = await benchmark_server_full_with_ssl_fallback(
             server.host, server.port,
-            max_concurrency=server.max_concurrency,
             timeout=900.0,
         )
     except (FileNotFoundError, ValueError) as exc:
@@ -168,12 +161,8 @@ async def benchmark_server_endpoint(server_id: str, db: DbSession, admin: AdminU
         )
 
     server.status = ServerStatus.ONLINE if bench.reachable else ServerStatus.OFFLINE
-    if bench.single_rtf is not None:
-        server.rtf_baseline = bench.single_rtf
-    if bench.throughput_rtf is not None:
-        server.throughput_rtf = bench.throughput_rtf
-    if bench.benchmark_concurrency is not None:
-        server.benchmark_concurrency = bench.benchmark_concurrency
+    if bench.reachable:
+        _apply_benchmark_result(server, bench)
     await db.commit()
 
     item_data = bench.to_dict()
@@ -290,6 +279,48 @@ async def delete_server(server_id: str, db: DbSession, admin: AdminUser):
     if not deleted:
         raise HTTPException(status_code=404, detail="Server not found")
     logger.info("server_deleted", server_id=server_id, unbound_tasks=len(bound_tasks), by=admin)
+
+
+def _apply_benchmark_result(
+    server: ServerInstance,
+    bench,
+) -> None:
+    """Write benchmark metrics to server model fields.
+
+    RTF baselines are exclusively set here (benchmark owns them).
+    max_concurrency is set to the degradation-detected recommended value
+    so that scheduling matches the server's true concurrent capacity.
+
+    When the gradient terminated early due to errors (gradient_complete=False),
+    only allow max_concurrency to stay the same or increase — never downgrade
+    based on incomplete evidence from a transient failure.
+    """
+    if bench.single_rtf is not None:
+        server.rtf_baseline = bench.single_rtf
+    if bench.throughput_rtf is not None:
+        server.throughput_rtf = bench.throughput_rtf
+    if bench.benchmark_concurrency is not None:
+        server.benchmark_concurrency = bench.benchmark_concurrency
+    if bench.recommended_concurrency is not None:
+        old_mc = server.max_concurrency
+        if not bench.gradient_complete and bench.recommended_concurrency < old_mc:
+            logger.warning(
+                "benchmark_incomplete_gradient_skip_downgrade",
+                server_id=server.server_id,
+                current=old_mc,
+                would_be=bench.recommended_concurrency,
+                reason="gradient terminated early by error; keeping current max_concurrency",
+            )
+        else:
+            server.max_concurrency = bench.recommended_concurrency
+            if old_mc != bench.recommended_concurrency:
+                logger.info(
+                    "benchmark_auto_adjust_concurrency",
+                    server_id=server.server_id,
+                    old=old_mc,
+                    new=bench.recommended_concurrency,
+                    reason="degradation_detection" if bench.gradient_complete else "partial_gradient_upgrade",
+                )
 
 
 def _extract_modes(caps) -> list[str]:

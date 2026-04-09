@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class CallbackConfig(BaseModel):
@@ -36,11 +36,21 @@ class TaskResponse(BaseModel):
     error_code: str | None = None
     error_message: str | None = None
     retry_count: int = 0
+    is_terminal: bool = False
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+    @model_validator(mode="after")
+    def _compute_is_terminal(self) -> "TaskResponse":
+        if self.status in ("SUCCEEDED", "CANCELED"):
+            self.is_terminal = True
+        elif self.status == "FAILED":
+            from app.config import settings
+            self.is_terminal = self.retry_count >= settings.max_retry_count
+        return self
 
 
 class TaskListResponse(BaseModel):

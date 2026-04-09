@@ -30,6 +30,10 @@ BENCHMARK_SAMPLE_FILES = (SINGLE_RTF_SAMPLE, THROUGHPUT_RTF_SAMPLE)
 BENCHMARK_CHUNK_SIZE = 64 * 1024
 CONCURRENCY_GRADIENT = (1, 2, 4, 8)
 
+# Degradation detection thresholds
+THROUGHPUT_MIN_IMPROVEMENT = 0.10  # throughput_rtf must improve >=10% per concurrency doubling
+PER_FILE_MAX_DEGRADATION = 2.0    # per_file_rtf must stay below 2× single_rtf
+
 
 @dataclass
 class BenchmarkSample:
@@ -58,11 +62,13 @@ class ServerBenchmarkResult:
     single_rtf: float | None = None
     throughput_rtf: float | None = None
     benchmark_concurrency: int | None = None
+    recommended_concurrency: int | None = None
     benchmark_audio_sec: float | None = None
     benchmark_elapsed_sec: float | None = None
     benchmark_samples: list[str] = field(default_factory=list)
     benchmark_notes: list[str] = field(default_factory=list)
     concurrency_gradient: list[ConcurrencyGradient] = field(default_factory=list)
+    gradient_complete: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -72,10 +78,12 @@ class ServerBenchmarkResult:
             "single_rtf": self.single_rtf,
             "throughput_rtf": self.throughput_rtf,
             "benchmark_concurrency": self.benchmark_concurrency,
+            "recommended_concurrency": self.recommended_concurrency,
             "benchmark_audio_sec": self.benchmark_audio_sec,
             "benchmark_elapsed_sec": self.benchmark_elapsed_sec,
             "benchmark_samples": self.benchmark_samples,
             "benchmark_notes": self.benchmark_notes,
+            "gradient_complete": self.gradient_complete,
             "concurrency_gradient": [
                 {
                     "concurrency": g.concurrency,
@@ -96,7 +104,7 @@ class ServerBenchmarkResult:
 async def benchmark_server_full(
     host: str,
     port: int,
-    max_concurrency: int = 4,
+    max_concurrency: int = 8,
     *,
     use_ssl: bool = True,
     timeout: float = 900.0,
@@ -104,7 +112,11 @@ async def benchmark_server_full(
     """Run full benchmark: single-thread RTF + gradient concurrency throughput RTF.
 
     Phase 1 — single_rtf: send tv-report-1.wav (long WAV) once for accurate single-thread speed.
-    Phase 2 — throughput_rtf: send test.mp4 (short) ×N (N=1,2,4,8) concurrently for throughput.
+    Phase 2 — throughput_rtf: send test.mp4 (short) ×N concurrently for throughput.
+
+    Gradient always tests (1, 2, 4, 8) regardless of current max_concurrency
+    to prevent spiral-down. Degradation detection finds the true optimal level.
+    Pass max_concurrency=1 to skip gradient (legacy single-thread mode).
     """
     samples_map = await load_benchmark_samples_by_role()
     single_sample = samples_map["single"]
@@ -153,12 +165,14 @@ async def benchmark_server_full(
     )
 
     # Phase 2: gradient concurrency throughput using test.mp4 ×N
-    capped_gradient = [n for n in CONCURRENCY_GRADIENT if n <= max_concurrency]
-    if not capped_gradient:
+    # Always test full gradient (1, 2, 4, 8) to detect the true optimal
+    # concurrency. Not capping by current max_concurrency prevents the
+    # spiral-down where a previously lowered max blocks future discovery.
+    # Pass max_concurrency=1 from legacy wrappers to skip gradient entirely.
+    if max_concurrency <= 1:
         capped_gradient = [1]
-
-    last_throughput_rtf = result.single_rtf
-    last_concurrency = 1
+    else:
+        capped_gradient = list(CONCURRENCY_GRADIENT)
 
     for n in capped_gradient:
         try:
@@ -167,10 +181,12 @@ async def benchmark_server_full(
         except asyncio.TimeoutError:
             result.benchmark_notes.append(f"[concurrent] {throughput_sample.name}×{n}: timeout")
             logger.warning("benchmark_concurrent_timeout", uri=uri, concurrency=n)
+            result.gradient_complete = False
             break
         except Exception as exc:
             result.benchmark_notes.append(f"[concurrent] {throughput_sample.name}×{n}: error: {exc}")
             logger.warning("benchmark_concurrent_error", uri=uri, concurrency=n, error=str(exc))
+            result.gradient_complete = False
             break
 
         per_file_rtf = round(wall_clock / throughput_sample.duration_sec, 4)
@@ -185,8 +201,6 @@ async def benchmark_server_full(
             total_audio_sec=round(total_audio_concurrent, 3),
         )
         result.concurrency_gradient.append(gradient)
-        last_throughput_rtf = tp_rtf
-        last_concurrency = n
 
         result.benchmark_notes.append(
             f"[concurrent] {throughput_sample.name}×{n}: wall={wall_clock:.2f}s, "
@@ -204,8 +218,37 @@ async def benchmark_server_full(
 
         await asyncio.sleep(1)
 
-    result.throughput_rtf = last_throughput_rtf
-    result.benchmark_concurrency = last_concurrency
+    # Degradation detection: find the highest concurrency where throughput
+    # still improves meaningfully, rather than blindly picking the "best"
+    # throughput_rtf (which might select a low N and waste server capacity).
+    if result.concurrency_gradient:
+        rec_n, rec_tp_rtf = _detect_optimal_concurrency(
+            result.concurrency_gradient, result.single_rtf,
+        )
+        result.throughput_rtf = rec_tp_rtf
+        result.benchmark_concurrency = rec_n
+        result.recommended_concurrency = rec_n
+
+        max_tested = result.concurrency_gradient[-1].concurrency
+        if rec_n < max_tested:
+            result.benchmark_notes.append(
+                f"[degradation] 并发 N>{rec_n} 吞吐量退化，"
+                f"推荐 max_concurrency={rec_n} "
+                f"(throughput_rtf={rec_tp_rtf:.4f})"
+            )
+        else:
+            result.benchmark_notes.append(
+                f"[auto] 最优并发级别: N={rec_n} "
+                f"(throughput_rtf={rec_tp_rtf:.4f})"
+            )
+    else:
+        result.throughput_rtf = result.single_rtf
+        result.benchmark_concurrency = 1
+        result.recommended_concurrency = 1
+        result.gradient_complete = False
+        result.benchmark_notes.append(
+            "[auto] 梯度测试全部失败，回退到单线程 (N=1)"
+        )
 
     logger.info(
         "benchmark_full_complete",
@@ -213,6 +256,7 @@ async def benchmark_server_full(
         single_rtf=result.single_rtf,
         throughput_rtf=result.throughput_rtf,
         benchmark_concurrency=result.benchmark_concurrency,
+        recommended_concurrency=result.recommended_concurrency,
     )
 
     return result
@@ -221,7 +265,7 @@ async def benchmark_server_full(
 async def benchmark_server_full_with_ssl_fallback(
     host: str,
     port: int,
-    max_concurrency: int = 4,
+    max_concurrency: int = 8,
     timeout: float = 900.0,
 ) -> ServerBenchmarkResult:
     """Full benchmark with wss→ws fallback.
@@ -355,6 +399,59 @@ async def _load_benchmark_sample(path: Path) -> BenchmarkSample:
         wav_format="others",
         duration_sec=duration_sec,
     )
+
+
+# ---------------------------------------------------------------------------
+# Degradation detection
+# ---------------------------------------------------------------------------
+
+def _detect_optimal_concurrency(
+    gradient: list[ConcurrencyGradient],
+    single_rtf: float | None,
+) -> tuple[int, float]:
+    """Find the highest non-degraded concurrency level via throughput analysis.
+
+    A concurrency level N is accepted (and becomes the new "best") only if:
+      1. throughput_rtf(N) improved ≥ THROUGHPUT_MIN_IMPROVEMENT over level N-1
+      2. per_file_rtf(N) ≤ single_rtf × PER_FILE_MAX_DEGRADATION
+
+    Returns (recommended_concurrency, throughput_rtf_at_that_level).
+    """
+    if not gradient:
+        return 1, single_rtf or 0.3
+
+    best = gradient[0]
+
+    for i in range(1, len(gradient)):
+        current = gradient[i]
+        prev = gradient[i - 1]
+
+        if prev.throughput_rtf > 0:
+            improvement = 1.0 - (current.throughput_rtf / prev.throughput_rtf)
+            if improvement < THROUGHPUT_MIN_IMPROVEMENT:
+                logger.info(
+                    "degradation_detected_throughput",
+                    concurrency=current.concurrency,
+                    prev_concurrency=prev.concurrency,
+                    improvement=f"{improvement:.2%}",
+                    threshold=f"{THROUGHPUT_MIN_IMPROVEMENT:.0%}",
+                )
+                break
+
+        if single_rtf and single_rtf > 0:
+            if current.per_file_rtf > single_rtf * PER_FILE_MAX_DEGRADATION:
+                logger.info(
+                    "degradation_detected_per_file",
+                    concurrency=current.concurrency,
+                    per_file_rtf=f"{current.per_file_rtf:.4f}",
+                    single_rtf=f"{single_rtf:.4f}",
+                    ratio=f"{current.per_file_rtf / single_rtf:.1f}x",
+                )
+                break
+
+        best = current
+
+    return best.concurrency, best.throughput_rtf
 
 
 # ---------------------------------------------------------------------------

@@ -192,7 +192,7 @@ def benchmark(
     if capacity:
         out.render(
             c.output_format, data=data, title="节点性能对比（基于吞吐量RTF）",
-            columns=["server_id", "单线程RTF", "吞吐量RTF", "测试并发", "吞吐速度", "相对速度"],
+            columns=["server_id", "单线程RTF", "吞吐量RTF", "最优并发", "推荐并发→槽位", "吞吐速度", "相对速度"],
             rows=[
                 [r.get("server_id", ""),
                  next((f"{i.get('single_rtf', '-')}" for i in results
@@ -200,6 +200,8 @@ def benchmark(
                  next((f"{i.get('throughput_rtf', '-')}" for i in results
                        if i.get("server_id") == r.get("server_id")), "-"),
                  next((f"{i.get('benchmark_concurrency', '-')}" for i in results
+                       if i.get("server_id") == r.get("server_id")), "-"),
+                 next((f"{i.get('recommended_concurrency', '-')}" for i in results
                        if i.get("server_id") == r.get("server_id")), "-"),
                  f"{r.get('acceleration_ratio', 0):.1f}x",
                  f"{r.get('relative_speed', 0)*100:.0f}%"]
@@ -209,12 +211,13 @@ def benchmark(
     else:
         out.render(
             c.output_format, data=data, title="节点 benchmark 结果",
-            columns=["server_id", "单线程RTF", "吞吐量RTF", "测试并发", "样本"],
+            columns=["server_id", "单线程RTF", "吞吐量RTF", "最优并发", "推荐并发→槽位", "样本"],
             rows=[[
                 item.get("server_id", ""),
                 str(item.get("single_rtf", "-") or "-"),
                 str(item.get("throughput_rtf", "-") or "-"),
                 str(item.get("benchmark_concurrency", "-") or "-"),
+                str(item.get("recommended_concurrency", "-") or "-"),
                 ", ".join(item.get("benchmark_samples", [])),
             ] for item in results],
         )

@@ -78,7 +78,12 @@ class BackgroundTaskRunner:
             await self._wait_for_dispatch_signal()
 
     async def _retry_failed_tasks(self) -> None:
-        """Reset FAILED tasks back to PENDING for automatic retry (up to max_retry_count)."""
+        """Re-queue FAILED tasks for automatic retry (up to max_retry_count).
+
+        Goes directly FAILED → QUEUED so the dispatcher picks them up
+        immediately. The file is already uploaded and preprocessed, so
+        there is no need to revisit PENDING/PREPROCESSING.
+        """
         max_retries = settings.max_retry_count
         async with async_session_factory() as session:
             repo = TaskRepository(session)
@@ -92,15 +97,15 @@ class BackgroundTaskRunner:
             if not tasks:
                 return
             for task in tasks:
-                if task.can_transition_to(TaskStatus.PENDING):
+                if task.can_transition_to(TaskStatus.QUEUED):
                     task.retry_count += 1
                     task.assigned_server_id = None
                     task.error_code = None
                     task.error_message = None
                     task.started_at = None
                     task.completed_at = None
-                    await repo.update_task_status(task, TaskStatus.PENDING)
-                    logger.info("task_retry_scheduled", task_id=task.task_id, retry=task.retry_count)
+                    await repo.update_task_status(task, TaskStatus.QUEUED)
+                    logger.info("task_retry_queued", task_id=task.task_id, retry=task.retry_count)
             await session.commit()
         self._request_dispatch()
 
@@ -360,21 +365,11 @@ class BackgroundTaskRunner:
                 audio_duration = file_record.duration_sec
             if audio_duration > 0 and task.started_at:
                 actual_sec = (datetime.now(timezone.utc) - task.started_at).total_seconds()
-                cal_result = global_scheduler.calibrate_after_completion(
+                global_scheduler.calibrate_after_completion(
                     server_id=server.server_id,
                     audio_duration_sec=audio_duration,
                     actual_duration_sec=actual_sec,
                 )
-                window_size = global_scheduler.rtf_tracker.get_window_size(server.server_id)
-                if window_size >= 3:
-                    await self._persist_rtf_baseline(server.server_id, cal_result["new_rtf_p90"])
-                else:
-                    logger.info(
-                        "rtf_baseline_persist_skipped",
-                        server_id=server.server_id,
-                        window_size=window_size,
-                        reason="insufficient samples, preserving existing baseline",
-                    )
 
             raw = result.raw if isinstance(result.raw, dict) and result.raw else {}
             if "text" not in raw:
@@ -455,15 +450,20 @@ class BackgroundTaskRunner:
                 return
             task.error_code = "TRANSCRIBE_ERROR"
             task.error_message = message[:2000]
+            is_terminal = task.retry_count >= settings.max_retry_count
             if task.can_transition_to(TaskStatus.FAILED):
                 event = await repo.update_task_status(task, TaskStatus.FAILED)
-                outbox = await self._enqueue_callback(session, task, event.event_id, TaskStatus.FAILED, error_message=message[:2000])
-                if outbox is not None:
-                    pending_delivery = (outbox.outbox_id, task.callback_secret)
+                if is_terminal:
+                    outbox = await self._enqueue_callback(session, task, event.event_id, TaskStatus.FAILED, error_message=message[:2000])
+                    if outbox is not None:
+                        pending_delivery = (outbox.outbox_id, task.callback_secret)
             user_id = task.user_id
             await session.commit()
-            logger.warning("task_transcription_failed", task_id=task_id, error=message[:300])
-            rate_limiter.record_task_completed(user_id)
+            logger.warning("task_transcription_failed", task_id=task_id,
+                           error=message[:300], terminal=is_terminal,
+                           retry_count=task.retry_count)
+            if is_terminal:
+                rate_limiter.record_task_completed(user_id)
         self._clear_slot_queues()
         self._request_dispatch()
         if pending_delivery:
@@ -639,20 +639,6 @@ class BackgroundTaskRunner:
         if "legacy" in pv or "old" in pv:
             return "legacy"
         return None
-
-    async def _persist_rtf_baseline(self, server_id: str, new_rtf_p90: float) -> None:
-        """Save updated RTF baseline to database so it survives restarts."""
-        try:
-            async with async_session_factory() as session:
-                srv = (await session.execute(
-                    select(ServerInstance).where(ServerInstance.server_id == server_id)
-                )).scalar_one_or_none()
-                if srv is not None:
-                    srv.rtf_baseline = round(new_rtf_p90, 4)
-                    await session.commit()
-                    logger.info("rtf_baseline_persisted", server_id=server_id, rtf=f"{new_rtf_p90:.4f}")
-        except Exception as e:
-            logger.warning("rtf_baseline_persist_failed", server_id=server_id, error=str(e))
 
     def _find_steal_candidate(
         self,

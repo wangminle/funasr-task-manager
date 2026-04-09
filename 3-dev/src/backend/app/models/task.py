@@ -27,7 +27,7 @@ VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.DISPATCHED: {TaskStatus.TRANSCRIBING, TaskStatus.FAILED, TaskStatus.CANCELED},
     TaskStatus.TRANSCRIBING: {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED},
     TaskStatus.SUCCEEDED: set(),
-    TaskStatus.FAILED: {TaskStatus.PENDING},
+    TaskStatus.FAILED: {TaskStatus.QUEUED},
     TaskStatus.CANCELED: set(),
 }
 
