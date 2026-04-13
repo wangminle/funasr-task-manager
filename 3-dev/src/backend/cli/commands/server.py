@@ -178,13 +178,20 @@ def benchmark(
             out.render(
                 c.output_format, data=gradient,
                 title=f"{sid} 并发梯度",
-                columns=["并发数", "单文件RTF", "吞吐量RTF", "Wall Clock(s)", "总音频(s)"],
+                columns=[
+                    "并发", "吞吐RTF", "服务端RTF",
+                    "上传(ms)", "等待(ms)", "离散(ms)",
+                    "RTT(ms)", "Wall(s)",
+                ],
                 rows=[
                     [str(g.get("concurrency", "")),
-                     f"{g.get('per_file_rtf', 0):.4f}",
                      f"{g.get('throughput_rtf', 0):.4f}",
-                     f"{g.get('wall_clock_sec', 0):.2f}",
-                     f"{g.get('total_audio_sec', 0):.1f}"]
+                     f"{g.get('server_throughput_rtf', 0):.4f}",
+                     f"{g.get('avg_upload_ms', 0):.0f}",
+                     f"{g.get('concurrent_post_upload_ms', 0):.0f}",
+                     f"{g.get('upload_spread_ms', 0):.0f}",
+                     f"{g.get('ping_rtt_ms', 0) or 0:.1f}",
+                     f"{g.get('wall_clock_sec', 0):.2f}"]
                     for g in gradient
                 ],
             )

@@ -1,0 +1,286 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900" viewBox="0 0 1200 900">
+  <defs>
+    <style>
+      .bg { fill: #f5f7fa; }
+      .sidebar { fill: #1d2b3a; }
+      .sidebar-text { fill: #a0aec0; font-family: 'Microsoft YaHei', sans-serif; font-size: 14px; }
+      .sidebar-active { fill: #2563eb; rx: 6; }
+      .sidebar-active-text { fill: #ffffff; font-family: 'Microsoft YaHei', sans-serif; font-size: 14px; font-weight: bold; }
+      .header { fill: #ffffff; }
+      .header-text { fill: #1a202c; font-family: 'Microsoft YaHei', sans-serif; font-size: 18px; font-weight: bold; }
+      .card { fill: #ffffff; rx: 12; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.1)); }
+      .title { fill: #1a202c; font-family: 'Microsoft YaHei', sans-serif; font-size: 15px; font-weight: bold; }
+      .desc { fill: #718096; font-family: 'Microsoft YaHei', sans-serif; font-size: 13px; }
+      .label { fill: #4a5568; font-family: 'Microsoft YaHei', sans-serif; font-size: 12px; }
+      .value { fill: #1a202c; font-family: 'Microsoft YaHei', sans-serif; font-size: 13px; }
+      .stat-num { fill: #1a202c; font-family: 'Microsoft YaHei', sans-serif; font-size: 26px; font-weight: bold; }
+      .stat-label { fill: #718096; font-family: 'Microsoft YaHei', sans-serif; font-size: 11px; }
+      .file-info { fill: #718096; font-family: 'Microsoft YaHei', sans-serif; font-size: 12px; }
+      .divider { stroke: #e2e8f0; stroke-width: 1; }
+      .grid-line { stroke: #edf2f7; stroke-width: 1; }
+      .axis-label { fill: #a0aec0; font-family: 'Microsoft YaHei', sans-serif; font-size: 10px; }
+    </style>
+  </defs>
+  <rect class="bg" width="1200" height="900" />
+  <!-- Sidebar -->
+  <rect class="sidebar" x="0" y="0" width="220" height="900" />
+  <text x="30" y="40" fill="#ffffff" font-family="'Microsoft YaHei', sans-serif" font-size="20" font-weight="bold">ASR 任务管理器</text>
+  <line x1="20" y1="55" x2="200" y2="55" stroke="#2d3e50" stroke-width="1" />
+  <text class="sidebar-text" x="48" y="95">文件上传</text>
+  <text class="sidebar-text" x="48" y="130">任务列表</text>
+  <rect class="sidebar-active" x="12" y="140" width="196" height="40" />
+  <text class="sidebar-active-text" x="48" y="165">系统监控</text>
+  <text class="sidebar-text" x="48" y="210">设置中心</text>
+  <line x1="20" y1="840" x2="200" y2="840" stroke="#2d3e50" stroke-width="1" />
+  <text class="sidebar-text" x="30" y="870">用户：管理员</text>
+  <!-- Header -->
+  <rect class="header" x="220" y="0" width="980" height="60" />
+  <text class="header-text" x="250" y="38">系统监控</text>
+  <text class="file-info" x="1050" y="38">刷新：10:45:30 · 间隔 10s</text>
+  <line class="divider" x1="220" y1="60" x2="1200" y2="60" />
+  <!-- Top Stats Row -->
+  <!-- Stat 1: Total servers -->
+  <rect class="card" x="250" y="76" width="145" height="86" />
+  <text class="stat-label" x="270" y="98">ASR 节点数</text>
+  <text class="stat-num" x="270" y="132">5</text>
+  <text fill="#38a169" font-family="'Microsoft YaHei', sans-serif" font-size="12" x="305" y="132">/ 5 在线</text>
+  <!-- Stat 2: Total slots -->
+  <rect class="card" x="407" y="76" width="145" height="86" />
+  <text class="stat-label" x="427" y="98">已用槽位 / 总槽位</text>
+  <text class="stat-num" x="427" y="132">38</text>
+  <text fill="#718096" font-family="'Microsoft YaHei', sans-serif" font-size="18" x="470" y="132">/ 50</text>
+  <!-- Stat 3: Queue depth -->
+  <rect class="card" x="564" y="76" width="145" height="86" />
+  <text class="stat-label" x="584" y="98">队列深度</text>
+  <text fill="#d69e2e" font-family="'Microsoft YaHei', sans-serif" font-size="26" font-weight="bold" x="584" y="132">12</text>
+  <!-- Stat 4: Today completed -->
+  <rect class="card" x="721" y="76" width="145" height="86" />
+  <text class="stat-label" x="741" y="98">今日完成</text>
+  <text fill="#38a169" font-family="'Microsoft YaHei', sans-serif" font-size="26" font-weight="bold" x="741" y="132">47</text>
+  <!-- Stat 5: Success rate -->
+  <rect class="card" x="878" y="76" width="145" height="86" />
+  <text class="stat-label" x="898" y="98">成功率 (24h)</text>
+  <text fill="#38a169" font-family="'Microsoft YaHei', sans-serif" font-size="26" font-weight="bold" x="898" y="132">97.4%</text>
+  <!-- Stat 6: Avg RTF -->
+  <rect class="card" x="1035" y="76" width="135" height="86" />
+  <text class="stat-label" x="1055" y="98">平均 RTF</text>
+  <text class="stat-num" x="1055" y="132">0.48</text>
+  <!-- Server Status Card -->
+  <rect class="card" x="250" y="178" width="920" height="260" />
+  <text class="title" x="274" y="204">ASR 节点状态</text>
+  <!-- Table Header -->
+  <rect fill="#f7fafc" x="268" y="216" width="884" height="28" rx="4" />
+  <text class="label" x="286" y="235">节点名称</text>
+  <text class="label" x="420" y="235">地址</text>
+  <text class="label" x="550" y="235">协议</text>
+  <text class="label" x="620" y="235">状态</text>
+  <text class="label" x="700" y="235">槽位</text>
+  <text class="label" x="790" y="235">RTF (p90)</text>
+  <text class="label" x="880" y="235">断路器</text>
+  <text class="label" x="970" y="235">今日任务</text>
+  <text class="label" x="1060" y="235">延迟</text>
+  <!-- Server Row 1 -->
+  <text class="value" x="286" y="268">ASR-Server-01</text>
+  <text class="file-info" x="420" y="268">10.0.1.11:10095</text>
+  <text class="file-info" x="550" y="268">新版 (V2)</text>
+  <rect fill="#c6f6d5" x="620" y="255" width="50" height="20" rx="4" />
+  <text fill="#276749" font-family="'Microsoft YaHei', sans-serif" font-size="11" x="645" y="269" text-anchor="middle">在线</text>
+  <!-- Slot bar -->
+  <rect fill="#e2e8f0" x="700" y="260" width="60" height="10" rx="3" />
+  <rect fill="#2563eb" x="700" y="260" width="48" height="10" rx="3" />
+  <text class="file-info" x="766" y="269">8/10</text>
+  <text class="value" x="790" y="268">0.42</text>
+  <rect fill="#c6f6d5" x="880" y="255" width="56" height="20" rx="4" />
+  <text fill="#276749" font-family="'Microsoft YaHei', sans-serif" font-size="10" x="908" y="269" text-anchor="middle">CLOSED</text>
+  <text class="value" x="970" y="268">15</text>
+  <text fill="#38a169" font-family="'Microsoft YaHei', sans-serif" font-size="11" x="1060" y="268">3s 正常</text>
+  <line class="divider" x1="268" y1="280" x2="1152" y2="280" />
+  <!-- Server Row 2 -->
+  <text class="value" x="286" y="300">ASR-Server-02</text>
+  <text class="file-info" x="420" y="300">10.0.1.12:10095</text>
+  <text class="file-info" x="550" y="300">旧版 (V1)</text>
+  <rect fill="#c6f6d5" x="620" y="287" width="50" height="20" rx="4" />
+  <text fill="#276749" font-family="'Microsoft YaHei', sans-serif" font-size="11" x="645" y="301" text-anchor="middle">在线</text>
+  <rect fill="#e2e8f0" x="700" y="292" width="60" height="10" rx="3" />
+  <rect fill="#2563eb" x="700" y="292" width="42" height="10" rx="3" />
+  <text class="file-info" x="766" y="301">7/10</text>
+  <text class="value" x="790" y="300">0.55</text>
+  <rect fill="#c6f6d5" x="880" y="287" width="56" height="20" rx="4" />
+  <text fill="#276749" font-family="'Microsoft YaHei', sans-serif" font-size="10" x="908" y="301" text-anchor="middle">CLOSED</text>
+  <text class="value" x="970" y="300">12</text>
+  <text fill="#38a169" font-family="'Microsoft YaHei', sans-serif" font-size="11" x="1060" y="300">5s 正常</text>
+  <line class="divider" x1="268" y1="312" x2="1152" y2="312" />
+  <!-- Server Row 3 -->
+  <text class="value" x="286" y="332">ASR-Server-03</text>
+  <text class="file-info" x="420" y="332">10.0.1.13:10095</text>
+  <text class="file-info" x="550" y="332">新版 (V2)</text>
+  <rect fill="#c6f6d5" x="620" y="319" width="50" height="20" rx="4" />
+  <text fill="#276749" font-family="'Microsoft YaHei', sans-serif" font-size="11" x="645" y="333" text-anchor="middle">在线</text>
+  <rect fill="#e2e8f0" x="700" y="324" width="60" height="10" rx="3" />
+  <rect fill="#2563eb" x="700" y="324" width="54" height="10" rx="3" />
+  <text class="file-info" x="766" y="333">9/10</text>
+  <text class="value" x="790" y="332">0.38</text>
+  <rect fill="#c6f6d5" x="880" y="319" width="56" height="20" rx="4" />
+  <text fill="#276749" font-family="'Microsoft YaHei', sans-serif" font-size="10" x="908" y="333" text-anchor="middle">CLOSED</text>
+  <text class="value" x="970" y="332">14</text>
+  <text fill="#38a169" font-family="'Microsoft YaHei', sans-serif" font-size="11" x="1060" y="332">8s 正常</text>
+  <line class="divider" x1="268" y1="344" x2="1152" y2="344" />
+  <!-- Server Row 4 -->
+  <text class="value" x="286" y="364">ASR-Server-04</text>
+  <text class="file-info" x="420" y="364">10.0.2.21:10095</text>
+  <text class="file-info" x="550" y="364">新版 (V2)</text>
+  <rect fill="#c6f6d5" x="620" y="351" width="50" height="20" rx="4" />
+  <text fill="#276749" font-family="'Microsoft YaHei', sans-serif" font-size="11" x="645" y="365" text-anchor="middle">在线</text>
+  <rect fill="#e2e8f0" x="700" y="356" width="60" height="10" rx="3" />
+  <rect fill="#d69e2e" x="700" y="356" width="36" height="10" rx="3" />
+  <text class="file-info" x="766" y="365">6/10</text>
+  <text class="value" x="790" y="364">0.51</text>
+  <rect fill="#fefcbf" x="880" y="351" width="56" height="20" rx="4" />
+  <text fill="#975a16" font-family="'Microsoft YaHei', sans-serif" font-size="10" x="908" y="365" text-anchor="middle">HALF</text>
+  <text class="value" x="970" y="364">4</text>
+  <text fill="#d69e2e" font-family="'Microsoft YaHei', sans-serif" font-size="11" x="1060" y="364">15s 偏高</text>
+  <line class="divider" x1="268" y1="376" x2="1152" y2="376" />
+  <!-- Server Row 5 -->
+  <text class="value" x="286" y="396">ASR-Server-05</text>
+  <text class="file-info" x="420" y="396">10.0.2.22:10095</text>
+  <text class="file-info" x="550" y="396">旧版 (V1)</text>
+  <rect fill="#c6f6d5" x="620" y="383" width="50" height="20" rx="4" />
+  <text fill="#276749" font-family="'Microsoft YaHei', sans-serif" font-size="11" x="645" y="397" text-anchor="middle">在线</text>
+  <rect fill="#e2e8f0" x="700" y="388" width="60" height="10" rx="3" />
+  <rect fill="#2563eb" x="700" y="388" width="48" height="10" rx="3" />
+  <text class="file-info" x="766" y="397">8/10</text>
+  <text class="value" x="790" y="396">0.58</text>
+  <rect fill="#c6f6d5" x="880" y="383" width="56" height="20" rx="4" />
+  <text fill="#276749" font-family="'Microsoft YaHei', sans-serif" font-size="10" x="908" y="397" text-anchor="middle">CLOSED</text>
+  <text class="value" x="970" y="396">2</text>
+  <text fill="#38a169" font-family="'Microsoft YaHei', sans-serif" font-size="11" x="1060" y="396">2s 正常</text>
+  <!-- Charts Row -->
+  <!-- Queue Depth Chart -->
+  <rect class="card" x="250" y="452" width="450" height="210" />
+  <text class="title" x="274" y="478">队列深度（最近 1 小时）</text>
+  <!-- Chart area -->
+  <line class="grid-line" x1="290" y1="500" x2="680" y2="500" />
+  <line class="grid-line" x1="290" y1="530" x2="680" y2="530" />
+  <line class="grid-line" x1="290" y1="560" x2="680" y2="560" />
+  <line class="grid-line" x1="290" y1="590" x2="680" y2="590" />
+  <line class="grid-line" x1="290" y1="620" x2="680" y2="620" />
+  <text class="axis-label" x="275" y="504">50</text>
+  <text class="axis-label" x="275" y="534">40</text>
+  <text class="axis-label" x="275" y="564">30</text>
+  <text class="axis-label" x="275" y="594">20</text>
+  <text class="axis-label" x="275" y="624">10</text>
+  <text class="axis-label" x="275" y="648">0</text>
+  <text class="axis-label" x="290" y="648">09:45</text>
+  <text class="axis-label" x="420" y="648">10:15</text>
+  <text class="axis-label" x="550" y="648">10:30</text>
+  <text class="axis-label" x="660" y="648">10:45</text>
+  <!-- Queue line chart -->
+  <polyline fill="none" stroke="#2563eb" stroke-width="2" points="290,610 320,600 340,595 360,608 380,588 400,570 420,555 440,545 460,558 480,548 500,560 520,575 540,568 560,580 580,590 600,585 620,592 640,598 660,600 680,604" />
+  <rect fill="#2563eb" opacity="0.1" x="290" y="545" width="390" height="97" />
+  <!-- Warning line -->
+  <line x1="290" y1="500" x2="680" y2="500" stroke="#e53e3e" stroke-width="1" stroke-dasharray="4 3" />
+  <text fill="#e53e3e" font-family="'Microsoft YaHei', sans-serif" font-size="10" x="682" y="504">告警线(50)</text>
+  <!-- RTF Trend Chart -->
+  <rect class="card" x="720" y="452" width="450" height="210" />
+  <text class="title" x="744" y="478">平均 RTF 趋势（最近 1 小时）</text>
+  <!-- Chart area -->
+  <line class="grid-line" x1="760" y1="500" x2="1150" y2="500" />
+  <line class="grid-line" x1="760" y1="530" x2="1150" y2="530" />
+  <line class="grid-line" x1="760" y1="560" x2="1150" y2="560" />
+  <line class="grid-line" x1="760" y1="590" x2="1150" y2="590" />
+  <line class="grid-line" x1="760" y1="620" x2="1150" y2="620" />
+  <text class="axis-label" x="742" y="504">1.0</text>
+  <text class="axis-label" x="742" y="534">0.8</text>
+  <text class="axis-label" x="742" y="564">0.6</text>
+  <text class="axis-label" x="742" y="594">0.4</text>
+  <text class="axis-label" x="742" y="624">0.2</text>
+  <text class="axis-label" x="742" y="648">0</text>
+  <text class="axis-label" x="760" y="648">09:45</text>
+  <text class="axis-label" x="890" y="648">10:15</text>
+  <text class="axis-label" x="1020" y="648">10:30</text>
+  <text class="axis-label" x="1130" y="648">10:45</text>
+  <!-- Server 01 line (blue) -->
+  <polyline fill="none" stroke="#2563eb" stroke-width="2" points="760,592 800,590 840,588 880,594 920,590 960,586 1000,592 1040,588 1080,590 1120,592 1150,590" />
+  <!-- Server 02 line (green) -->
+  <polyline fill="none" stroke="#38a169" stroke-width="2" points="760,575 800,578 840,572 880,580 920,576 960,582 1000,578 1040,574 1080,576 1120,580 1150,578" />
+  <!-- Server 03 line (purple) -->
+  <polyline fill="none" stroke="#805ad5" stroke-width="2" points="760,598 800,596 840,600 880,594 920,602 960,596 1000,600 1040,598 1080,594 1120,596 1150,598" />
+  <!-- Server 04 line (orange, fluctuating more) -->
+  <polyline fill="none" stroke="#dd6b20" stroke-width="2" points="760,580 800,570 840,564 880,575 920,555 960,568 1000,560 1040,572 1080,565 1120,570 1150,568" />
+  <!-- Server 05 line (red) -->
+  <polyline fill="none" stroke="#e53e3e" stroke-width="2" points="760,568 800,572 840,565 880,570 920,575 960,568 1000,572 1040,565 1080,570 1120,568 1150,572" />
+  <!-- Legend -->
+  <line x1="760" y1="488" x2="776" y2="488" stroke="#2563eb" stroke-width="2" />
+  <text class="axis-label" x="780" y="492">S01</text>
+  <line x1="810" y1="488" x2="826" y2="488" stroke="#38a169" stroke-width="2" />
+  <text class="axis-label" x="830" y="492">S02</text>
+  <line x1="860" y1="488" x2="876" y2="488" stroke="#805ad5" stroke-width="2" />
+  <text class="axis-label" x="880" y="492">S03</text>
+  <line x1="910" y1="488" x2="926" y2="488" stroke="#dd6b20" stroke-width="2" />
+  <text class="axis-label" x="930" y="492">S04</text>
+  <line x1="960" y1="488" x2="976" y2="488" stroke="#e53e3e" stroke-width="2" />
+  <text class="axis-label" x="980" y="492">S05</text>
+  <!-- Task Throughput Chart -->
+  <rect class="card" x="250" y="676" width="450" height="200" />
+  <text class="title" x="274" y="702">每小时吞吐量（任务）</text>
+  <!-- Bar chart -->
+  <text class="axis-label" x="275" y="732">20</text>
+  <text class="axis-label" x="275" y="762">15</text>
+  <text class="axis-label" x="275" y="792">10</text>
+  <text class="axis-label" x="275" y="822">5</text>
+  <text class="axis-label" x="275" y="852">0</text>
+  <line class="grid-line" x1="295" y1="728" x2="680" y2="728" />
+  <line class="grid-line" x1="295" y1="758" x2="680" y2="758" />
+  <line class="grid-line" x1="295" y1="788" x2="680" y2="788" />
+  <line class="grid-line" x1="295" y1="818" x2="680" y2="818" />
+  <line class="grid-line" x1="295" y1="848" x2="680" y2="848" />
+  <!-- Bars (completed=green, failed=red) -->
+  <!-- 08:00 -->
+  <rect fill="#38a169" x="310" y="788" width="22" height="60" rx="2" />
+  <rect fill="#e53e3e" x="310" y="782" width="22" height="6" rx="2" />
+  <text class="axis-label" x="321" y="860" text-anchor="middle">08</text>
+  <!-- 09:00 -->
+  <rect fill="#38a169" x="360" y="758" width="22" height="90" rx="2" />
+  <text class="axis-label" x="371" y="860" text-anchor="middle">09</text>
+  <!-- 10:00 -->
+  <rect fill="#38a169" x="410" y="728" width="22" height="120" rx="2" />
+  <rect fill="#e53e3e" x="410" y="722" width="22" height="6" rx="2" />
+  <text class="axis-label" x="421" y="860" text-anchor="middle">10</text>
+  <!-- 11:00 (current, partial) -->
+  <rect fill="#2563eb" opacity="0.5" x="460" y="802" width="22" height="46" rx="2" />
+  <text class="axis-label" x="471" y="860" text-anchor="middle">11*</text>
+  <!-- Placeholders for future hours -->
+  <rect fill="#edf2f7" x="510" y="838" width="22" height="10" rx="2" />
+  <text class="axis-label" x="521" y="860" text-anchor="middle">12</text>
+  <rect fill="#edf2f7" x="560" y="838" width="22" height="10" rx="2" />
+  <text class="axis-label" x="571" y="860" text-anchor="middle">13</text>
+  <!-- Legend -->
+  <rect fill="#38a169" x="620" y="720" width="10" height="10" rx="2" />
+  <text class="axis-label" x="634" y="730">完成</text>
+  <rect fill="#e53e3e" x="620" y="738" width="10" height="10" rx="2" />
+  <text class="axis-label" x="634" y="748">失败</text>
+  <rect fill="#2563eb" opacity="0.5" x="620" y="756" width="10" height="10" rx="2" />
+  <text class="axis-label" x="634" y="766">进行中</text>
+  <!-- Alerts Card -->
+  <rect class="card" x="720" y="676" width="450" height="200" />
+  <text class="title" x="744" y="702">告警中心</text>
+  <!-- Alert items -->
+  <rect fill="#fff5f5" x="740" y="715" width="410" height="36" rx="6" />
+  <circle cx="756" cy="733" r="5" fill="#e53e3e" />
+  <text fill="#e53e3e" font-family="'Microsoft YaHei', sans-serif" font-size="12" font-weight="bold" x="768" y="729">Critical</text>
+  <text class="value" x="828" y="729">ASR-Server-04 心跳异常 · HALF_OPEN</text>
+  <text class="file-info" x="768" y="743">10:32:15 · 持续 13 分钟</text>
+  <rect fill="#fffff0" x="740" y="759" width="410" height="36" rx="6" />
+  <circle cx="756" cy="777" r="5" fill="#d69e2e" />
+  <text fill="#d69e2e" font-family="'Microsoft YaHei', sans-serif" font-size="12" font-weight="bold" x="768" y="773">Warning</text>
+  <text class="value" x="828" y="773">队列深度达到 42，接近告警阈值</text>
+  <text class="file-info" x="768" y="787">10:28:05 · 建议扩容</text>
+  <rect fill="#f0fff4" x="740" y="803" width="410" height="36" rx="6" />
+  <circle cx="756" cy="821" r="5" fill="#38a169" />
+  <text fill="#38a169" font-family="'Microsoft YaHei', sans-serif" font-size="12" font-weight="bold" x="768" y="817">Resolved</text>
+  <text class="value" x="840" y="817">ASR-Server-03 心跳已恢复</text>
+  <text class="file-info" x="768" y="831">09:55:30 · 恢复耗时 45s</text>
+  <text fill="#2563eb" font-family="'Microsoft YaHei', sans-serif" font-size="12" x="744" y="858">查看全部告警 &gt;</text>
+  <text class="desc" x="710" y="890" text-anchor="middle">ASR 任务管理器 · 监控页 · UI Mockup v1.0</text>
+</svg>

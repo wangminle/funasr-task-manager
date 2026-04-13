@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900" viewBox="0 0 1200 900">
+  <defs>
+    <style>
+      .bg { fill: #f5f7fa; }
+      .sidebar { fill: #1d2b3a; }
+      .sidebar-text { fill: #a0aec0; font-family: 'Microsoft YaHei', sans-serif; font-size: 14px; }
+      .sidebar-active { fill: #2563eb; rx: 6; }
+      .sidebar-active-text { fill: #ffffff; font-family: 'Microsoft YaHei', sans-serif; font-size: 14px; font-weight: bold; }
+      .header { fill: #ffffff; }
+      .header-text { fill: #1a202c; font-family: 'Microsoft YaHei', sans-serif; font-size: 18px; font-weight: bold; }
+      .card { fill: #ffffff; rx: 12; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.1)); }
+      .title { fill: #1a202c; font-family: 'Microsoft YaHei', sans-serif; font-size: 16px; font-weight: bold; }
+      .desc { fill: #718096; font-family: 'Microsoft YaHei', sans-serif; font-size: 13px; }
+      .label { fill: #4a5568; font-family: 'Microsoft YaHei', sans-serif; font-size: 12px; }
+      .btn-primary { fill: #2563eb; rx: 8; }
+      .btn-text { fill: #ffffff; font-family: 'Microsoft YaHei', sans-serif; font-size: 14px; font-weight: bold; }
+      .upload-zone { fill: #f0f5ff; stroke: #2563eb; stroke-width: 2; stroke-dasharray: 8 4; rx: 12; }
+      .upload-icon { fill: #2563eb; }
+      .upload-text { fill: #2563eb; font-family: 'Microsoft YaHei', sans-serif; font-size: 16px; font-weight: bold; }
+      .upload-hint { fill: #718096; font-family: 'Microsoft YaHei', sans-serif; font-size: 13px; }
+      .file-row { fill: #f7fafc; rx: 8; }
+      .file-name { fill: #1a202c; font-family: 'Microsoft YaHei', sans-serif; font-size: 13px; }
+      .file-info { fill: #718096; font-family: 'Microsoft YaHei', sans-serif; font-size: 12px; }
+      .progress-bg { fill: #e2e8f0; rx: 4; }
+      .progress-fill { fill: #2563eb; rx: 4; }
+      .progress-fill-done { fill: #38a169; rx: 4; }
+      .badge-ready { fill: #c6f6d5; rx: 4; }
+      .badge-ready-text { fill: #276749; font-family: 'Microsoft YaHei', sans-serif; font-size: 11px; }
+      .badge-uploading { fill: #bee3f8; rx: 4; }
+      .badge-uploading-text { fill: #2a4365; font-family: 'Microsoft YaHei', sans-serif; font-size: 11px; }
+      .icon-small { fill: #a0aec0; }
+      .divider { stroke: #e2e8f0; stroke-width: 1; }
+    </style>
+  </defs>
+  <!-- Background -->
+  <rect class="bg" width="1200" height="900" />
+  <!-- Sidebar -->
+  <rect class="sidebar" x="0" y="0" width="220" height="900" />
+  <!-- Logo -->
+  <text x="30" y="40" fill="#ffffff" font-family="'Microsoft YaHei', sans-serif" font-size="20" font-weight="bold">ASR 任务管理器</text>
+  <line x1="20" y1="55" x2="200" y2="55" stroke="#2d3e50" stroke-width="1" />
+  <!-- Nav Items -->
+  <rect class="sidebar-active" x="12" y="70" width="196" height="40" />
+  <text class="sidebar-active-text" x="48" y="95">文件上传</text>
+  <text class="sidebar-text" x="48" y="140">任务列表</text>
+  <text class="sidebar-text" x="48" y="175">系统监控</text>
+  <text class="sidebar-text" x="48" y="210">设置中心</text>
+  <!-- User info bottom -->
+  <line x1="20" y1="840" x2="200" y2="840" stroke="#2d3e50" stroke-width="1" />
+  <text class="sidebar-text" x="30" y="870">用户：管理员</text>
+  <!-- Header -->
+  <rect class="header" x="220" y="0" width="980" height="60" />
+  <text class="header-text" x="250" y="38">文件上传</text>
+  <line class="divider" x1="220" y1="60" x2="1200" y2="60" />
+  <!-- Upload Zone Card -->
+  <rect class="card" x="250" y="80" width="920" height="260" />
+  <rect class="upload-zone" x="274" y="100" width="872" height="220" />
+  <!-- Upload icon -->
+  <circle cx="710" cy="170" r="30" fill="#e0edff" />
+  <path d="M700 180 L710 160 L720 180 M710 160 L710 195" stroke="#2563eb" stroke-width="3" fill="none" stroke-linecap="round" />
+  <text class="upload-text" x="710" y="225" text-anchor="middle">拖拽文件到此处</text>
+  <text class="upload-hint" x="710" y="248" text-anchor="middle">支持 WAV / MP3 / MP4 / FLAC / OGG，单文件最大 2GB</text>
+  <text class="upload-hint" x="710" y="268" text-anchor="middle">可同时上传多个文件</text>
+  <!-- Browse button -->
+  <rect class="btn-primary" x="650" y="280" width="120" height="36" />
+  <text class="btn-text" x="710" y="303" text-anchor="middle">浏览文件</text>
+  <!-- File List Card -->
+  <rect class="card" x="250" y="360" width="920" height="520" />
+  <text class="title" x="274" y="392">待上传文件（共 4 个，约 1.2 GB）</text>
+  <!-- Table Header -->
+  <rect fill="#f7fafc" x="270" y="410" width="880" height="32" rx="6" />
+  <text class="label" x="290" y="431">文件名</text>
+  <text class="label" x="560" y="431">大小</text>
+  <text class="label" x="650" y="431">时长</text>
+  <text class="label" x="740" y="431">格式</text>
+  <text class="label" x="830" y="431">进度</text>
+  <text class="label" x="1040" y="431">状态</text>
+  <!-- File Row 1 - Completed -->
+  <rect class="file-row" x="270" y="450" width="880" height="48" />
+  <text class="file-name" x="290" y="479">会议录音-2026-02-25.wav</text>
+  <text class="file-info" x="560" y="479">356 MB</text>
+  <text class="file-info" x="650" y="479">02:15:30</text>
+  <text class="file-info" x="740" y="479">WAV 16kHz</text>
+  <rect class="progress-bg" x="830" y="470" width="140" height="8" />
+  <rect class="progress-fill-done" x="830" y="470" width="140" height="8" />
+  <text class="file-info" x="975" y="479">100%</text>
+  <rect class="badge-ready" x="1040" y="465" width="60" height="22" />
+  <text class="badge-ready-text" x="1070" y="480" text-anchor="middle">就绪</text>
+  <!-- File Row 2 - Uploading -->
+  <rect class="file-row" x="270" y="506" width="880" height="48" />
+  <text class="file-name" x="290" y="535">客户访谈-A组-0226.mp3</text>
+  <text class="file-info" x="560" y="535">128 MB</text>
+  <text class="file-info" x="650" y="535">01:05:12</text>
+  <text class="file-info" x="740" y="535">MP3 44.1k</text>
+  <rect class="progress-bg" x="830" y="526" width="140" height="8" />
+  <rect class="progress-fill" x="830" y="526" width="91" height="8" />
+  <text class="file-info" x="975" y="535">65%</text>
+  <rect class="badge-uploading" x="1040" y="521" width="60" height="22" />
+  <text class="badge-uploading-text" x="1070" y="536" text-anchor="middle">上传中</text>
+  <!-- File Row 3 - Uploading -->
+  <rect class="file-row" x="270" y="562" width="880" height="48" />
+  <text class="file-name" x="290" y="591">培训视频-片段3.mp4</text>
+  <text class="file-info" x="560" y="591">480 MB</text>
+  <text class="file-info" x="650" y="591">00:45:00</text>
+  <text class="file-info" x="740" y="591">MP4 H.264</text>
+  <rect class="progress-bg" x="830" y="582" width="140" height="8" />
+  <rect class="progress-fill" x="830" y="582" width="42" height="8" />
+  <text class="file-info" x="975" y="591">30%</text>
+  <rect class="badge-uploading" x="1040" y="577" width="60" height="22" />
+  <text class="badge-uploading-text" x="1070" y="592" text-anchor="middle">上传中</text>
+  <!-- File Row 4 - Waiting -->
+  <rect class="file-row" x="270" y="618" width="880" height="48" />
+  <text class="file-name" x="290" y="647">周会素材.flac</text>
+  <text class="file-info" x="560" y="647">256 MB</text>
+  <text class="file-info" x="650" y="647">解析中...</text>
+  <text class="file-info" x="740" y="647">FLAC</text>
+  <rect class="progress-bg" x="830" y="638" width="140" height="8" />
+  <text class="file-info" x="975" y="647">等待</text>
+  <rect fill="#fefcbf" x="1040" y="633" width="60" height="22" rx="4" />
+  <text fill="#975a16" x="1070" y="648" text-anchor="middle" font-family="'Microsoft YaHei', sans-serif" font-size="11">排队中</text>
+  <!-- Bottom actions -->
+  <line class="divider" x1="270" y1="690" x2="1150" y2="690" />
+  <!-- Language selector -->
+  <text class="label" x="290" y="725">识别语言</text>
+  <rect fill="#ffffff" stroke="#cbd5e0" x="360" y="708" width="140" height="32" rx="6" />
+  <text class="file-info" x="375" y="729">自动检测（推荐）</text>
+  <!-- Options -->
+  <text class="label" x="530" y="725">识别选项</text>
+  <rect fill="#ffffff" stroke="#cbd5e0" x="570" y="708" width="200" height="32" rx="6" />
+  <text class="file-info" x="585" y="729">标点、数字、说话人分离...</text>
+  <!-- Callback -->
+  <text class="label" x="800" y="725">回调地址（可选）</text>
+  <rect fill="#ffffff" stroke="#cbd5e0" x="900" y="708" width="240" height="32" rx="6" />
+  <text class="file-info" x="915" y="729">https://...</text>
+  <!-- Submit button -->
+  <rect class="btn-primary" x="290" y="770" width="200" height="44" rx="8" />
+  <text class="btn-text" x="390" y="798" text-anchor="middle">创建并提交任务</text>
+  <!-- Cancel button -->
+  <rect fill="#ffffff" stroke="#cbd5e0" x="510" y="770" width="120" height="44" rx="8" />
+  <text fill="#4a5568" x="570" y="798" text-anchor="middle" font-family="'Microsoft YaHei', sans-serif" font-size="14">取消</text>
+  <!-- Page indicator -->
+  <text class="desc" x="710" y="860" text-anchor="middle">ASR 任务管理器 · 上传页 · UI Mockup v1.0</text>
+</svg>

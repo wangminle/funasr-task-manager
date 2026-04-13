@@ -66,6 +66,17 @@ class ConcurrencyGradientItem(BaseModel):
     throughput_rtf: float
     wall_clock_sec: float
     total_audio_sec: float
+    # V2 timing breakdown
+    avg_connect_ms: float = 0.0
+    avg_upload_ms: float = 0.0
+    upload_spread_ms: float = 0.0
+    avg_post_upload_wait_ms: float = 0.0
+    max_post_upload_wait_ms: float = 0.0
+    concurrent_post_upload_ms: float = 0.0
+    avg_first_response_ms: float = 0.0
+    server_per_file_rtf: float = 0.0
+    server_throughput_rtf: float = 0.0
+    ping_rtt_ms: float | None = None
 
 
 class ServerBenchmarkItem(BaseModel):

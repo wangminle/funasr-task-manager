@@ -145,7 +145,11 @@ class TestPersistRTFBaselineGuard:
         assert p90 != DEFAULT_RTF
 
 
-def _g(concurrency, per_file_rtf, throughput_rtf, wall_clock_sec=1.0, total_audio_sec=3.0):
+def _g(
+    concurrency, per_file_rtf, throughput_rtf,
+    wall_clock_sec=1.0, total_audio_sec=3.0,
+    server_per_file_rtf=0.0, server_throughput_rtf=0.0,
+):
     """Helper to build ConcurrencyGradient instances for tests."""
     return ConcurrencyGradient(
         concurrency=concurrency,
@@ -153,6 +157,8 @@ def _g(concurrency, per_file_rtf, throughput_rtf, wall_clock_sec=1.0, total_audi
         throughput_rtf=throughput_rtf,
         wall_clock_sec=wall_clock_sec,
         total_audio_sec=total_audio_sec,
+        server_per_file_rtf=server_per_file_rtf,
+        server_throughput_rtf=server_throughput_rtf,
     )
 
 
@@ -255,3 +261,46 @@ class TestDetectOptimalConcurrency:
         n, tp = _detect_optimal_concurrency(gradient, single_rtf=0.024)
         assert n == 2
         assert tp == 0.0125
+
+    def test_server_metrics_do_not_influence_decision(self):
+        """server_* fields are observability-only; decision uses V1 wall-clock metrics.
+
+        Here server_throughput_rtf looks good (improving), but the V1
+        throughput_rtf shows degradation at N=4 → recommended=2.
+        """
+        gradient = [
+            _g(1, 0.024, 0.024, server_throughput_rtf=0.020),
+            _g(2, 0.025, 0.0125, server_throughput_rtf=0.010),
+            _g(4, 0.050, 0.0125, server_throughput_rtf=0.005),  # V1 no improve
+            _g(8, 0.100, 0.0125, server_throughput_rtf=0.003),
+        ]
+        n, tp = _detect_optimal_concurrency(gradient, single_rtf=0.024)
+        assert n == 2
+        assert tp == 0.0125
+
+    def test_per_file_uses_wall_clock_not_server(self):
+        """per_file_rtf check uses V1 wall-clock, not server_per_file_rtf.
+
+        server_per_file_rtf is within threshold, but V1 per_file_rtf exceeds
+        2× single_rtf → degrade.
+        """
+        gradient = [
+            _g(1, 0.024, 0.024, server_per_file_rtf=0.020),
+            _g(2, 0.025, 0.0125, server_per_file_rtf=0.022),
+            _g(4, 0.060, 0.015, server_per_file_rtf=0.030),  # V1 per_file 0.060 > 2×0.024
+        ]
+        n, tp = _detect_optimal_concurrency(gradient, single_rtf=0.024)
+        assert n == 2
+        assert tp == 0.0125
+
+    def test_with_all_server_metrics_populated(self):
+        """Full gradient with both V1 and server_* metrics — decision on V1 only."""
+        gradient = [
+            _g(1, 0.024, 0.024, server_per_file_rtf=0.018, server_throughput_rtf=0.018),
+            _g(2, 0.025, 0.0125, server_per_file_rtf=0.019, server_throughput_rtf=0.0095),
+            _g(4, 0.026, 0.0065, server_per_file_rtf=0.020, server_throughput_rtf=0.0050),
+            _g(8, 0.028, 0.0035, server_per_file_rtf=0.022, server_throughput_rtf=0.0028),
+        ]
+        n, tp = _detect_optimal_concurrency(gradient, single_rtf=0.024)
+        assert n == 8
+        assert tp == 0.0035

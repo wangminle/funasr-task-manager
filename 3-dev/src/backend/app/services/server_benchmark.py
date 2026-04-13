@@ -46,12 +46,33 @@ class BenchmarkSample:
 
 
 @dataclass
+class ConnectionTiming:
+    """Per-connection timing breakdown (V2)."""
+    connect_ms: float
+    upload_ms: float
+    first_response_ms: float
+    post_upload_wait_ms: float
+    total_ms: float
+
+
+@dataclass
 class ConcurrencyGradient:
     concurrency: int
     per_file_rtf: float
     throughput_rtf: float
     wall_clock_sec: float
     total_audio_sec: float
+    # V2 timing breakdown
+    avg_connect_ms: float = 0.0
+    avg_upload_ms: float = 0.0
+    upload_spread_ms: float = 0.0
+    avg_post_upload_wait_ms: float = 0.0
+    max_post_upload_wait_ms: float = 0.0
+    concurrent_post_upload_ms: float = 0.0
+    avg_first_response_ms: float = 0.0
+    server_per_file_rtf: float = 0.0
+    server_throughput_rtf: float = 0.0
+    ping_rtt_ms: float | None = None
 
 
 @dataclass
@@ -69,6 +90,8 @@ class ServerBenchmarkResult:
     benchmark_notes: list[str] = field(default_factory=list)
     concurrency_gradient: list[ConcurrencyGradient] = field(default_factory=list)
     gradient_complete: bool = True
+    # V2: Phase 1 timing breakdown
+    single_timing: ConnectionTiming | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -91,6 +114,16 @@ class ServerBenchmarkResult:
                     "throughput_rtf": g.throughput_rtf,
                     "wall_clock_sec": g.wall_clock_sec,
                     "total_audio_sec": g.total_audio_sec,
+                    "avg_connect_ms": g.avg_connect_ms,
+                    "avg_upload_ms": g.avg_upload_ms,
+                    "upload_spread_ms": g.upload_spread_ms,
+                    "avg_post_upload_wait_ms": g.avg_post_upload_wait_ms,
+                    "max_post_upload_wait_ms": g.max_post_upload_wait_ms,
+                    "concurrent_post_upload_ms": g.concurrent_post_upload_ms,
+                    "avg_first_response_ms": g.avg_first_response_ms,
+                    "server_per_file_rtf": g.server_per_file_rtf,
+                    "server_throughput_rtf": g.server_throughput_rtf,
+                    "ping_rtt_ms": g.ping_rtt_ms,
                 }
                 for g in self.concurrency_gradient
             ],
@@ -132,7 +165,7 @@ async def benchmark_server_full(
     # Phase 1: single-thread RTF using tv-report-1.wav
     try:
         async with asyncio.timeout(timeout):
-            elapsed = await _benchmark_single_sample(uri, ssl_ctx, single_sample)
+            single_timing = await _benchmark_single_sample(uri, ssl_ctx, single_sample)
             result.reachable = True
             result.responsive = True
     except asyncio.TimeoutError:
@@ -149,11 +182,15 @@ async def benchmark_server_full(
         logger.warning("server_benchmark_single_error", uri=uri, error=str(exc))
         return result
 
+    elapsed = single_timing.total_ms / 1000
+    result.single_timing = single_timing
     result.single_rtf = round(elapsed / single_sample.duration_sec, 4)
     result.benchmark_audio_sec = round(single_sample.duration_sec, 3)
     result.benchmark_elapsed_sec = round(elapsed, 3)
     result.benchmark_notes.append(
-        f"[single] {single_sample.name}: {elapsed:.2f}s / {single_sample.duration_sec:.2f}s → RTF {result.single_rtf}"
+        f"[single] {single_sample.name}: {elapsed:.2f}s / {single_sample.duration_sec:.2f}s → RTF {result.single_rtf} "
+        f"(connect={single_timing.connect_ms:.0f}ms upload={single_timing.upload_ms:.0f}ms "
+        f"wait={single_timing.post_upload_wait_ms:.0f}ms)"
     )
     logger.info(
         "benchmark_single_complete",
@@ -162,6 +199,9 @@ async def benchmark_server_full(
         single_rtf=f"{result.single_rtf:.4f}",
         elapsed=f"{elapsed:.2f}s",
         audio=f"{single_sample.duration_sec:.2f}s",
+        connect_ms=f"{single_timing.connect_ms:.1f}",
+        upload_ms=f"{single_timing.upload_ms:.1f}",
+        post_upload_wait_ms=f"{single_timing.post_upload_wait_ms:.1f}",
     )
 
     # Phase 2: gradient concurrency throughput using test.mp4 ×N
@@ -175,9 +215,19 @@ async def benchmark_server_full(
         capped_gradient = list(CONCURRENCY_GRADIENT)
 
     for n in capped_gradient:
+        ping_rtt: float | None = None
+
         try:
             async with asyncio.timeout(timeout):
-                wall_clock = await _benchmark_concurrent(uri, ssl_ctx, throughput_sample, n)
+                # Ping RTT inside timeout so it shares the budget with benchmark
+                try:
+                    ping_rtt = await _measure_ping_rtt(uri, ssl_ctx)
+                except Exception:
+                    pass
+
+                bench_result = await _benchmark_concurrent(
+                    uri, ssl_ctx, throughput_sample, n,
+                )
         except asyncio.TimeoutError:
             result.benchmark_notes.append(f"[concurrent] {throughput_sample.name}×{n}: timeout")
             logger.warning("benchmark_concurrent_timeout", uri=uri, concurrency=n)
@@ -189,9 +239,25 @@ async def benchmark_server_full(
             result.gradient_complete = False
             break
 
+        wall_clock = bench_result.wall_clock_sec
+        conn_timings = bench_result.timings
+        concurrent_puw = bench_result.concurrent_post_upload_ms
+        upload_spread = bench_result.upload_spread_ms
+
+        # V1 metrics (backward compat)
         per_file_rtf = round(wall_clock / throughput_sample.duration_sec, 4)
         total_audio_concurrent = throughput_sample.duration_sec * n
         tp_rtf = round(wall_clock / total_audio_concurrent, 4)
+
+        # V2 timing aggregation from per-connection timings
+        avg_connect = sum(t.connect_ms for t in conn_timings) / len(conn_timings)
+        avg_upload = sum(t.upload_ms for t in conn_timings) / len(conn_timings)
+        avg_puw = sum(t.post_upload_wait_ms for t in conn_timings) / len(conn_timings)
+        max_puw = max(t.post_upload_wait_ms for t in conn_timings)
+        avg_fr = sum(t.first_response_ms for t in conn_timings) / len(conn_timings)
+
+        svr_per_file_rtf = round(concurrent_puw / 1000 / throughput_sample.duration_sec, 4)
+        svr_tp_rtf = round(concurrent_puw / 1000 / total_audio_concurrent, 4)
 
         gradient = ConcurrencyGradient(
             concurrency=n,
@@ -199,12 +265,29 @@ async def benchmark_server_full(
             throughput_rtf=tp_rtf,
             wall_clock_sec=round(wall_clock, 3),
             total_audio_sec=round(total_audio_concurrent, 3),
+            avg_connect_ms=round(avg_connect, 1),
+            avg_upload_ms=round(avg_upload, 1),
+            upload_spread_ms=round(upload_spread, 1),
+            avg_post_upload_wait_ms=round(avg_puw, 1),
+            max_post_upload_wait_ms=round(max_puw, 1),
+            concurrent_post_upload_ms=round(concurrent_puw, 1),
+            avg_first_response_ms=round(avg_fr, 1),
+            server_per_file_rtf=svr_per_file_rtf,
+            server_throughput_rtf=svr_tp_rtf,
+            ping_rtt_ms=ping_rtt,
         )
         result.concurrency_gradient.append(gradient)
 
+        spread_note = ""
+        if n > 1 and avg_upload > 0 and upload_spread > avg_upload * 0.5:
+            spread_note = " ⚠ upload_spread高"
+
         result.benchmark_notes.append(
             f"[concurrent] {throughput_sample.name}×{n}: wall={wall_clock:.2f}s, "
-            f"per_file_rtf={per_file_rtf:.4f}, throughput_rtf={tp_rtf:.4f}"
+            f"per_file_rtf={per_file_rtf:.4f}, throughput_rtf={tp_rtf:.4f}, "
+            f"server_tp_rtf={svr_tp_rtf:.4f} "
+            f"(upload={avg_upload:.0f}ms wait={concurrent_puw:.0f}ms "
+            f"spread={upload_spread:.0f}ms rtt={ping_rtt or 0:.1f}ms){spread_note}"
         )
         logger.info(
             "benchmark_concurrent_level",
@@ -214,6 +297,11 @@ async def benchmark_server_full(
             wall_clock=f"{wall_clock:.2f}s",
             per_file_rtf=f"{per_file_rtf:.4f}",
             throughput_rtf=f"{tp_rtf:.4f}",
+            server_throughput_rtf=f"{svr_tp_rtf:.4f}",
+            avg_upload_ms=f"{avg_upload:.1f}",
+            concurrent_post_upload_ms=f"{concurrent_puw:.1f}",
+            upload_spread_ms=f"{upload_spread:.1f}",
+            ping_rtt_ms=f"{ping_rtt or 0:.1f}",
         )
 
         await asyncio.sleep(1)
@@ -411,9 +499,20 @@ def _detect_optimal_concurrency(
 ) -> tuple[int, float]:
     """Find the highest non-degraded concurrency level via throughput analysis.
 
+    Uses wall-clock-based throughput_rtf and per_file_rtf for degradation
+    detection. Both share the same end-to-end time basis as single_rtf,
+    ensuring apples-to-apples comparison.
+
+    server_throughput_rtf / server_per_file_rtf are preserved on each gradient
+    item for observability but NOT used for decision-making: the post-upload
+    tail time (concurrent_post_upload_ms) does not account for server
+    processing that overlaps with upload, making it systematically lower than
+    real server time. Using it against the end-to-end single_rtf baseline
+    would widen thresholds and over-recommend concurrency.
+
     A concurrency level N is accepted (and becomes the new "best") only if:
-      1. throughput_rtf(N) improved ≥ THROUGHPUT_MIN_IMPROVEMENT over level N-1
-      2. per_file_rtf(N) ≤ single_rtf × PER_FILE_MAX_DEGRADATION
+      1. throughput_rtf(N) improved >= THROUGHPUT_MIN_IMPROVEMENT over N-1
+      2. per_file_rtf(N) <= single_rtf * PER_FILE_MAX_DEGRADATION
 
     Returns (recommended_concurrency, throughput_rtf_at_that_level).
     """
@@ -465,8 +564,41 @@ def _make_ssl_ctx() -> ssl.SSLContext:
     return ctx
 
 
-async def _benchmark_single_sample(uri: str, ssl_ctx: ssl.SSLContext | None, sample: BenchmarkSample) -> float:
-    """Send one sample and return elapsed seconds."""
+async def _measure_ping_rtt(uri: str, ssl_ctx: ssl.SSLContext | None, attempts: int = 3) -> float | None:
+    """Measure WebSocket ping/pong RTT in milliseconds.
+
+    Opens a temporary connection, sends `attempts` pings, returns the median RTT.
+    Returns None if measurement fails (non-critical — benchmark continues without it).
+    """
+    try:
+        async with connect_websocket(
+            uri,
+            subprotocols=["binary"],
+            ping_interval=None,
+            ssl=ssl_ctx,
+            close_timeout=5,
+            max_size=1024 * 1024,
+            open_timeout=10,
+        ) as ws:
+            loop = asyncio.get_running_loop()
+            rtts: list[float] = []
+            for _ in range(attempts):
+                t_start = loop.time()
+                pong = await ws.ping()
+                await asyncio.wait_for(pong, timeout=5.0)
+                rtt = (loop.time() - t_start) * 1000
+                rtts.append(rtt)
+            if not rtts:
+                return None
+            rtts.sort()
+            return round(rtts[len(rtts) // 2], 2)
+    except Exception as exc:
+        logger.debug("ping_rtt_measurement_failed", uri=uri, error=str(exc))
+        return None
+
+
+def _build_benchmark_messages(sample: BenchmarkSample) -> tuple[str, str]:
+    """Build start and end JSON messages for benchmark."""
     start_msg = json.dumps({
         "mode": "offline",
         "wav_name": f"{sample.path.stem}-benchmark",
@@ -476,6 +608,26 @@ async def _benchmark_single_sample(uri: str, ssl_ctx: ssl.SSLContext | None, sam
         "itn": True,
     })
     end_msg = json.dumps({"is_speaking": False})
+    return start_msg, end_msg
+
+
+def _is_final_response(data: dict) -> bool:
+    """Check whether a parsed JSON message indicates completion."""
+    is_final = data.get("is_final")
+    if isinstance(is_final, str):
+        is_final = is_final.lower() in ("true", "1")
+    if is_final:
+        return True
+    mode = str(data.get("mode", "")).lower()
+    return mode == "offline" or "2pass-offline" in mode
+
+
+async def _benchmark_single_sample(uri: str, ssl_ctx: ssl.SSLContext | None, sample: BenchmarkSample) -> ConnectionTiming:
+    """Send one sample and return detailed timing breakdown."""
+    start_msg, end_msg = _build_benchmark_messages(sample)
+    loop = asyncio.get_running_loop()
+
+    t0 = loop.time()
 
     async with connect_websocket(
         uri,
@@ -487,12 +639,14 @@ async def _benchmark_single_sample(uri: str, ssl_ctx: ssl.SSLContext | None, sam
         open_timeout=10,
     ) as ws:
         await ws.send(start_msg)
+        t1 = loop.time()
 
-        start = asyncio.get_running_loop().time()
         for offset in range(0, len(sample.payload), BENCHMARK_CHUNK_SIZE):
             await ws.send(sample.payload[offset:offset + BENCHMARK_CHUNK_SIZE])
         await ws.send(end_msg)
+        t2 = loop.time()
 
+        t3: float | None = None
         response_timeout = max(60.0, sample.duration_sec * 2.5 + 30.0)
         while True:
             raw_msg = await asyncio.wait_for(ws.recv(), timeout=response_timeout)
@@ -504,15 +658,32 @@ async def _benchmark_single_sample(uri: str, ssl_ctx: ssl.SSLContext | None, sam
             except json.JSONDecodeError:
                 continue
 
-            mode = str(data.get("mode", "")).lower()
-            is_final = data.get("is_final")
-            if isinstance(is_final, str):
-                is_final = is_final.lower() in ("true", "1")
+            if t3 is None:
+                t3 = loop.time()
 
-            if is_final or mode == "offline" or "2pass-offline" in mode:
+            if _is_final_response(data):
                 break
 
-        return asyncio.get_running_loop().time() - start
+        t4 = loop.time()
+        if t3 is None:
+            t3 = t4
+
+        return ConnectionTiming(
+            connect_ms=(t1 - t0) * 1000,
+            upload_ms=(t2 - t1) * 1000,
+            first_response_ms=(t3 - t2) * 1000,
+            post_upload_wait_ms=(t4 - t2) * 1000,
+            total_ms=(t4 - t0) * 1000,
+        )
+
+
+@dataclass
+class ConcurrentBenchmarkResult:
+    """Result from a single concurrency-level benchmark run."""
+    wall_clock_sec: float
+    timings: list[ConnectionTiming]
+    concurrent_post_upload_ms: float
+    upload_spread_ms: float
 
 
 async def _benchmark_concurrent(
@@ -520,36 +691,157 @@ async def _benchmark_concurrent(
     ssl_ctx: ssl.SSLContext | None,
     sample: BenchmarkSample,
     concurrency: int,
-) -> float:
-    """Send `concurrency` copies of `sample` simultaneously; return wall-clock seconds.
+) -> ConcurrentBenchmarkResult:
+    """Send `concurrency` copies of `sample` with synchronized upload start.
+
+    V2: all connections are established first, then an asyncio.Event triggers
+    simultaneous uploads. Returns a ConcurrentBenchmarkResult with per-connection
+    timings plus aggregate metrics computed from absolute timestamps.
 
     Raises on ANY failure — partial results under overload produce
     misleadingly optimistic throughput_rtf that would corrupt scheduling weights.
     """
+    if concurrency == 1:
+        timing = await _benchmark_single_sample(uri, ssl_ctx, sample)
+        return ConcurrentBenchmarkResult(
+            wall_clock_sec=timing.total_ms / 1000,
+            timings=[timing],
+            concurrent_post_upload_ms=timing.post_upload_wait_ms,
+            upload_spread_ms=0.0,
+        )
+
     loop = asyncio.get_running_loop()
-    start = loop.time()
+    start_msg, end_msg = _build_benchmark_messages(sample)
+    fire_event = asyncio.Event()
+    ready_count = 0
+    ready_event = asyncio.Event()
+    timings: list[ConnectionTiming | BaseException] = [None] * concurrency  # type: ignore[list-item]
+    upload_done_abs: list[float] = [0.0] * concurrency
+    final_resp_abs: list[float] = [0.0] * concurrency
 
-    tasks = [
-        _benchmark_single_sample(uri, ssl_ctx, sample)
-        for _ in range(concurrency)
-    ]
+    async def worker(idx: int) -> None:
+        nonlocal ready_count
+
+        t0 = loop.time()
+
+        async with connect_websocket(
+            uri,
+            subprotocols=["binary"],
+            ping_interval=None,
+            ssl=ssl_ctx,
+            close_timeout=10,
+            max_size=1024 * 1024 * 1024,
+            open_timeout=10,
+        ) as ws:
+            await ws.send(start_msg)
+            t1 = loop.time()
+
+            ready_count += 1
+            if ready_count == concurrency:
+                ready_event.set()
+            await fire_event.wait()
+
+            # Record upload start AFTER barrier so upload_ms is pure send time
+            t_upload_start = loop.time()
+
+            for offset in range(0, len(sample.payload), BENCHMARK_CHUNK_SIZE):
+                await ws.send(sample.payload[offset:offset + BENCHMARK_CHUNK_SIZE])
+            await ws.send(end_msg)
+            t2 = loop.time()
+            upload_done_abs[idx] = t2
+
+            t3: float | None = None
+            response_timeout = max(60.0, sample.duration_sec * 2.5 + 30.0)
+            while True:
+                raw_msg = await asyncio.wait_for(ws.recv(), timeout=response_timeout)
+                if isinstance(raw_msg, bytes):
+                    continue
+                try:
+                    data = json.loads(raw_msg)
+                except json.JSONDecodeError:
+                    continue
+                if t3 is None:
+                    t3 = loop.time()
+                if _is_final_response(data):
+                    break
+
+            t4 = loop.time()
+            if t3 is None:
+                t3 = t4
+            final_resp_abs[idx] = t4
+
+            timings[idx] = ConnectionTiming(
+                connect_ms=(t1 - t0) * 1000,
+                upload_ms=(t2 - t_upload_start) * 1000,
+                first_response_ms=(t3 - t2) * 1000,
+                post_upload_wait_ms=(t4 - t2) * 1000,
+                total_ms=(t4 - t0) * 1000,
+            )
+
+    wall_start = loop.time()
+    tasks = [asyncio.create_task(worker(i)) for i in range(concurrency)]
+
+    # Wait for all workers to be ready OR detect early failures.
+    # Workers block on fire_event after incrementing ready_count, so any
+    # task that completes before ready_event must have failed during
+    # connect/handshake — surface that immediately instead of waiting 30s.
+    ready_waiter = asyncio.create_task(ready_event.wait())
+    done, _ = await asyncio.wait(
+        [ready_waiter, *tasks],
+        timeout=30.0,
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+
+    if ready_waiter not in done:
+        for t in tasks:
+            t.cancel()
+        ready_waiter.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        early_errors = [t.exception() for t in done
+                        if t.done() and t.exception() is not None]
+        if early_errors:
+            raise RuntimeError(
+                f"Concurrent benchmark N={concurrency}: "
+                f"worker failed during setup — {early_errors[0]}"
+            )
+        raise RuntimeError(
+            f"Concurrent benchmark N={concurrency}: "
+            f"only {ready_count}/{concurrency} connections established within 30s"
+        )
+
+    fire_event.set()
     results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    wall_clock = loop.time() - start
+    wall_clock = loop.time() - wall_start
 
     errors = [r for r in results if isinstance(r, BaseException)]
-    if errors:
+    timing_errors = [t for t in timings if isinstance(t, BaseException)]
+    all_errors = errors + timing_errors
+    if all_errors:
         logger.warning(
             "benchmark_concurrent_failure",
             concurrency=concurrency,
-            failed=len(errors),
+            failed=len(all_errors),
             total=concurrency,
-            errors=[str(e) for e in errors[:3]],
+            errors=[str(e) for e in all_errors[:3]],
         )
         raise RuntimeError(
             f"Concurrent benchmark N={concurrency}: "
-            f"{len(errors)}/{concurrency} tasks failed — "
+            f"{len(all_errors)}/{concurrency} tasks failed — "
             f"discarding this gradient level to avoid writing distorted throughput baseline"
         )
 
-    return wall_clock
+    valid_timings = [t for t in timings if isinstance(t, ConnectionTiming)]
+
+    # Aggregate metrics from absolute timestamps:
+    # concurrent_post_upload_ms = time from last upload finishing to last result arriving
+    # This is the server-perspective "time to process all N requests"
+    cpuw = (max(final_resp_abs) - max(upload_done_abs)) * 1000
+    uspread = (max(upload_done_abs) - min(upload_done_abs)) * 1000
+
+    return ConcurrentBenchmarkResult(
+        wall_clock_sec=wall_clock,
+        timings=valid_timings,
+        concurrent_post_upload_ms=round(cpuw, 1),
+        upload_spread_ms=round(uspread, 1),
+    )

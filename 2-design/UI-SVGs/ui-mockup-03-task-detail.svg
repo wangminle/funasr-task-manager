@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900" viewBox="0 0 1200 900">
+  <defs>
+    <style>
+      .bg { fill: #f5f7fa; }
+      .sidebar { fill: #1d2b3a; }
+      .sidebar-text { fill: #a0aec0; font-family: 'Microsoft YaHei', sans-serif; font-size: 14px; }
+      .sidebar-active { fill: #2563eb; rx: 6; }
+      .sidebar-active-text { fill: #ffffff; font-family: 'Microsoft YaHei', sans-serif; font-size: 14px; font-weight: bold; }
+      .header { fill: #ffffff; }
+      .header-text { fill: #1a202c; font-family: 'Microsoft YaHei', sans-serif; font-size: 18px; font-weight: bold; }
+      .card { fill: #ffffff; rx: 12; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.1)); }
+      .title { fill: #1a202c; font-family: 'Microsoft YaHei', sans-serif; font-size: 16px; font-weight: bold; }
+      .subtitle { fill: #1a202c; font-family: 'Microsoft YaHei', sans-serif; font-size: 14px; font-weight: bold; }
+      .desc { fill: #718096; font-family: 'Microsoft YaHei', sans-serif; font-size: 13px; }
+      .label { fill: #4a5568; font-family: 'Microsoft YaHei', sans-serif; font-size: 12px; }
+      .value { fill: #1a202c; font-family: 'Microsoft YaHei', sans-serif; font-size: 13px; }
+      .file-info { fill: #718096; font-family: 'Microsoft YaHei', sans-serif; font-size: 12px; }
+      .divider { stroke: #e2e8f0; stroke-width: 1; }
+      .progress-bg { fill: #e2e8f0; rx: 6; }
+      .transcript-text { fill: #2d3748; font-family: 'Microsoft YaHei', sans-serif; font-size: 13px; }
+      .timestamp { fill: #2563eb; font-family: 'Courier New', monospace; font-size: 12px; }
+    </style>
+  </defs>
+  <rect class="bg" width="1200" height="900" />
+  <!-- Sidebar -->
+  <rect class="sidebar" x="0" y="0" width="220" height="900" />
+  <text x="30" y="40" fill="#ffffff" font-family="'Microsoft YaHei', sans-serif" font-size="20" font-weight="bold">ASR 任务管理器</text>
+  <line x1="20" y1="55" x2="200" y2="55" stroke="#2d3e50" stroke-width="1" />
+  <text class="sidebar-text" x="48" y="95">文件上传</text>
+  <rect class="sidebar-active" x="12" y="105" width="196" height="40" />
+  <text class="sidebar-active-text" x="48" y="130">任务列表</text>
+  <text class="sidebar-text" x="48" y="175">系统监控</text>
+  <text class="sidebar-text" x="48" y="210">设置中心</text>
+  <line x1="20" y1="840" x2="200" y2="840" stroke="#2d3e50" stroke-width="1" />
+  <text class="sidebar-text" x="30" y="870">用户：管理员</text>
+  <!-- Header -->
+  <rect class="header" x="220" y="0" width="980" height="60" />
+  <text fill="#718096" font-family="'Microsoft YaHei', sans-serif" font-size="13" x="250" y="25">任务列表 /</text>
+  <text class="header-text" x="320" y="25">任务详情</text>
+  <text fill="#1a202c" font-family="'Microsoft YaHei', sans-serif" font-size="14" x="250" y="48">01J8K2M · 会议录音-2026-02-25.wav</text>
+  <!-- Back button -->
+  <text fill="#2563eb" font-family="'Microsoft YaHei', sans-serif" font-size="13" x="1100" y="38">返回列表</text>
+  <line class="divider" x1="220" y1="60" x2="1200" y2="60" />
+  <!-- Left column: Info + Progress -->
+  <!-- Status & Progress Card -->
+  <rect class="card" x="250" y="76" width="560" height="180" />
+  <text class="title" x="274" y="104">任务状态</text>
+  <!-- Status badge -->
+  <rect fill="#bee3f8" x="370" y="88" width="64" height="22" rx="4" />
+  <text fill="#2a4365" font-family="'Microsoft YaHei', sans-serif" font-size="11" x="402" y="103" text-anchor="middle">进行中</text>
+  <!-- Big progress bar -->
+  <rect class="progress-bg" x="274" y="125" width="516" height="16" />
+  <rect fill="#2563eb" x="274" y="125" width="351" height="16" rx="6" />
+  <text fill="#1a202c" font-family="'Microsoft YaHei', sans-serif" font-size="22" font-weight="bold" x="274" y="172">68%</text>
+  <text fill="#2563eb" font-family="'Microsoft YaHei', sans-serif" font-size="16" x="330" y="172">预计剩余 12 分钟</text>
+  <!-- Stage indicators -->
+  <text class="file-info" x="274" y="198">待处理</text>
+  <text class="file-info" x="330" y="198">预处理</text>
+  <text class="file-info" x="405" y="198">排队中</text>
+  <text class="file-info" x="468" y="198">已分配</text>
+  <text fill="#2563eb" font-family="'Microsoft YaHei', sans-serif" font-size="12" font-weight="bold" x="532" y="198">当前：识别中</text>
+  <text class="file-info" x="620" y="198">已完成</text>
+  <!-- Assigned server -->
+  <text fill="#718096" font-family="'Microsoft YaHei', sans-serif" font-size="12" x="274" y="220">服务器：ASR-Server-01（WebSocket） · RTF: 0.45 · 已处理 92min / 预计 135min</text>
+  <!-- File Info Card -->
+  <rect class="card" x="250" y="270" width="560" height="200" />
+  <text class="title" x="274" y="298">文件信息</text>
+  <text class="label" x="274" y="330">文件名</text>
+  <text class="value" x="380" y="330">会议录音-2026-02-25.wav</text>
+  <text class="label" x="274" y="355">文件大小</text>
+  <text class="value" x="380" y="355">356 MB</text>
+  <text class="label" x="550" y="355">时长</text>
+  <text class="value" x="620" y="355">02:15:30</text>
+  <text class="label" x="274" y="380">格式</text>
+  <text class="value" x="380" y="380">WAV (PCM 16-bit)</text>
+  <text class="label" x="550" y="380">采样率</text>
+  <text class="value" x="620" y="380">16000 Hz</text>
+  <text class="label" x="274" y="405">声道</text>
+  <text class="value" x="380" y="405">单声道 (Mono)</text>
+  <text class="label" x="550" y="405">编码</text>
+  <text class="value" x="620" y="405">pcm_s16le</text>
+  <text class="label" x="274" y="430">任务ID</text>
+  <text fill="#2563eb" font-family="'Microsoft YaHei', sans-serif" font-size="13" x="380" y="430">01J8K2MXYZ789ABC</text>
+  <text class="label" x="274" y="455">创建时间</text>
+  <text class="value" x="380" y="455">2026-02-26 10:30:15</text>
+  <!-- Timeline Card -->
+  <rect class="card" x="250" y="484" width="560" height="200" />
+  <text class="title" x="274" y="512">状态历史</text>
+  <!-- Timeline items -->
+  <circle cx="290" cy="540" r="6" fill="#38a169" />
+  <line x1="290" y1="546" x2="290" y2="565" stroke="#e2e8f0" stroke-width="2" />
+  <text class="file-info" x="310" y="535">10:30:15</text>
+  <text class="value" x="390" y="535">PENDING · 任务已创建</text>
+  <circle cx="290" cy="572" r="6" fill="#38a169" />
+  <line x1="290" y1="578" x2="290" y2="597" stroke="#e2e8f0" stroke-width="2" />
+  <text class="file-info" x="310" y="567">10:30:18</text>
+  <text class="value" x="390" y="567">PREPROCESSING · 完成文件校验 (0.3s)</text>
+  <circle cx="290" cy="604" r="6" fill="#38a169" />
+  <line x1="290" y1="610" x2="290" y2="629" stroke="#e2e8f0" stroke-width="2" />
+  <text class="file-info" x="310" y="599">10:30:19</text>
+  <text class="value" x="390" y="599">QUEUED · 等待可用槽位（前方 3 个）</text>
+  <circle cx="290" cy="636" r="6" fill="#38a169" />
+  <line x1="290" y1="642" x2="290" y2="661" stroke="#e2e8f0" stroke-width="2" />
+  <text class="file-info" x="310" y="631">10:31:05</text>
+  <text class="value" x="390" y="631">DISPATCHED · 分配到 ASR-Server-01</text>
+  <circle cx="290" cy="668" r="6" fill="#2563eb" />
+  <text class="file-info" x="310" y="663">10:31:08</text>
+  <text fill="#2563eb" font-family="'Microsoft YaHei', sans-serif" font-size="13" x="390" y="663">TRANSCRIBING · 识别中...</text>
+  <!-- Right column: Transcript Preview -->
+  <rect class="card" x="826" y="76" width="344" height="608" />
+  <text class="title" x="850" y="104">转写结果预览</text>
+  <!-- Download buttons -->
+  <rect fill="#f0fff4" stroke="#38a169" x="850" y="115" width="55" height="24" rx="4" />
+  <text fill="#276749" font-family="'Microsoft YaHei', sans-serif" font-size="11" x="877" y="131" text-anchor="middle">JSON</text>
+  <rect fill="#f0fff4" stroke="#38a169" x="912" y="115" width="55" height="24" rx="4" />
+  <text fill="#276749" font-family="'Microsoft YaHei', sans-serif" font-size="11" x="939" y="131" text-anchor="middle">TXT</text>
+  <rect fill="#f0fff4" stroke="#38a169" x="974" y="115" width="55" height="24" rx="4" />
+  <text fill="#276749" font-family="'Microsoft YaHei', sans-serif" font-size="11" x="1001" y="131" text-anchor="middle">SRT</text>
+  <line class="divider" x1="850" y1="148" x2="1146" y2="148" />
+  <!-- Transcript content -->
+  <text class="timestamp" x="850" y="172">[00:00:01]</text>
+  <text class="transcript-text" x="850" y="192">各位同事大家好，今天我们召开项目例会，</text>
+  <text class="transcript-text" x="850" y="210">先同步一下上周进展和本周安排。</text>
+  <text class="timestamp" x="850" y="240">[00:00:15]</text>
+  <text class="transcript-text" x="850" y="260">第一，语音识别服务已经完成联调，</text>
+  <text class="transcript-text" x="850" y="278">第二，前端页面进入稳定性测试阶段。</text>
+  <text class="timestamp" x="850" y="308">[00:00:28]</text>
+  <text class="transcript-text" x="850" y="328">当前剩余工作主要集中在异常处理，</text>
+  <text class="transcript-text" x="850" y="346">包括重试策略、回调兜底和日志追踪。</text>
+  <text class="transcript-text" x="850" y="364">预计本周内可以完成所有验收项...</text>
+  <text class="timestamp" x="850" y="394">[00:01:05]</text>
+  <text class="transcript-text" x="850" y="414">接下来请各模块负责人补充风险点，</text>
+  <text class="transcript-text" x="850" y="432">并确认上线窗口和回滚预案。</text>
+  <text class="transcript-text" x="850" y="450">谢谢。</text>
+  <text class="timestamp" x="850" y="480">[00:01:32]</text>
+  <text class="transcript-text" x="850" y="500">如果没有其他问题，今天会议到这里，</text>
+  <text class="transcript-text" x="850" y="518">相关结论会在会后同步到任务系统。</text>
+  <text class="transcript-text" x="850" y="536">完。</text>
+  <!-- More indicator -->
+  <text fill="#2563eb" font-family="'Microsoft YaHei', sans-serif" font-size="13" x="850" y="570">转写完成预计时间 [01:32:18]</text>
+  <!-- Bottom action bar -->
+  <rect class="card" x="250" y="700" width="920" height="50" />
+  <rect fill="#2563eb" x="274" y="710" width="120" height="32" rx="6" />
+  <text fill="#ffffff" font-family="'Microsoft YaHei', sans-serif" font-size="13" font-weight="bold" x="334" y="731" text-anchor="middle">下载结果</text>
+  <rect fill="#ffffff" stroke="#e53e3e" x="410" y="710" width="120" height="32" rx="6" />
+  <text fill="#e53e3e" font-family="'Microsoft YaHei', sans-serif" font-size="13" x="470" y="731" text-anchor="middle">取消任务</text>
+  <rect fill="#ffffff" stroke="#cbd5e0" x="546" y="710" width="120" height="32" rx="6" />
+  <text fill="#4a5568" font-family="'Microsoft YaHei', sans-serif" font-size="13" x="606" y="731" text-anchor="middle">刷新状态</text>
+  <text class="desc" x="710" y="870" text-anchor="middle">ASR 任务管理器 · 详情页 · UI Mockup v1.0</text>
+</svg>

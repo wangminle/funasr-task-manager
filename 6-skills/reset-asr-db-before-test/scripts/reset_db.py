@@ -46,6 +46,20 @@ def _path(value: str | Path) -> Path:
     return Path(value)
 
 
+def ensure_backend_import_paths(backend_dir: str | Path) -> None:
+    backend_path = _path(backend_dir).resolve()
+    candidates = [
+        backend_path,
+        BASE_DIR / ".venv" / "Lib" / "site-packages",
+        BASE_DIR / ".venv" / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages",
+    ]
+    for candidate in reversed(candidates):
+        if candidate.exists():
+            candidate_str = str(candidate)
+            if candidate_str not in sys.path:
+                sys.path.insert(0, candidate_str)
+
+
 def format_bytes(size_bytes: int) -> str:
     units = ["B", "KB", "MB", "GB", "TB"]
     value = float(size_bytes)
@@ -409,17 +423,30 @@ def collect_post_reset_verification(
 def run_alembic_upgrade(backend_dir: str | Path, db_path: str | Path) -> None:
     backend_path = _path(backend_dir)
     database_path = _path(db_path)
+    ensure_backend_import_paths(backend_path)
 
-    proc = subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
-        cwd=backend_path,
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
+    try:
+        from alembic import command
+        from alembic.config import Config
+    except Exception as exc:
         if database_path.exists():
             database_path.unlink()
-        output_result(False, f"数据库迁移失败: {proc.stderr.strip()}")
+        output_result(False, f"数据库迁移失败: 无法导入 Alembic 依赖 ({exc})")
+
+    config = Config(str(backend_path / "alembic.ini"))
+    config.set_main_option("script_location", str((backend_path / "alembic").resolve()))
+    config.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{database_path.resolve().as_posix()}")
+
+    previous_cwd = Path.cwd()
+    try:
+        os.chdir(backend_path)
+        command.upgrade(config, "head")
+    except Exception as exc:
+        if database_path.exists():
+            database_path.unlink()
+        output_result(False, f"数据库迁移失败: {exc}")
+    finally:
+        os.chdir(previous_cwd)
 
 
 def summarize_tasks(db_path: str | Path, latest_limit: int = 5) -> dict:

@@ -220,7 +220,7 @@ Task manager 的调度器自动将 8 个任务分配到 3 台服务器：
 
 下载所有转写文本，保存到标准 E2E 输出目录：
 ```
-7-data/outputs/e2e/20260328-083340/
+4-tests/batch-testing/outputs/e2e/20260328-083340/
 ├── run-summary.md
 ├── run-summary.json
 └── results/

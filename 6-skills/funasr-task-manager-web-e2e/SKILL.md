@@ -21,7 +21,7 @@ description: Build, run, or maintain browser-based end-to-end tests for the funa
 2. 优先使用前端 `npm run test:e2e:prepare:*` 命令生成素材批次，因为它们已处理了跨平台的 Python 命令差异。
 3. 尽量复用已有的前后端命令，不要发明第二套应用布局。
 4. 浏览器自动化优先使用 Playwright。
-5. 运行工件保存在 `4-tests/batch-testing/outputs/e2e/<timestamp>/`。
+5. Fixture 清单保存在 `4-tests/batch-testing/outputs/e2e/fixture-batches/<profile>.json`，运行工件保存在 `4-tests/batch-testing/outputs/e2e/<timestamp>/`。
 6. 正式的 Playwright 工程保持在 `3-dev/src/frontend/` 下；不要在仓库根目录额外添加 `playwright.config.*`、`tests/example.spec.*` 或 `e2e/example.spec.*` 脚手架。
 
 ## 工作流程
@@ -65,7 +65,7 @@ npm run test:e2e:prepare:full
 python3 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile smoke
 python3 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile remote-standard --write
 python3 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile standard --write
-python3 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile full --output 4-tests/batch-testing/outputs/e2e/full-batch.json
+python3 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile full --output 4-tests/batch-testing/outputs/e2e/fixture-batches/full.json
 python3 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --list
 ```
 
@@ -73,7 +73,7 @@ python3 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --li
 python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile smoke
 python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile remote-standard --write
 python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile standard --write
-python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile full --output 4-tests/batch-testing/outputs/e2e/full-batch.json
+python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --profile full --output 4-tests/batch-testing/outputs/e2e/fixture-batches/full.json
 python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --list
 ```
 
