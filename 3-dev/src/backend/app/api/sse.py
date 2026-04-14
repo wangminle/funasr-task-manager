@@ -127,7 +127,7 @@ async def _progress_stream(
 
         except Exception as e:
             logger.error("sse_stream_error", task_id=task_id, error=str(e))
-            yield _format_sse("error", {"message": "Internal error", "detail": str(e)})
+            yield _format_sse("error", {"message": "Internal server error"})
             return
 
         await asyncio.sleep(SSE_POLL_INTERVAL)

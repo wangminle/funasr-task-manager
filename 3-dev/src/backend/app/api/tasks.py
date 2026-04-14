@@ -23,8 +23,7 @@ router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 @router.post("", response_model=list[TaskResponse], status_code=201)
 async def create_tasks(body: TaskCreateRequest, db: DbSession, user_id: CurrentUser):
     task_count = len(body.items)
-    await rate_limiter.check_daily_limit(user_id, count=task_count)
-    await rate_limiter.check_concurrent_tasks(user_id, count=task_count)
+    await rate_limiter.check_task_limits(user_id, count=task_count)
 
     file_repo = FileRepository(db)
     task_repo = TaskRepository(db)

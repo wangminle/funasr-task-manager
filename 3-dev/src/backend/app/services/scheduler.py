@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import math
 import statistics
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -85,14 +85,18 @@ class RTFTracker:
 
     def __init__(self, window_size: int = RTF_WINDOW_SIZE):
         self._window_size = window_size
-        self._data: dict[str, list[float]] = defaultdict(list)
+        self._data: dict[str, deque[float]] = {}
         self._consecutive_fast: dict[str, int] = defaultdict(int)
 
+    def _get_window(self, server_id: str) -> deque[float]:
+        window = self._data.get(server_id)
+        if window is None:
+            window = deque(maxlen=self._window_size)
+            self._data[server_id] = window
+        return window
+
     def record(self, server_id: str, actual_rtf: float) -> None:
-        window = self._data[server_id]
-        window.append(actual_rtf)
-        if len(window) > self._window_size:
-            window.pop(0)
+        self._get_window(server_id).append(actual_rtf)
 
     def get_p90(self, server_id: str, default: float = DEFAULT_RTF) -> float:
         window = self._data.get(server_id)

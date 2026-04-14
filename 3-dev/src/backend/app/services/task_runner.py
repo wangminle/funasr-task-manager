@@ -6,7 +6,7 @@ import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from app.adapters.base import MessageProfile
@@ -155,13 +155,14 @@ class BackgroundTaskRunner:
             if not queued_tasks:
                 return
 
-            running_count: dict[str, int] = {}
-            for srv in servers:
-                count_stmt = select(Task).where(
-                    Task.assigned_server_id == srv.server_id,
-                    Task.status.in_([TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING]),
-                )
-                running_count[srv.server_id] = len(list((await session.execute(count_stmt)).scalars().all()))
+            count_stmt = (
+                select(Task.assigned_server_id, func.count())
+                .where(Task.status.in_([TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING]))
+                .group_by(Task.assigned_server_id)
+            )
+            running_count: dict[str, int] = dict(
+                (await session.execute(count_stmt)).all()
+            )
 
             server_profiles = [
                 ServerProfile(

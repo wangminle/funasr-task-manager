@@ -4,6 +4,8 @@ Defence layers:
 1. Block well-known private/loopback hostnames (localhost, *.local, etc.)
 2. Block literal private/loopback IPs (IPv4 + IPv6)
 3. Resolve hostnames via DNS and block if *any* resolved address is private
+DNS lookup failures are treated as "unknown" rather than "private" so transient
+resolver issues do not hard-block otherwise valid public callback domains.
 """
 
 import ipaddress
@@ -79,7 +81,7 @@ def is_private_ip(host: str) -> bool:
             except ValueError:
                 continue
     except socket.gaierror:
-        return True
+        return False
 
     return False
 

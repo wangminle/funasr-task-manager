@@ -86,6 +86,7 @@ class Settings(BaseSettings):
 
     auth_enabled: bool = False
     auth_tokens: str = ""
+    ssrf_protection_enabled: bool = False
 
     cors_origins: str = ""
 

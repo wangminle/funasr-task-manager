@@ -15,6 +15,7 @@ import httpx
 from ulid import ULID
 
 from app.models.callback_outbox import CallbackOutbox, OutboxStatus
+from app.config import settings
 from app.fault.retry import calculate_delay
 from app.observability.logging import get_logger
 from app.utils.network_validator import validate_callback_url_async
@@ -80,6 +81,7 @@ def create_outbox_record(
         callback_url=callback_url,
         payload_json=payload,
         status=OutboxStatus.PENDING,
+        retry_count=0,
     )
 
 
@@ -97,20 +99,21 @@ async def deliver_callback(
         headers["X-Webhook-Signature"] = sig
     headers["X-Event-ID"] = outbox.event_id
 
-    url_error = await validate_callback_url_async(outbox.callback_url)
-    if url_error:
-        outbox.retry_count += 1
-        outbox.last_error = f"URL validation: {url_error}"
-        if outbox.retry_count >= MAX_CALLBACK_RETRIES:
-            outbox.status = OutboxStatus.FAILED
-        logger.warning(
-            "callback_url_validation_failed",
-            outbox_id=outbox.outbox_id,
-            url=outbox.callback_url,
-            error=url_error,
-            retry=outbox.retry_count,
-        )
-        return False
+    if settings.ssrf_protection_enabled:
+        url_error = await validate_callback_url_async(outbox.callback_url)
+        if url_error:
+            outbox.retry_count = (outbox.retry_count or 0) + 1
+            outbox.last_error = f"URL validation: {url_error}"
+            if outbox.retry_count >= MAX_CALLBACK_RETRIES:
+                outbox.status = OutboxStatus.FAILED
+            logger.warning(
+                "callback_url_validation_failed",
+                outbox_id=outbox.outbox_id,
+                url=outbox.callback_url,
+                error=url_error,
+                retry=outbox.retry_count,
+            )
+            return False
 
     try:
         client = _get_shared_client()
@@ -125,14 +128,14 @@ async def deliver_callback(
             logger.info("callback_delivered", outbox_id=outbox.outbox_id, task_id=outbox.task_id, status_code=resp.status_code)
             return True
         else:
-            outbox.retry_count += 1
+            outbox.retry_count = (outbox.retry_count or 0) + 1
             outbox.last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
             if outbox.retry_count >= MAX_CALLBACK_RETRIES:
                 outbox.status = OutboxStatus.FAILED
             logger.warning("callback_delivery_failed", outbox_id=outbox.outbox_id, status_code=resp.status_code, retry=outbox.retry_count)
             return False
     except Exception as e:
-        outbox.retry_count += 1
+        outbox.retry_count = (outbox.retry_count or 0) + 1
         outbox.last_error = str(e)
         if outbox.retry_count >= MAX_CALLBACK_RETRIES:
             outbox.status = OutboxStatus.FAILED
