@@ -101,6 +101,7 @@ const stats = ref([
   { label: '失败', value: 0, color: '#f56c6c' },
 ])
 let pollTimer = null
+let fetchAbortController = null
 let searchDebounceTimer = null
 
 watch(searchQuery, () => {
@@ -126,17 +127,25 @@ async function fetchStats() {
 }
 
 async function fetchTasks() {
+  if (fetchAbortController) fetchAbortController.abort()
+  fetchAbortController = new AbortController()
   loading.value = true
   try {
     const params = { page: currentPage.value, page_size: pageSize }
     if (statusFilter.value) params.status = statusFilter.value
     if (groupFilter.value.trim()) params.group = groupFilter.value.trim()
     if (searchQuery.value.trim()) params.search = searchQuery.value.trim()
-    const data = await listTasks(params)
+    const data = await listTasks(params, { signal: fetchAbortController.signal })
     tasks.value = data.items
     total.value = data.total
   } catch (err) {
-    ElMessage.error('获取任务列表失败')
+    const canceled =
+      err.name === 'AbortError' ||
+      err.name === 'CanceledError' ||
+      err.code === 'ERR_CANCELED'
+    if (!canceled) {
+      ElMessage.error('获取任务列表失败')
+    }
   } finally {
     loading.value = false
   }
@@ -201,14 +210,23 @@ function formatDate(dateStr) {
   return new Date(dateStr).toLocaleString('zh-CN')
 }
 
+function schedulePoll() {
+  pollTimer = setTimeout(async () => {
+    await fetchTasks()
+    await fetchStats()
+    schedulePoll()
+  }, 5000)
+}
+
 onMounted(() => {
   fetchTasks()
   fetchStats()
-  pollTimer = setInterval(() => { fetchTasks(); fetchStats() }, 5000)
+  schedulePoll()
 })
 onUnmounted(() => {
   clearTimeout(searchDebounceTimer)
-  if (pollTimer) clearInterval(pollTimer)
+  if (pollTimer) clearTimeout(pollTimer)
+  if (fetchAbortController) fetchAbortController.abort()
 })
 </script>
 

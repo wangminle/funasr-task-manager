@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -110,18 +111,35 @@ def check_ffprobe() -> DiagnosticCheck:
     )
 
 
+_upload_dir_check_cache: tuple[float, str, DiagnosticCheck] | None = None
+_UPLOAD_DIR_CACHE_TTL = 60.0  # seconds
+
+
 def check_upload_dir() -> DiagnosticCheck:
-    """Check if the upload directory exists and is writable."""
+    """Check if the upload directory exists and is writable (cached for 60s per path)."""
+    global _upload_dir_check_cache
     upload_dir = Path(settings.upload_dir)
+    cache_key = str(upload_dir.resolve())
+    now = time.monotonic()
+    if (
+        _upload_dir_check_cache
+        and _upload_dir_check_cache[1] == cache_key
+        and (now - _upload_dir_check_cache[0]) < _UPLOAD_DIR_CACHE_TTL
+    ):
+        return _upload_dir_check_cache[2]
     if not upload_dir.exists():
-        return DiagnosticCheck(name="upload_dir", level="error", detail=f"{upload_dir} does not exist")
-    try:
-        test_file = upload_dir / ".diag_write_test"
-        test_file.write_text("test")
-        test_file.unlink()
-        return DiagnosticCheck(name="upload_dir", level="ok", detail=f"{upload_dir} writable")
-    except OSError as e:
-        return DiagnosticCheck(name="upload_dir", level="error", detail=f"{upload_dir} not writable: {e}")
+        result = DiagnosticCheck(name="upload_dir", level="error", detail=f"{upload_dir} does not exist")
+    else:
+        try:
+            test_file = upload_dir / ".diag_write_test"
+            test_file.write_text("test")
+            test_file.unlink()
+            result = DiagnosticCheck(name="upload_dir", level="ok", detail=f"{upload_dir} writable")
+        except OSError as e:
+            result = DiagnosticCheck(name="upload_dir", level="error", detail=f"{upload_dir} not writable: {e}")
+
+    _upload_dir_check_cache = (now, cache_key, result)
+    return result
 
 
 async def check_server_connectivity(session: AsyncSession) -> DiagnosticCheck:

@@ -1,8 +1,10 @@
 """Task group (batch) management API endpoints."""
 
-import io
 import json as _json
-import zipfile
+import struct
+import time
+import zlib
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -97,6 +99,7 @@ async def delete_task_group(group_id: str, db: DbSession, user_id: CurrentUser):
     """Delete all tasks in a batch (active tasks are protected).
 
     Returns 200 on full deletion, 207 Multi-Status when active tasks were skipped.
+    Uses atomic DELETE … RETURNING. File cleanup runs after commit.
     """
     active = {TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING}
 
@@ -112,44 +115,50 @@ async def delete_task_group(group_id: str, db: DbSession, user_id: CurrentUser):
     active_count = (await db.execute(active_stmt)).scalar() or 0
 
     deletable_where = [*base_where, Task.status.notin_([s.value for s in active])]
-    tasks_to_delete = list((await db.execute(select(Task).where(*deletable_where))).scalars().all())
+
+    del_events_sub = select(Task.task_id).where(*deletable_where)
+    await db.execute(sql_delete(TaskEvent).where(TaskEvent.task_id.in_(del_events_sub)))
+
+    del_stmt = (
+        sql_delete(Task)
+        .where(*deletable_where)
+        .returning(Task.task_id, Task.file_id)
+    )
+    deleted_rows = (await db.execute(del_stmt)).all()
+
+    deleted_task_ids = {r.task_id for r in deleted_rows}
+    candidate_file_ids = {r.file_id for r in deleted_rows if r.file_id}
+
+    orphaned: set[str] = set()
+    if candidate_file_ids:
+        still_ref = set(
+            (await db.execute(
+                select(Task.file_id).where(Task.file_id.in_(candidate_file_ids)).distinct()
+            )).scalars().all()
+        )
+        orphaned = candidate_file_ids - still_ref
+
+    await db.commit()
 
     from app.storage.file_manager import delete_result as _del_result, delete_file as _del_file
-
-    task_ids = {t.task_id for t in tasks_to_delete}
-    file_ids = {t.file_id for t in tasks_to_delete if t.file_id}
-
-    still_ref_stmt = (
-        select(Task.file_id)
-        .where(Task.file_id.in_(file_ids), Task.task_id.notin_(task_ids))
-        .distinct()
-    )
-    still_ref = set((await db.execute(still_ref_stmt)).scalars().all()) if file_ids else set()
-    orphaned = file_ids - still_ref
-
     cleaned_results = 0
     cleaned_files = 0
     deleted_fids: set[str] = set()
-    for t in tasks_to_delete:
-        if _del_result(t.task_id):
+    for row in deleted_rows:
+        if await _del_result(row.task_id):
             cleaned_results += 1
-        if t.file_id and t.file_id in orphaned and t.file_id not in deleted_fids:
-            if _del_file(t.file_id):
+        if row.file_id and row.file_id in orphaned and row.file_id not in deleted_fids:
+            if await _del_file(row.file_id):
                 cleaned_files += 1
-            deleted_fids.add(t.file_id)
+            deleted_fids.add(row.file_id)
 
-    sub = select(Task.task_id).where(*deletable_where)
-    await db.execute(sql_delete(TaskEvent).where(TaskEvent.task_id.in_(sub)))
-    await db.execute(sql_delete(Task).where(*deletable_where))
-    await db.commit()
-
-    deleted = len(tasks_to_delete)
+    deleted = len(deleted_task_ids)
     logger.info("task_group_deleted", group_id=group_id, deleted=deleted, skipped_active=active_count)
 
     body = {"deleted": deleted, "skipped_active": active_count, "total": total,
             "partial": active_count > 0}
-    status = 207 if active_count > 0 else 200
-    return JSONResponse(content=body, status_code=status)
+    status_code = 207 if active_count > 0 else 200
+    return JSONResponse(content=body, status_code=status_code)
 
 
 async def _group_stats(db, group_id: str, user_id: str) -> dict:
@@ -213,26 +222,121 @@ async def _json_results(tasks) -> JSONResponse:
 
 
 async def _zip_results(tasks) -> StreamingResponse:
-    """Create an in-memory zip of all result files."""
-    buf = io.BytesIO()
-    used_names: dict[str, int] = {}
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+    """Stream a zip archive of all result files without buffering the whole zip in memory.
+
+    Uses raw DEFLATE + manual zip structure to yield chunks as each file is compressed.
+    Enforces a 500 MB uncompressed-content safety limit.
+    """
+    MAX_UNCOMPRESSED = 500 * 1024 * 1024
+
+    async def _generate() -> AsyncIterator[bytes]:
+        offset = 0
+        entries: list[tuple[bytes, int, int, int, int, int]] = []
+        total_uncompressed = 0
+        used_names: dict[str, int] = {}
+        truncated = False
+
         for task in tasks:
+            if truncated:
+                break
             for ext in ("txt", "json", "srt"):
                 content = await read_result(task.task_id, ext)
-                if content:
-                    original = task.file.original_name if task.file else task.task_id
-                    stem = original.rsplit(".", 1)[0] if "." in original else original
-                    name = f"{stem}.{ext}"
-                    if name in used_names:
-                        used_names[name] += 1
-                        name = f"{stem}_{used_names[name]}.{ext}"
-                    else:
-                        used_names[name] = 0
-                    zf.writestr(name, content)
-    buf.seek(0)
+                if not content:
+                    continue
+
+                raw = content.encode("utf-8") if isinstance(content, str) else content
+                total_uncompressed += len(raw)
+                if total_uncompressed > MAX_UNCOMPRESSED:
+                    truncated = True
+                    logger.warning("zip_export_truncated",
+                                   limit_mb=MAX_UNCOMPRESSED // 1024 // 1024,
+                                   files_included=len(entries))
+                    break
+
+                original = task.file.original_name if task.file else task.task_id
+                stem = original.rsplit(".", 1)[0] if "." in original else original
+                name = f"{stem}.{ext}"
+                if name in used_names:
+                    used_names[name] += 1
+                    name = f"{stem}_{used_names[name]}.{ext}"
+                else:
+                    used_names[name] = 0
+                fname_bytes = name.encode("utf-8")
+
+                crc = zlib.crc32(raw) & 0xFFFFFFFF
+                compressed = zlib.compress(raw, 6)[2:-4]  # raw deflate
+                comp_size = len(compressed)
+                uncomp_size = len(raw)
+
+                mod_time, mod_date = _dos_datetime()
+
+                local_header = struct.pack(
+                    "<4sHHHHHIIIHH",
+                    b"PK\x03\x04",
+                    20, 0, 8,
+                    mod_time, mod_date,
+                    crc, comp_size, uncomp_size,
+                    len(fname_bytes), 0,
+                )
+                chunk = local_header + fname_bytes + compressed
+                entries.append((fname_bytes, offset, crc, comp_size, uncomp_size, mod_time | (mod_date << 16)))
+                offset += len(chunk)
+                yield chunk
+
+        if truncated:
+            notice = b"Export truncated: uncompressed content exceeded 500 MB limit."
+            notice_name = b"_TRUNCATED_README.txt"
+            crc = zlib.crc32(notice) & 0xFFFFFFFF
+            compressed = zlib.compress(notice, 6)[2:-4]
+            mod_time, mod_date = _dos_datetime()
+            local_header = struct.pack(
+                "<4sHHHHHIIIHH",
+                b"PK\x03\x04", 20, 0, 8,
+                mod_time, mod_date,
+                crc, len(compressed), len(notice),
+                len(notice_name), 0,
+            )
+            chunk = local_header + notice_name + compressed
+            entries.append((notice_name, offset, crc, len(compressed), len(notice), mod_time | (mod_date << 16)))
+            offset += len(chunk)
+            yield chunk
+
+        central_offset = offset
+        for fname_bytes, local_off, crc, comp_size, uncomp_size, mod_dt in entries:
+            mod_time = mod_dt & 0xFFFF
+            mod_date = (mod_dt >> 16) & 0xFFFF
+            central = struct.pack(
+                "<4sHHHHHHIIIHHHHHII",
+                b"PK\x01\x02",
+                20, 20, 0, 8,
+                mod_time, mod_date,
+                crc, comp_size, uncomp_size,
+                len(fname_bytes), 0, 0, 0, 0, 0x20,
+                local_off,
+            )
+            yield central + fname_bytes
+
+        central_size = sum(46 + len(e[0]) for e in entries)
+        eocd = struct.pack(
+            "<4sHHHHIIH",
+            b"PK\x05\x06",
+            0, 0,
+            len(entries), len(entries),
+            central_size, central_offset,
+            0,
+        )
+        yield eocd
+
     return StreamingResponse(
-        buf,
+        _generate(),
         media_type="application/zip",
         headers={"Content-Disposition": "attachment; filename=batch_results.zip"},
     )
+
+
+def _dos_datetime() -> tuple[int, int]:
+    """Return (dos_time, dos_date) for the current local time."""
+    t = time.localtime()
+    dos_time = (t.tm_sec // 2) | (t.tm_min << 5) | (t.tm_hour << 11)
+    dos_date = t.tm_mday | (t.tm_mon << 5) | ((t.tm_year - 1980) << 9)
+    return dos_time, dos_date

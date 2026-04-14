@@ -9,7 +9,7 @@ import pytest
 from app.models import ServerInstance, ServerStatus
 
 
-async def _register_server(client, server_id="asr-rtf-01", host="192.168.1.200", port=10095):
+async def _register_server(client, server_id="asr-rtf-01", host="203.0.113.15", port=10095):
     body = {
         "server_id": server_id,
         "name": f"Test {server_id}",
@@ -30,7 +30,7 @@ class TestBugP2BenchmarkOffline:
         """Register a server with unreachable host, benchmark should offline it."""
         from sqlalchemy import select
 
-        await _register_server(client, "asr-offline-bench-01", host="192.168.254.254", port=19999)
+        await _register_server(client, "asr-offline-bench-01", host="203.0.113.16", port=19999)
 
         stmt = select(ServerInstance).where(ServerInstance.server_id == "asr-offline-bench-01")
         server = (await db_session.execute(stmt)).scalar_one()
@@ -50,7 +50,7 @@ class TestBugP2BenchmarkOffline:
         Note: Since we can't have a real ASR server in tests, we register
         a server and just verify the probe result contains reachability info.
         """
-        await _register_server(client, "asr-bench-check-01", host="127.0.0.1", port=8000)
+        await _register_server(client, "asr-bench-check-01", host="203.0.113.17", port=8000)
         resp = await client.post(
             "/api/v1/servers/asr-bench-check-01/probe?level=connect_only"
         )
@@ -67,7 +67,7 @@ class TestBugP1RTFBaselinePreservation:
         """Single-server benchmark endpoint should set rtf_baseline on reachable server."""
         from sqlalchemy import select
 
-        await _register_server(client, "asr-rtf-bench-01", host="127.0.0.1", port=8000)
+        await _register_server(client, "asr-rtf-bench-01", host="203.0.113.18", port=8000)
         resp = await client.post(
             "/api/v1/servers/asr-rtf-bench-01/benchmark"
         )

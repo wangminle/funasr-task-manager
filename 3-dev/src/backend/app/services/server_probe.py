@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import ssl
 import time
 from dataclasses import dataclass, field
@@ -125,9 +126,15 @@ async def probe_server(
 
     ssl_ctx: ssl.SSLContext | None = None
     if use_ssl:
-        ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
+        # FunASR servers commonly use self-signed certificates;
+        # verification is disabled by default for probe/benchmark.
+        # Set ASR_PROBE_SSL_VERIFY=true to enable strict verification.
+        if os.environ.get("ASR_PROBE_SSL_VERIFY", "").lower() in ("true", "1", "yes"):
+            ssl_ctx = ssl.create_default_context()
+        else:
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
 
     try:
         async with asyncio.timeout(timeout):

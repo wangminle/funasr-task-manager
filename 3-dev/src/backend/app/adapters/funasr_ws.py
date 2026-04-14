@@ -220,7 +220,8 @@ class FunASRWebSocketAdapter(BaseAdapter):
         if profile.mode == RecognitionMode.OFFLINE:
             stride = OFFLINE_CHUNK_SIZE
         else:
-            stride = int(STREAMING_CHUNK_FACTOR * profile.chunk_size[1] / profile.chunk_interval / 1000 * profile.audio_fs * 2)
+            chunk_interval = max(profile.chunk_interval, 1)
+            stride = int(STREAMING_CHUNK_FACTOR * profile.chunk_size[1] / chunk_interval / 1000 * profile.audio_fs * 2)
             stride = max(stride, 4096)
 
         chunk_num = max(1, (len(audio_bytes) - 1) // stride + 1)

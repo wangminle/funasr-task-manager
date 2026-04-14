@@ -161,7 +161,7 @@ test('@smoke upload to result flow', async ({ page, request, baseURL }) => {
   await page.screenshot({ path: path.join(artifacts.screenshotsDir, 'upload-pending.png'), fullPage: true })
 
   let uploadResponseIndex = 0
-  page.on('response', async (response) => {
+  const uploadResponseHandler = async (response) => {
     if (!response.url().includes('/api/v1/files/upload') || response.request().method() !== 'POST') {
       return
     }
@@ -173,7 +173,8 @@ test('@smoke upload to result flow', async ({ page, request, baseURL }) => {
     if (sourceFile?.name && uploaded?.file_id) {
       sourceFileByFileId.set(uploaded.file_id, sourceFile.name)
     }
-  })
+  }
+  page.on('response', uploadResponseHandler)
 
   const createTaskResponse = page.waitForResponse((response) => (
     response.url().includes('/api/v1/tasks') && response.request().method() === 'POST'
@@ -188,6 +189,7 @@ test('@smoke upload to result flow', async ({ page, request, baseURL }) => {
 
   await expect(page.getByTestId('created-tasks-table')).toBeVisible()
   await page.screenshot({ path: path.join(artifacts.screenshotsDir, 'upload-created-tasks.png'), fullPage: true })
+  page.off('response', uploadResponseHandler)
 
   const taskIds = createdTasks.map((item) => item.task_id)
 

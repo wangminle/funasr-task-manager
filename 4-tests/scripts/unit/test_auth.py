@@ -64,12 +64,12 @@ class TestRateLimiting:
             upload_resp = await client.post("/api/v1/files/upload", files=files, headers={"X-API-Key": "token-a"})
             file_id = upload_resp.json()["file_id"]
 
-            rate_limiter.record_task_created("userA")
-            rate_limiter.record_task_created("userA")
-            rate_limiter.check_concurrent_tasks("userA")
+            await rate_limiter.record_task_created("userA")
+            await rate_limiter.record_task_created("userA")
+            await rate_limiter.check_concurrent_tasks("userA")
         except Exception:
             pass
         finally:
             rate_limiter.disable()
-            rate_limiter.record_task_completed("userA")
-            rate_limiter.record_task_completed("userA")
+            await rate_limiter.record_task_completed("userA")
+            await rate_limiter.record_task_completed("userA")

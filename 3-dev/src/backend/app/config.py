@@ -48,7 +48,7 @@ def _normalize_sqlite_url(url: str) -> str:
     raw_path = url[len(scheme):]
     if not raw_path:
         return url
-    if len(raw_path) >= 2 and raw_path[1] == ":":
+    if Path(raw_path).is_absolute():
         return url
     normalized_path = _resolve_project_path(raw_path)
     return f"{scheme}{normalized_path.as_posix()}"
@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     auth_enabled: bool = False
     auth_tokens: str = ""
 
-    cors_origins: str = "*"
+    cors_origins: str = ""
 
     preprocess_fallback_enabled: bool = True
 

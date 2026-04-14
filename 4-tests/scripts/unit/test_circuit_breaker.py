@@ -1,5 +1,6 @@
 """Circuit breaker unit tests (T-M3-01 to T-M3-04)."""
 
+import asyncio
 import time
 
 import pytest
@@ -15,70 +16,77 @@ class TestCircuitBreakerStates:
         cb = CircuitBreaker("s1")
         assert cb.state == CircuitState.CLOSED
 
-    def test_closed_to_open_after_failures(self):
+    @pytest.mark.asyncio
+    async def test_closed_to_open_after_failures(self):
         """T-M3-01: 5 consecutive failures → OPEN."""
         cb = CircuitBreaker("s1", failure_threshold=5)
         for _ in range(5):
-            cb.record_failure()
+            await cb.record_failure()
         assert cb.state == CircuitState.OPEN
 
-    def test_open_rejects_requests(self):
+    @pytest.mark.asyncio
+    async def test_open_rejects_requests(self):
         """T-M3-02: OPEN state raises CircuitBreakerOpenError."""
         cb = CircuitBreaker("s1", failure_threshold=2, recovery_timeout=60.0)
-        cb.record_failure()
-        cb.record_failure()
+        await cb.record_failure()
+        await cb.record_failure()
         assert cb.state == CircuitState.OPEN
         with pytest.raises(CircuitBreakerOpenError) as exc_info:
-            cb.pre_check()
+            await cb.pre_check()
         assert exc_info.value.server_id == "s1"
 
-    def test_open_to_half_open_after_timeout(self):
+    @pytest.mark.asyncio
+    async def test_open_to_half_open_after_timeout(self):
         """T-M3-03: After recovery_timeout → HALF_OPEN."""
         cb = CircuitBreaker("s1", failure_threshold=2, recovery_timeout=0.1)
-        cb.record_failure()
-        cb.record_failure()
+        await cb.record_failure()
+        await cb.record_failure()
         assert cb.state == CircuitState.OPEN
-        time.sleep(0.15)
+        await asyncio.sleep(0.15)
         assert cb.state == CircuitState.HALF_OPEN
 
-    def test_half_open_to_closed_after_successes(self):
+    @pytest.mark.asyncio
+    async def test_half_open_to_closed_after_successes(self):
         """T-M3-04: 3 successes in HALF_OPEN → CLOSED."""
         cb = CircuitBreaker("s1", failure_threshold=2, recovery_timeout=0.01, half_open_max_calls=3)
-        cb.record_failure()
-        cb.record_failure()
-        time.sleep(0.02)
+        await cb.record_failure()
+        await cb.record_failure()
+        await asyncio.sleep(0.02)
         assert cb.state == CircuitState.HALF_OPEN
         for _ in range(3):
-            assert cb.allow_request() is True
-            cb.record_success()
+            assert await cb.allow_request() is True
+            await cb.record_success()
         assert cb.state == CircuitState.CLOSED
 
-    def test_half_open_to_open_on_failure(self):
+    @pytest.mark.asyncio
+    async def test_half_open_to_open_on_failure(self):
         cb = CircuitBreaker("s1", failure_threshold=2, recovery_timeout=0.01)
-        cb.record_failure()
-        cb.record_failure()
-        time.sleep(0.02)
+        await cb.record_failure()
+        await cb.record_failure()
+        await asyncio.sleep(0.02)
         assert cb.state == CircuitState.HALF_OPEN
-        cb.allow_request()
-        cb.record_failure()
+        await cb.allow_request()
+        await cb.record_failure()
         assert cb.state == CircuitState.OPEN
 
-    def test_success_resets_failure_count(self):
+    @pytest.mark.asyncio
+    async def test_success_resets_failure_count(self):
         cb = CircuitBreaker("s1", failure_threshold=5)
         for _ in range(3):
-            cb.record_failure()
-        cb.record_success()
+            await cb.record_failure()
+        await cb.record_success()
         for _ in range(3):
-            cb.record_failure()
+            await cb.record_failure()
         assert cb.state == CircuitState.CLOSED
 
-    def test_state_value_for_prometheus(self):
+    @pytest.mark.asyncio
+    async def test_state_value_for_prometheus(self):
         cb = CircuitBreaker("s1", failure_threshold=2, recovery_timeout=0.01)
         assert cb.state_value == 0
-        cb.record_failure()
-        cb.record_failure()
+        await cb.record_failure()
+        await cb.record_failure()
         assert cb.state_value == 1
-        time.sleep(0.02)
+        await asyncio.sleep(0.02)
         assert cb.state_value == 2
 
 

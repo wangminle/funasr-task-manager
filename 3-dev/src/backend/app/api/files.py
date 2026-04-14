@@ -21,7 +21,7 @@ UPLOAD_CHUNK_SIZE = 256 * 1024  # 256 KB per chunk
 async def upload_file(file: UploadFile, db: DbSession, user_id: CurrentUser):
     filename = file.filename or "unknown"
     content_length = file.size or 0
-    rate_limiter.check_upload_bandwidth(user_id, content_length)
+    await rate_limiter.check_upload_bandwidth(user_id, content_length)
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
     try:
         file_record = await process_upload_streaming(user_id, filename, file, max_bytes)
@@ -29,7 +29,7 @@ async def upload_file(file: UploadFile, db: DbSession, user_id: CurrentUser):
         raise HTTPException(status_code=e.status_code, detail=e.message)
     db.add(file_record)
     await db.flush()
-    rate_limiter.record_upload(user_id, file_record.size_bytes)
+    await rate_limiter.record_upload(user_id, file_record.size_bytes)
     logger.info("file_uploaded", file_id=file_record.file_id, name=filename, size=file_record.size_bytes)
     return FileUploadResponse(
         file_id=file_record.file_id, original_name=file_record.original_name,

@@ -149,19 +149,24 @@ async function submitAll() {
   if (pendingFiles.value.length === 0) return
   submitting.value = true
   try {
-    for (const f of pendingFiles.value) {
-      if (f.uploadStatus === 'uploaded' || f.uploadStatus === 'error') continue
-      f.uploadStatus = 'uploading'
-      f.uploadProgress = 0
-      try {
-        const result = await uploadFile(f.raw, (pct) => { f.uploadProgress = pct })
-        f.fileId = result.file_id
-        f.uploadStatus = 'uploaded'
-        f.uploadProgress = 100
-      } catch (err) {
-        f.uploadStatus = 'error'
-        ElMessage.error(`上传失败: ${f.name}`)
-      }
+    const CONCURRENCY = 3
+    const pending = pendingFiles.value.filter(f => f.uploadStatus !== 'uploaded' && f.uploadStatus !== 'error')
+
+    for (let i = 0; i < pending.length; i += CONCURRENCY) {
+      const batch = pending.slice(i, i + CONCURRENCY)
+      await Promise.all(batch.map(async (f) => {
+        f.uploadStatus = 'uploading'
+        f.uploadProgress = 0
+        try {
+          const result = await uploadFile(f.raw, (pct) => { f.uploadProgress = pct })
+          f.fileId = result.file_id
+          f.uploadStatus = 'uploaded'
+          f.uploadProgress = 100
+        } catch (err) {
+          f.uploadStatus = 'error'
+          ElMessage.error(`上传失败: ${f.name}`)
+        }
+      }))
     }
     const uploadedFiles = pendingFiles.value.filter(f => f.fileId)
     if (uploadedFiles.length === 0) { ElMessage.error('没有成功上传的文件'); return }

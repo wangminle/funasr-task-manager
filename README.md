@@ -245,10 +245,10 @@ python -m cli server register --id asr-01 --host 192.168.1.100 --port 10095 --pr
 # 探测节点连通性和能力
 python -m cli server probe asr-01
 
-# 单节点真实 benchmark（仅使用公开样本）
+# 单节点 benchmark（单线程 RTF + 梯度并发吞吐量测试，自动校准 max_concurrency）
 python -m cli server benchmark asr-01
 
-# 全量性能基准测试（对所有在线节点使用公开样本，刷新 RTF 基线）
+# 全量 benchmark（对所有在线节点执行，刷新 RTF 基线与吞吐量指标）
 python -m cli server benchmark
 
 # 更新节点配置
@@ -409,8 +409,11 @@ python -m cli server list
 | 概念 | 说明 |
 |------|------|
 | **RTF**（Real-Time Factor） | 处理1秒音频需要的时间。RTF=0.1 表示10x加速 |
+| **双指标 Benchmark** | `single_rtf`（单线程延迟）+ `throughput_rtf`（并发满载吞吐），前者用于 ETA 估算，后者驱动配额分配 |
+| **梯度并发 + 退化检测** | 逐级测试 N∈[1,2,4,8] 并发，自动识别吞吐退化点并校准 `max_concurrency` |
 | **LPT 调度** | 优先将最长文件分配给最快的服务器 |
 | **最早完工时间** | 考虑当前队列负载，选择预估最早完成的节点 |
+| **配额分配** | 按 `1/throughput_rtf` 速度比例分配任务配额，吞吐越高的节点获得越多任务 |
 | **槽位队列预规划** | 首轮为每个虚拟并发槽位生成有序任务队列，补位时直接从本槽位取下一个 |
 | **工作窃取** | 快节点空闲且自身队列清空时，可从其他节点队列尾部窃取更快完成的短任务 |
 | **自动重试** | 瞬时故障（网络超时、协议错误）的任务自动从 FAILED 回到 QUEUED 重新调度，回调和并发槽位仅在真正终态时释放 |
@@ -435,8 +438,8 @@ python -m cli doctor
 ├─────────────────────┬──────┬────────────────────────┤
 │ 检查项              │ 状态 │ 说明                    │
 ├─────────────────────┼──────┼────────────────────────┤
-│ database_schema     │  ✅  │ version 002            │
-│ alembic_version     │  ✅  │ 002_fix_outbox         │
+│ database_schema     │  ✅  │ version 003            │
+│ alembic_version     │  ✅  │ 003_add_throughput_rtf │
 │ ffprobe             │  ⚠️  │ not found              │
 │ upload_dir          │  ✅  │ runtime/storage/uploads writable │
 │ asr_servers         │  ✅  │ 2/2 online             │
@@ -514,7 +517,7 @@ python -m cli config set api_key dev-token-user1
 CLI 会在输出和 JSON 摘要中列出失败的文件（`upload_failures` 字段），并以非零退出码（exit 1）退出。已成功上传的文件仍会正常转写，不会因为部分失败而全部放弃。
 
 **Q: 从旧版本数据库升级需要注意什么？**
-运行 `alembic upgrade head`。迁移 `002_fix_callback_outbox_schema` 会自动为已有记录回填 `outbox_id`（ULID），不会丢失待投递的回调数据。
+运行 `alembic upgrade head`。迁移 `002_fix_callback_outbox_schema` 会自动为已有记录回填 `outbox_id`（ULID）；`003_add_throughput_rtf` 会为 `server_instances` 表新增 `throughput_rtf` 和 `benchmark_concurrency` 列（nullable），已有服务器首次 benchmark 后自动填充。
 
 ---
 

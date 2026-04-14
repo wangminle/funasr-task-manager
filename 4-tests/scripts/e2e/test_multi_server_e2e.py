@@ -27,7 +27,7 @@ async def _register_server(client, server_id: str, protocol: str = "funasr-main"
     body = {
         "server_id": server_id,
         "name": f"Server {server_id}",
-        "host": "127.0.0.1",
+        "host": "203.0.113.20",
         "port": port,
         "protocol_version": protocol,
         "max_concurrency": 4,

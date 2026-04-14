@@ -10,7 +10,7 @@ async def _register_server(client, server_id: str = "asr-p1-01", port: int = 100
     body = {
         "server_id": server_id,
         "name": f"Test {server_id}",
-        "host": "192.168.1.100",
+        "host": "203.0.113.14",
         "port": port,
         "protocol_version": "v2_new",
         "max_concurrency": 4,

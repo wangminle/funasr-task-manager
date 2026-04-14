@@ -6,8 +6,10 @@ from datetime import datetime
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import update
 
 from app.config import settings
+from app.models import Task, TaskStatus
 from app.observability.logging import setup_logging, get_logger
 from app.services.task_runner import task_runner
 from app.services.heartbeat import heartbeat_service
@@ -96,7 +98,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("schema_check_skipped", error=str(e))
         _schema_ok = False
 
+    async with async_session_factory() as session:
+        result = await session.execute(
+            update(Task)
+            .where(Task.status.in_([TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING]))
+            .values(status=TaskStatus.QUEUED, assigned_server_id=None, started_at=None)
+        )
+        stale_count = result.rowcount
+        if stale_count > 0:
+            await session.commit()
+            logger.warning(
+                "reset_stale_tasks",
+                count=stale_count,
+                hint="Tasks in DISPATCHED/TRANSCRIBING reset to QUEUED after restart",
+            )
+        else:
+            await session.commit()
+
     await heartbeat_service.start(_get_servers_for_heartbeat, _update_server_status)
+
     await task_runner.start()
 
     yield
@@ -117,13 +137,26 @@ def create_app() -> FastAPI:
 
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
     is_wildcard = origins == ["*"]
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins if origins else ["*"],
-        allow_credentials=bool(origins) and not is_wildcard,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    if not origins:
+        logger.warning(
+            "cors_origins_empty",
+            hint="No CORS origins configured. CORS middleware is NOT added — "
+                 "cross-origin requests will be rejected. "
+                 "Set ASR_CORS_ORIGINS to enable (use '*' for development only).",
+        )
+    else:
+        if is_wildcard:
+            logger.warning(
+                "cors_wildcard_enabled",
+                hint="CORS allows all origins (*). Restrict ASR_CORS_ORIGINS in production.",
+            )
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_credentials=not is_wildcard,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     from app.api.health import router as health_router
     from app.api.files import router as files_router

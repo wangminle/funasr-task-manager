@@ -22,16 +22,15 @@ router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
 @router.post("", response_model=list[TaskResponse], status_code=201)
 async def create_tasks(body: TaskCreateRequest, db: DbSession, user_id: CurrentUser):
-    rate_limiter.check_concurrent_tasks(user_id)
-    rate_limiter.check_daily_limit(user_id)
+    task_count = len(body.items)
+    await rate_limiter.check_daily_limit(user_id, count=task_count)
+    await rate_limiter.check_concurrent_tasks(user_id, count=task_count)
+
     file_repo = FileRepository(db)
     task_repo = TaskRepository(db)
-    task_group_id = str(ULID()) if len(body.items) > 1 else None
+    task_group_id = str(ULID()) if task_count > 1 else None
     created_tasks: list[Task] = []
     for item in body.items:
-        if len(created_tasks) > 0:
-            rate_limiter.check_concurrent_tasks(user_id)
-            rate_limiter.check_daily_limit(user_id)
         file_record = await file_repo.get_file(item.file_id, user_id)
         if file_record is None:
             raise HTTPException(status_code=404, detail=f"File not found: {item.file_id}")
@@ -45,9 +44,10 @@ async def create_tasks(body: TaskCreateRequest, db: DbSession, user_id: CurrentU
         )
         task = await task_repo.create_task(task)
         await task_repo.update_task_status(task, TaskStatus.PREPROCESSING)
+        await rate_limiter.record_task_created(user_id)
         created_tasks.append(task)
-        rate_limiter.record_task_created(user_id)
         logger.info("task_created", task_id=task.task_id, file_id=item.file_id)
+
     return [TaskResponse.model_validate(t) for t in created_tasks]
 
 
@@ -85,7 +85,7 @@ async def cancel_task(task_id: str, db: DbSession, user_id: CurrentUser):
     if not task.can_transition_to(TaskStatus.CANCELED):
         raise HTTPException(status_code=409, detail=f"Cannot cancel task in {task.status} status")
     await task_repo.update_task_status(task, TaskStatus.CANCELED)
-    rate_limiter.record_task_completed(user_id)
+    await rate_limiter.record_task_completed(user_id)
     return TaskResponse.model_validate(task)
 
 
@@ -99,6 +99,9 @@ async def delete_all_tasks(db: DbSession, user_id: CurrentUser, status: str | No
     Tasks in DISPATCHED or TRANSCRIBING status are always protected — they cannot
     be deleted even when explicitly requested via status filter, because background
     coroutines would still be running and produce orphaned results.
+
+    Uses atomic DELETE … RETURNING to avoid TOCTOU races. File cleanup runs
+    *after* commit so a rollback never leaves orphaned filesystem state.
     """
     if status in {s.value for s in _ACTIVE_STATUSES}:
         raise HTTPException(
@@ -113,9 +116,6 @@ async def delete_all_tasks(db: DbSession, user_id: CurrentUser, status: str | No
     else:
         base_where.append(Task.status.notin_([s.value for s in _ACTIVE_STATUSES]))
 
-    stmt_count = select(func.count()).select_from(Task).where(*base_where)
-    total = (await db.execute(stmt_count)).scalar() or 0
-
     skipped = 0
     if not status:
         skip_stmt = select(func.count()).select_from(Task).where(
@@ -124,47 +124,50 @@ async def delete_all_tasks(db: DbSession, user_id: CurrentUser, status: str | No
         )
         skipped = (await db.execute(skip_stmt)).scalar() or 0
 
-    if total == 0:
+    del_events_sub = select(Task.task_id).where(*base_where)
+    await db.execute(sql_delete(TaskEvent).where(TaskEvent.task_id.in_(del_events_sub)))
+
+    del_stmt = (
+        sql_delete(Task)
+        .where(*base_where)
+        .returning(Task.task_id, Task.file_id)
+    )
+    deleted_rows = (await db.execute(del_stmt)).all()
+
+    if not deleted_rows:
         return {"deleted": 0, "skipped_active": skipped}
 
-    tasks_to_delete = (await db.execute(select(Task).where(*base_where))).scalars().all()
-
-    task_ids_to_delete = {t.task_id for t in tasks_to_delete}
-    candidate_file_ids = {t.file_id for t in tasks_to_delete if t.file_id}
+    deleted_task_ids = {r.task_id for r in deleted_rows}
+    candidate_file_ids = {r.file_id for r in deleted_rows if r.file_id}
 
     orphaned_file_ids: set[str] = set()
     if candidate_file_ids:
-        still_referenced_stmt = (
-            select(Task.file_id)
-            .where(Task.file_id.in_(candidate_file_ids), Task.task_id.notin_(task_ids_to_delete))
-            .distinct()
+        still_referenced = set(
+            (await db.execute(
+                select(Task.file_id).where(Task.file_id.in_(candidate_file_ids)).distinct()
+            )).scalars().all()
         )
-        still_referenced = set((await db.execute(still_referenced_stmt)).scalars().all())
         orphaned_file_ids = candidate_file_ids - still_referenced
+
+    await db.commit()
 
     from app.storage.file_manager import delete_result as _del_result, delete_file as _del_file
     cleaned_files = 0
     cleaned_results = 0
-    deleted_file_ids: set[str] = set()
-    for t in tasks_to_delete:
-        if _del_result(t.task_id):
+    deleted_fids: set[str] = set()
+    for row in deleted_rows:
+        if await _del_result(row.task_id):
             cleaned_results += 1
-        if t.file_id and t.file_id in orphaned_file_ids and t.file_id not in deleted_file_ids:
-            if _del_file(t.file_id):
+        if row.file_id and row.file_id in orphaned_file_ids and row.file_id not in deleted_fids:
+            if await _del_file(row.file_id):
                 cleaned_files += 1
-            deleted_file_ids.add(t.file_id)
+            deleted_fids.add(row.file_id)
 
-    sub = select(Task.task_id).where(*base_where)
-    await db.execute(sql_delete(TaskEvent).where(TaskEvent.task_id.in_(sub)))
-
-    stmt_del = sql_delete(Task).where(*base_where)
-    await db.execute(stmt_del)
-    await db.commit()
-
+    deleted_count = len(deleted_task_ids)
     logger.info("tasks_deleted", user_id=user_id, status_filter=status,
-                count=total, skipped_active=skipped,
+                count=deleted_count, skipped_active=skipped,
                 cleaned_files=cleaned_files, cleaned_results=cleaned_results)
-    return {"deleted": total, "skipped_active": skipped}
+    return {"deleted": deleted_count, "skipped_active": skipped}
 
 
 @router.get("/{task_id}/result")

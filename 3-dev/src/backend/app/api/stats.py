@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import and_, func, select
 
 from app.deps import DbSession, CurrentUser
 from app.models import Task, TaskStatus, ServerInstance, ServerStatus
@@ -37,52 +37,41 @@ async def get_system_stats(db: DbSession, user_id: CurrentUser) -> SystemStats:
     slots_total = sum(s.max_concurrency for s in servers)
 
     active_statuses = [TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING]
-    slots_used_result = await db.execute(
-        select(func.count()).select_from(Task).where(
-            Task.user_id == user_id,
-            Task.status.in_(active_statuses),
-        )
-    )
-    slots_used = slots_used_result.scalar() or 0
+    queue_statuses = [TaskStatus.PENDING, TaskStatus.PREPROCESSING, TaskStatus.QUEUED]
 
-    queue_result = await db.execute(
-        select(func.count()).select_from(Task).where(
-            Task.user_id == user_id,
-            Task.status.in_([TaskStatus.PENDING, TaskStatus.PREPROCESSING, TaskStatus.QUEUED]),
-        )
-    )
-    queue_depth = queue_result.scalar() or 0
-
-    today_completed = (await db.execute(
-        select(func.count()).select_from(Task).where(
-            Task.user_id == user_id,
+    stats_stmt = select(
+        func.count().filter(
+            Task.status.in_(active_statuses)
+        ).label("slots_used"),
+        func.count().filter(
+            Task.status.in_(queue_statuses)
+        ).label("queue_depth"),
+        func.count().filter(and_(
             Task.status == TaskStatus.SUCCEEDED,
             Task.completed_at >= today_start,
-        )
-    )).scalar() or 0
-
-    today_failed = (await db.execute(
-        select(func.count()).select_from(Task).where(
-            Task.user_id == user_id,
+        )).label("today_completed"),
+        func.count().filter(and_(
             Task.status == TaskStatus.FAILED,
             Task.completed_at >= today_start,
-        )
-    )).scalar() or 0
-
-    finished_24h = (await db.execute(
-        select(func.count()).select_from(Task).where(
-            Task.user_id == user_id,
+        )).label("today_failed"),
+        func.count().filter(and_(
             Task.status.in_([TaskStatus.SUCCEEDED, TaskStatus.FAILED]),
             Task.completed_at >= since_24h,
-        )
-    )).scalar() or 0
-    succeeded_24h = (await db.execute(
-        select(func.count()).select_from(Task).where(
-            Task.user_id == user_id,
+        )).label("finished_24h"),
+        func.count().filter(and_(
             Task.status == TaskStatus.SUCCEEDED,
             Task.completed_at >= since_24h,
-        )
-    )).scalar() or 0
+        )).label("succeeded_24h"),
+    ).where(Task.user_id == user_id)
+
+    row = (await db.execute(stats_stmt)).one()
+
+    slots_used = row.slots_used
+    queue_depth = row.queue_depth
+    today_completed = row.today_completed
+    today_failed = row.today_failed
+    finished_24h = row.finished_24h
+    succeeded_24h = row.succeeded_24h
     success_rate = (succeeded_24h / finished_24h * 100) if finished_24h > 0 else 100.0
 
     online_servers = [s for s in servers if s.status == ServerStatus.ONLINE and s.rtf_baseline]

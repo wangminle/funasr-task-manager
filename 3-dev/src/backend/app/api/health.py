@@ -36,13 +36,10 @@ def _format_uptime() -> str:
 @router.get("/health")
 async def health_check() -> dict:
     from app.main import get_schema_ok
-    db_type = "PostgreSQL" if "postgresql" in settings.database_url else "SQLite"
     return {
         "status": "ok",
         "version": settings.app_version,
         "service": settings.app_name,
-        "database_type": db_type,
-        "auth_enabled": settings.auth_enabled,
         "schema_ok": get_schema_ok(),
         "uptime": _format_uptime(),
     }
@@ -56,7 +53,10 @@ async def diagnostics(db: DbSession, admin: AdminUser) -> dict:
     """
     from app.services.diagnostics import run_full_diagnostics
     report = await run_full_diagnostics(db)
-    return report.to_dict()
+    data = report.to_dict()
+    data["database_type"] = "PostgreSQL" if "postgresql" in settings.database_url else "SQLite"
+    data["auth_enabled"] = settings.auth_enabled
+    return data
 
 
 @router.get("/metrics", response_class=PlainTextResponse)

@@ -3,6 +3,7 @@
 All server management routes require admin authentication.
 """
 
+import asyncio
 import json
 from typing import Annotated
 
@@ -26,6 +27,7 @@ from app.services.server_benchmark import benchmark_server_full_with_ssl_fallbac
 from app.storage.repository import ServerRepository
 from app.auth.token import verify_admin
 from app.observability.logging import get_logger
+
 
 logger = get_logger(__name__)
 
@@ -88,19 +90,28 @@ async def benchmark_all_servers(db: DbSession, admin: AdminUser):
     if not online_servers:
         raise HTTPException(status_code=422, detail="No online servers to benchmark")
 
-    results: list[ServerBenchmarkItem] = []
-    for server in online_servers:
+    async def _bench_one(server: ServerInstance):
         try:
             bench = await benchmark_server_full_with_ssl_fallback(
-                server.host, server.port,
-                timeout=900.0,
+                server.host, server.port, timeout=900.0,
             )
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(
                 status_code=422,
                 detail=f"Benchmark 配置错误（非服务器连通性问题）: {exc}",
             )
+        return server, bench
 
+    bench_results = await asyncio.gather(
+        *[_bench_one(s) for s in online_servers],
+        return_exceptions=True,
+    )
+
+    results: list[ServerBenchmarkItem] = []
+    for br in bench_results:
+        if isinstance(br, Exception):
+            raise br
+        server, bench = br
         if not bench.reachable:
             server.status = ServerStatus.OFFLINE
             logger.warning("benchmark_server_unreachable",
@@ -232,6 +243,7 @@ async def update_server(server_id: str, body: ServerUpdateRequest, db: DbSession
 
     import json as _json
     updates = body.model_dump(exclude_unset=True)
+
     if "labels" in updates:
         labels = updates.pop("labels")
         server.labels_json = _json.dumps(labels) if labels else None

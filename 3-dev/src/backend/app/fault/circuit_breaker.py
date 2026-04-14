@@ -1,8 +1,11 @@
-"""Circuit breaker pattern for ASR server fault tolerance."""
+"""Circuit breaker pattern for ASR server fault tolerance.
 
+Uses asyncio.Lock so that state mutations never block the event loop.
+"""
+
+import asyncio
 import time
 from enum import StrEnum
-from threading import Lock
 
 from app.observability.logging import get_logger
 
@@ -23,7 +26,7 @@ class CircuitBreakerOpenError(Exception):
 
 
 class CircuitBreaker:
-    """Per-server circuit breaker."""
+    """Per-server circuit breaker (async-safe)."""
 
     def __init__(
         self,
@@ -42,19 +45,26 @@ class CircuitBreaker:
         self._success_count = 0
         self._half_open_calls = 0
         self._last_failure_time: float = 0.0
-        self._lock = Lock()
+        self._lock = asyncio.Lock()
+
+    def _maybe_transition_to_half_open(self) -> None:
+        """Must be called while holding self._lock."""
+        if self._state == CircuitState.OPEN:
+            elapsed = time.monotonic() - self._last_failure_time
+            if elapsed >= self.recovery_timeout:
+                self._state = CircuitState.HALF_OPEN
+                self._half_open_calls = 0
+                self._success_count = 0
+                logger.info("circuit_breaker_half_open", server_id=self.server_id)
 
     @property
     def state(self) -> CircuitState:
-        with self._lock:
-            if self._state == CircuitState.OPEN:
-                elapsed = time.monotonic() - self._last_failure_time
-                if elapsed >= self.recovery_timeout:
-                    self._state = CircuitState.HALF_OPEN
-                    self._half_open_calls = 0
-                    self._success_count = 0
-                    logger.info("circuit_breaker_half_open", server_id=self.server_id)
-            return self._state
+        """Non-async read for metrics/display — uses a snapshot, no mutation."""
+        if self._state == CircuitState.OPEN:
+            elapsed = time.monotonic() - self._last_failure_time
+            if elapsed >= self.recovery_timeout:
+                return CircuitState.HALF_OPEN
+        return self._state
 
     @property
     def state_value(self) -> int:
@@ -62,29 +72,30 @@ class CircuitBreaker:
         s = self.state
         return {"CLOSED": 0, "OPEN": 1, "HALF_OPEN": 2}.get(s, 0)
 
-    def allow_request(self) -> bool:
-        current = self.state
-        if current == CircuitState.CLOSED:
-            return True
-        if current == CircuitState.HALF_OPEN:
-            with self._lock:
+    async def allow_request(self) -> bool:
+        async with self._lock:
+            self._maybe_transition_to_half_open()
+
+            if self._state == CircuitState.CLOSED:
+                return True
+            if self._state == CircuitState.HALF_OPEN:
                 if self._half_open_calls < self.half_open_max_calls:
                     self._half_open_calls += 1
                     return True
                 return False
-        return False
+            return False
 
-    def pre_check(self) -> None:
-        if not self.allow_request():
+    async def pre_check(self) -> None:
+        if not await self.allow_request():
             remaining = 0.0
-            with self._lock:
+            async with self._lock:
                 if self._state == CircuitState.OPEN:
                     elapsed = time.monotonic() - self._last_failure_time
                     remaining = max(self.recovery_timeout - elapsed, 0)
             raise CircuitBreakerOpenError(self.server_id, remaining)
 
-    def record_success(self) -> None:
-        with self._lock:
+    async def record_success(self) -> None:
+        async with self._lock:
             if self._state == CircuitState.HALF_OPEN:
                 self._success_count += 1
                 if self._success_count >= self.half_open_max_calls:
@@ -95,8 +106,8 @@ class CircuitBreaker:
             elif self._state == CircuitState.CLOSED:
                 self._failure_count = 0
 
-    def record_failure(self) -> None:
-        with self._lock:
+    async def record_failure(self) -> None:
+        async with self._lock:
             self._failure_count += 1
             self._last_failure_time = time.monotonic()
             if self._state == CircuitState.HALF_OPEN:
@@ -108,8 +119,8 @@ class CircuitBreaker:
                 self._state = CircuitState.OPEN
                 logger.warning("circuit_breaker_opened", server_id=self.server_id, failures=self._failure_count)
 
-    def reset(self) -> None:
-        with self._lock:
+    async def reset(self) -> None:
+        async with self._lock:
             self._state = CircuitState.CLOSED
             self._failure_count = 0
             self._success_count = 0

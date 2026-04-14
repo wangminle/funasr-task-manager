@@ -8,6 +8,7 @@ Verifies:
 - Redis unavailability → reconnect → no data loss
 """
 
+import asyncio
 import io
 import json
 import time
@@ -42,18 +43,18 @@ class TestASRNodeCrash:
         assert cb.state == CircuitState.CLOSED
 
         for _ in range(3):
-            cb.record_failure()
+            await cb.record_failure()
         assert cb.state == CircuitState.OPEN
-        assert cb.allow_request() is False
+        assert await cb.allow_request() is False
 
-        time.sleep(0.6)
+        await asyncio.sleep(0.6)
         assert cb.state == CircuitState.HALF_OPEN
-        assert cb.allow_request() is True
+        assert await cb.allow_request() is True
 
-        cb.record_success()
-        cb.record_success()
+        await cb.record_success()
+        await cb.record_success()
         assert cb.state == CircuitState.CLOSED
-        assert cb.allow_request() is True
+        assert await cb.allow_request() is True
 
     async def test_task_retry_on_server_failure(self, client, db_session):
         """Simulate task failure and retry with server rotation."""
@@ -164,9 +165,9 @@ class TestRedisUnavailability:
 
         cb = CircuitBreaker("redis-test-server", failure_threshold=5)
         for _ in range(3):
-            cb.record_failure()
+            await cb.record_failure()
         assert cb.state == CircuitState.CLOSED
         assert cb._failure_count == 3
 
-        cb.record_success()
+        await cb.record_success()
         assert cb._failure_count == 0

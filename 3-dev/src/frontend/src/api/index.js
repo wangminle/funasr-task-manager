@@ -13,6 +13,13 @@ export function getApiKey() {
   return localStorage.getItem(API_KEY_STORAGE) || ''
 }
 
+export async function healthCheck() {
+  const key = getApiKey()
+  const headers = key ? { 'X-API-Key': key } : {}
+  const { data } = await axios.get('/health', { headers, timeout: 10000 })
+  return data
+}
+
 api.interceptors.request.use(config => {
   const key = getApiKey()
   if (key) config.headers['X-API-Key'] = key
@@ -24,7 +31,8 @@ let _apiKeyPromptPending = false
 api.interceptors.response.use(
   resp => resp,
   async err => {
-    if (err.response?.status === 401 && !_apiKeyPromptPending) {
+    const config = err.config
+    if (err.response?.status === 401 && !_apiKeyPromptPending && !config?._retried) {
       _apiKeyPromptPending = true
       try {
         const { value } = await ElMessageBox.prompt(
@@ -38,9 +46,10 @@ api.interceptors.response.use(
             type: 'warning',
           }
         )
-        if (value) {
+        if (value && config) {
           setApiKey(value)
-          return api.request(err.config)
+          config._retried = true
+          return api.request(config)
         }
       } catch {
         // user cancelled
@@ -81,8 +90,8 @@ export async function createTasks(items, callback = null) {
   return data
 }
 
-export async function listTasks(params = {}) {
-  const { data } = await api.get('/tasks', { params })
+export async function listTasks(params = {}, config = {}) {
+  const { data } = await api.get('/tasks', { params, ...config })
   return data
 }
 
@@ -108,8 +117,8 @@ export async function getTaskResult(taskId, format = 'json') {
   return data
 }
 
-export async function listServers() {
-  const { data } = await api.get('/servers')
+export async function listServers(config = {}) {
+  const { data } = await api.get('/servers', config)
   return data
 }
 
@@ -132,8 +141,8 @@ export async function probeServer(serverId, level = 'connect_only') {
   return data
 }
 
-export async function getSystemStats() {
-  const { data } = await api.get('/stats')
+export async function getSystemStats(config = {}) {
+  const { data } = await api.get('/stats', config)
   return data
 }
 

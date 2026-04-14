@@ -13,7 +13,7 @@ class TestSchedulerIntegration:
         """Create server and tasks, verify scheduling would assign correctly."""
         server_body = {
             "server_id": "sched-test-01",
-            "host": "10.0.0.1",
+            "host": "203.0.113.22",
             "port": 10095,
             "protocol_version": "v2_new",
             "max_concurrency": 4,
@@ -43,7 +43,7 @@ class TestSchedulerIntegration:
         """Tasks should spread across multiple servers."""
         for i in range(2):
             await client.post("/api/v1/servers", json={
-                "server_id": f"balance-{i}", "host": "10.0.0.1", "port": 10095 + i,
+                "server_id": f"balance-{i}", "host": "203.0.113.22", "port": 10095 + i,
                 "protocol_version": "v2_new", "max_concurrency": 2,
             })
 

@@ -7,6 +7,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.adapters.base import MessageProfile
 from app.adapters.registry import get_adapter
@@ -145,6 +146,7 @@ class BackgroundTaskRunner:
             inflight = await self._get_inflight_snapshot()
             queued_stmt = (
                 select(Task)
+                .options(selectinload(Task.file))
                 .where(Task.status == TaskStatus.QUEUED)
                 .order_by(Task.created_at.asc())
                 .limit(200)
@@ -178,7 +180,7 @@ class BackgroundTaskRunner:
             available_profiles = []
             for sp in server_profiles:
                 cb = breaker_registry.get(sp.server_id)
-                if cb.allow_request():
+                if await cb.allow_request():
                     available_profiles.append(sp)
             if not available_profiles:
                 return
@@ -306,13 +308,15 @@ class BackgroundTaskRunner:
             if not task.can_transition_to(TaskStatus.TRANSCRIBING):
                 return
 
+            task_started_at = None
             async with async_session_factory() as session:
                 repo = TaskRepository(session)
                 db_task = await repo.get_task(task_id)
                 if db_task is None:
                     return
                 if db_task.can_transition_to(TaskStatus.TRANSCRIBING):
-                    db_task.started_at = datetime.now(timezone.utc)
+                    task_started_at = datetime.now(timezone.utc)
+                    db_task.started_at = task_started_at
                     await repo.update_task_status(db_task, TaskStatus.TRANSCRIBING)
                     await session.commit()
 
@@ -346,29 +350,32 @@ class BackgroundTaskRunner:
             )
 
             if result.error:
-                breaker_registry.get(server.server_id).record_failure()
+                await breaker_registry.get(server.server_id).record_failure()
                 await self._mark_task_failed(task_id, result.error)
                 return
 
             if not result.text or not result.text.strip():
-                breaker_registry.get(server.server_id).record_failure()
-                await self._mark_task_failed(
-                    task_id,
-                    "ASR returned empty text (no transcription content received)",
+                logger.warning(
+                    "asr_empty_text",
+                    task_id=task_id,
+                    server_id=server.server_id,
+                    hint="Silent audio or no speech detected",
                 )
-                return
-
-            breaker_registry.get(server.server_id).record_success()
+                await breaker_registry.get(server.server_id).record_success()
+                result.text = ""
+            else:
+                await breaker_registry.get(server.server_id).record_success()
 
             audio_duration = 0.0
             if file_record and hasattr(file_record, "duration_sec") and file_record.duration_sec:
                 audio_duration = file_record.duration_sec
-            if audio_duration > 0 and task.started_at:
-                actual_sec = (datetime.now(timezone.utc) - task.started_at).total_seconds()
+            if audio_duration > 0 and task_started_at:
+                actual_sec = (datetime.now(timezone.utc) - task_started_at).total_seconds()
                 global_scheduler.calibrate_after_completion(
                     server_id=server.server_id,
                     audio_duration_sec=audio_duration,
                     actual_duration_sec=actual_sec,
+                    predicted_duration_sec=float(task.eta_seconds) if task.eta_seconds else None,
                 )
 
             raw = result.raw if isinstance(result.raw, dict) and result.raw else {}
@@ -384,7 +391,7 @@ class BackgroundTaskRunner:
         except Exception as e:
             logger.exception("task_execute_unhandled_error", task_id=task_id, error=str(e))
             if server is not None:
-                breaker_registry.get(server.server_id).record_failure()
+                await breaker_registry.get(server.server_id).record_failure()
             await self._mark_task_failed(task_id, str(e))
         finally:
             await self._unmark_inflight(task_id)
@@ -435,8 +442,9 @@ class BackgroundTaskRunner:
             user_id = task.user_id
             await session.commit()
             logger.info("task_transcription_succeeded", task_id=task_id)
-            rate_limiter.record_task_completed(user_id)
-        self._clear_slot_queues()
+            await rate_limiter.record_task_completed(user_id)
+        if not any(sq.decisions for sq in self._slot_queues.values()):
+            self._clear_slot_queues()
         self._request_dispatch()
         if pending_delivery:
             await self._try_deliver_outbox(*pending_delivery)
@@ -463,8 +471,9 @@ class BackgroundTaskRunner:
                            error=message[:300], terminal=is_terminal,
                            retry_count=task.retry_count)
             if is_terminal:
-                rate_limiter.record_task_completed(user_id)
-        self._clear_slot_queues()
+                await rate_limiter.record_task_completed(user_id)
+        if not any(sq.decisions for sq in self._slot_queues.values()):
+            self._clear_slot_queues()
         self._request_dispatch()
         if pending_delivery:
             await self._try_deliver_outbox(*pending_delivery)
@@ -658,7 +667,7 @@ class BackgroundTaskRunner:
         for sq in self._slot_queues.values():
             if sq.server_id == idle_profile.server_id or not sq.decisions:
                 continue
-            for decision in reversed(sq.decisions):
+            for idx_from_end, decision in enumerate(reversed(sq.decisions)):
                 if decision.task_id in inflight:
                     continue
                 task = task_map.get(decision.task_id)
@@ -666,7 +675,7 @@ class BackgroundTaskRunner:
                     continue
                 est_stolen = global_scheduler.estimate_processing_time(
                     decision.audio_duration_sec, idle_profile)
-                decision_idx = sq.decisions.index(decision)
+                decision_idx = len(sq.decisions) - 1 - idx_from_end
                 source_remaining = (
                     sum(d.estimated_duration for d in sq.decisions[:decision_idx])
                     + decision.estimated_duration

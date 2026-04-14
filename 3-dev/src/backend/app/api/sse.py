@@ -13,7 +13,7 @@ import json
 from datetime import datetime, timezone
 from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.config import settings
@@ -39,6 +39,7 @@ async def _progress_stream(
     task_id: str,
     user_id: str,
     db_session_factory,
+    request: Request | None = None,
 ) -> AsyncGenerator[str, None]:
     """Generate SSE events using per-poll ephemeral DB sessions."""
     last_status = None
@@ -46,6 +47,9 @@ async def _progress_stream(
     keepalive_counter = 0
 
     while True:
+        if request and await request.is_disconnected():
+            logger.info("sse_client_disconnected", task_id=task_id)
+            return
         try:
             async with db_session_factory() as session:
                 repo = TaskRepository(session)
@@ -130,7 +134,7 @@ async def _progress_stream(
 
 
 @router.get("/{task_id}/progress")
-async def task_progress_sse(task_id: str, user_id: CurrentUser):
+async def task_progress_sse(task_id: str, user_id: CurrentUser, request: Request):
     """SSE endpoint for real-time task progress updates.
 
     Authentication is handled via X-API-Key header or ?token= query param.
@@ -146,7 +150,7 @@ async def task_progress_sse(task_id: str, user_id: CurrentUser):
             raise HTTPException(status_code=404, detail="Task not found")
 
     return StreamingResponse(
-        _progress_stream(task_id, user_id, async_session_factory),
+        _progress_stream(task_id, user_id, async_session_factory, request),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

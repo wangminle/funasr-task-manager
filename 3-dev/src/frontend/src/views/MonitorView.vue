@@ -188,6 +188,7 @@ const sysStats = ref({
 })
 const loading = ref(false)
 let pollTimer = null
+let pollAbortController = null
 
 const historyLabels = ref([])
 const historyQueueDepth = ref([])
@@ -255,18 +256,18 @@ const statCards = computed(() => [
   { label: '24h 成功率', value: `${sysStats.value.success_rate_24h}%`, color: sysStats.value.success_rate_24h >= 90 ? '#67c23a' : '#f56c6c', icon: markRaw(TrendCharts) },
 ])
 
-async function fetchServers() {
+async function fetchServers(signal) {
   loading.value = true
-  try { servers.value = await listServers() } catch { ElMessage.error('获取服务器列表失败') } finally { loading.value = false }
+  try { servers.value = await listServers({ signal }) } catch (err) { if (err?.name !== 'CanceledError') ElMessage.error('获取服务器列表失败') } finally { loading.value = false }
 }
-async function fetchTasks() {
-  try { const data = await listTasks({ page: 1, page_size: 200 }); tasks.value = data.items } catch (err) { console.warn('获取任务列表失败', err) }
+async function fetchTasks(signal) {
+  try { const data = await listTasks({ page: 1, page_size: 200 }, { signal }); tasks.value = data.items } catch (err) { if (err?.name !== 'CanceledError') console.warn('获取任务列表失败', err) }
 }
-async function fetchStats() {
+async function fetchStats(signal) {
   try {
-    sysStats.value = await getSystemStats()
+    sysStats.value = await getSystemStats({ signal })
     recordHistory()
-  } catch (err) { console.warn('获取统计数据失败', err) }
+  } catch (err) { if (err?.name !== 'CanceledError') console.warn('获取统计数据失败', err) }
 }
 const diagChecks = ref([])
 const diagHasBlockingErrors = ref(false)
@@ -385,8 +386,23 @@ async function handleSubmit() {
   }
 }
 
-onMounted(() => { fetchServers(); fetchTasks(); fetchStats(); fetchDiagnostics(); pollTimer = setInterval(() => { fetchServers(); fetchTasks(); fetchStats() }, 5000) })
-onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
+function schedulePoll() {
+  pollTimer = setTimeout(async () => {
+    if (pollAbortController) pollAbortController.abort()
+    pollAbortController = new AbortController()
+    const { signal } = pollAbortController
+    await fetchServers(signal)
+    await fetchTasks(signal)
+    await fetchStats(signal)
+    schedulePoll()
+  }, 5000)
+}
+
+onMounted(() => { fetchServers(); fetchTasks(); fetchStats(); fetchDiagnostics(); schedulePoll() })
+onUnmounted(() => {
+  if (pollTimer) clearTimeout(pollTimer)
+  if (pollAbortController) pollAbortController.abort()
+})
 </script>
 
 <style scoped>

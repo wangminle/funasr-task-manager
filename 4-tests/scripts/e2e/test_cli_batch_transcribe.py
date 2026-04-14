@@ -170,7 +170,7 @@ class TestServerManagement:
         reg_args = _base_args() + [
             "server", "register",
             "--id", "e2e-probe-target",
-            "--host", "127.0.0.1", "--port", "19999",
+            "--host", "203.0.113.30", "--port", "19999",
             "--protocol", "v2_new",
         ]
         runner.invoke(app, reg_args)
@@ -187,7 +187,7 @@ class TestServerManagement:
         reg_args = _base_args() + [
             "server", "register",
             "--id", "e2e-update-target",
-            "--host", "127.0.0.1", "--port", "19998",
+            "--host", "203.0.113.31", "--port", "19998",
             "--protocol", "v2_new", "--max-concurrency", "4",
         ]
         runner.invoke(app, reg_args)

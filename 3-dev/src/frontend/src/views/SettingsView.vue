@@ -101,8 +101,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Key, View, Hide, InfoFilled, Bell, User } from '@element-plus/icons-vue'
-import { getApiKey, setApiKey, getSystemStats, deleteAllTasks } from '../api'
-import axios from 'axios'
+import { getApiKey, setApiKey, getSystemStats, deleteAllTasks, healthCheck, getDiagnostics } from '../api'
 
 const appVersion = __APP_VERSION__
 
@@ -128,16 +127,22 @@ function clearApiKey() {
 
 async function fetchSystemInfo() {
   try {
-    const resp = await axios.get('/health')
-    const data = resp.data
+    const health = await healthCheck()
     sysInfo.value = {
-      version: data.version || '-',
-      database: data.database_type || '-',
-      auth_enabled: data.auth_enabled ?? false,
-      uptime: data.uptime || '-',
+      version: health.version || '-',
+      database: '-',
+      auth_enabled: false,
+      uptime: health.uptime || '-',
     }
   } catch (err) {
-    console.warn('获取系统信息失败', err)
+    console.warn('获取基础系统信息失败', err)
+  }
+  try {
+    const diag = await getDiagnostics()
+    sysInfo.value.database = diag.database_type || sysInfo.value.database
+    sysInfo.value.auth_enabled = diag.auth_enabled ?? sysInfo.value.auth_enabled
+  } catch {
+    // diagnostics requires admin — silently fall back to health-only data
   }
 }
 
@@ -177,12 +182,8 @@ async function testConnection() {
   testing.value = true
   connectionResult.value = null
   try {
-    const resp = await axios.get('/health')
-    if (resp.status === 200) {
-      connectionResult.value = { title: '后端连接正常', type: 'success' }
-    } else {
-      connectionResult.value = { title: `后端响应异常: HTTP ${resp.status}`, type: 'warning' }
-    }
+    await healthCheck()
+    connectionResult.value = { title: '后端连接正常', type: 'success' }
   } catch (e) {
     connectionResult.value = { title: `连接失败: ${e.message}`, type: 'error' }
   } finally {

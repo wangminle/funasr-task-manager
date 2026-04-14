@@ -108,16 +108,16 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Download, Document, VideoCamera, CircleClose, Clock, Loading, List, Connection, Microphone, SuccessFilled, CircleCloseFilled, WarningFilled } from '@element-plus/icons-vue'
 import { getTask, getFileMetadata, getTaskResult, cancelTask, getApiKey } from '../api'
 
 const route = useRoute()
-const taskId = route.params.taskId
+const taskId = computed(() => route.params.taskId)
 
-const task = ref({ task_id: taskId, status: 'PENDING', progress: 0, file_id: '', language: 'zh', retry_count: 0 })
+const task = ref({ task_id: taskId.value, status: 'PENDING', progress: 0, file_id: '', language: 'zh', retry_count: 0 })
 const fileInfo = ref(null)
 const progress = ref(0)
 const eta = ref(null)
@@ -128,6 +128,7 @@ const resultFormat = ref('txt')
 let eventSource = null
 let pollTimer = null
 let sseReconnectTimer = null
+let sseReader = null
 
 const canCancel = computed(() => ['PENDING', 'QUEUED'].includes(task.value.status))
 
@@ -177,7 +178,7 @@ const finalStepIcon = computed(() => {
 
 async function loadTask() {
   try {
-    const data = await getTask(taskId)
+    const data = await getTask(taskId.value)
     task.value = data
     progress.value = data.progress
     if (data.file_id && !fileInfo.value) {
@@ -196,7 +197,7 @@ async function loadTask() {
 async function loadResult(format) {
   resultFormat.value = format
   try {
-    const data = await getTaskResult(taskId, format)
+    const data = await getTaskResult(taskId.value, format)
     resultText.value = typeof data === 'string' ? data : JSON.stringify(data, null, 2)
   } catch (err) {
     console.warn('加载结果失败', err)
@@ -211,7 +212,7 @@ function connectSSE() {
 
   const apiKey = getApiKey()
   const tokenParam = apiKey ? `?token=${encodeURIComponent(apiKey)}` : ''
-  const url = `/api/v1/tasks/${taskId}/progress${tokenParam}`
+  const url = `/api/v1/tasks/${taskId.value}/progress${tokenParam}`
 
   sseAbortController = new AbortController()
 
@@ -222,6 +223,7 @@ function connectSSE() {
         throw new Error(`SSE HTTP ${response.status}`)
       }
       const reader = response.body.getReader()
+      sseReader = reader
       const decoder = new TextDecoder()
       let buffer = ''
 
@@ -264,12 +266,14 @@ function handleSSEEvent(eventType, data) {
     eta.value = data.eta_seconds
     progressMessage.value = data.message
     events.value.unshift({ timestamp: new Date(data.timestamp).toLocaleTimeString('zh-CN'), message: data.message, type: data.status === 'FAILED' ? 'danger' : data.status === 'SUCCEEDED' ? 'success' : 'primary' })
+    if (events.value.length > 100) events.value.length = 100
   } else if (eventType === 'progress_update') {
     progress.value = data.progress
     eta.value = data.eta_seconds
     progressMessage.value = data.message
   } else if (eventType === 'complete') {
     events.value.unshift({ timestamp: new Date(data.timestamp).toLocaleTimeString('zh-CN'), message: `最终状态: ${data.final_status}`, type: data.final_status === 'SUCCEEDED' ? 'success' : 'danger' })
+    if (events.value.length > 100) events.value.length = 100
     if (sseAbortController) sseAbortController.abort()
     loadTask()
   }
@@ -277,12 +281,12 @@ function handleSSEEvent(eventType, data) {
 
 async function downloadResult(format) {
   try {
-    const data = await getTaskResult(taskId, format)
+    const data = await getTaskResult(taskId.value, format)
     const blob = new Blob([typeof data === 'string' ? data : JSON.stringify(data, null, 2)], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${taskId}.${format}`
+    a.download = `${taskId.value}.${format}`
     a.click()
     URL.revokeObjectURL(url)
   } catch (err) {
@@ -292,7 +296,7 @@ async function downloadResult(format) {
 
 async function handleCancel() {
   try {
-    await cancelTask(taskId)
+    await cancelTask(taskId.value)
     ElMessage.success('已取消')
     await loadTask()
   } catch (err) {
@@ -308,10 +312,24 @@ function formatEta(s) { if (!s || s <= 0) return '-'; if (s < 60) return `${s}�
 function formatSize(b) { if (b < 1048576) return (b / 1024).toFixed(1) + ' KB'; return (b / 1048576).toFixed(1) + ' MB' }
 function formatDuration(s) { const m = Math.floor(s / 60); const sec = Math.floor(s % 60); return `${m}分${sec}秒` }
 
+watch(taskId, (newId, oldId) => {
+  if (newId && newId !== oldId) {
+    task.value = { task_id: newId, status: 'PENDING', progress: 0, file_id: '', language: 'zh', retry_count: 0 }
+    fileInfo.value = null
+    resultText.value = null
+    events.value = []
+    progress.value = 0
+    eta.value = null
+    loadTask()
+    connectSSE()
+  }
+})
+
 onMounted(() => { loadTask(); connectSSE(); pollTimer = setInterval(loadTask, 10000) })
 onUnmounted(() => {
   if (sseReconnectTimer) clearTimeout(sseReconnectTimer)
   if (sseAbortController) sseAbortController.abort()
+  if (sseReader) { try { sseReader.cancel() } catch {} }
   if (eventSource) eventSource.close()
   if (pollTimer) clearInterval(pollTimer)
 })

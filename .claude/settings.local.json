@@ -76,7 +76,16 @@
       "Bash(chmod +x:*)",
       "Bash(rm -f runtime/storage/asr_tasks.db)",
       "Bash(sqlite3 runtime/storage/asr_tasks.db \".tables\")",
-      "Bash(sqlite3:*)"
+      "Bash(sqlite3:*)",
+      "Bash(python3 -c \" import json with open\\('C:/Users/WANGMI~1/AppData/Local/Temp/claude/C--Users-wangminle-Documents-VSCode-1-Cursor-----5-FunASR-Practice-funasr-task-manager/79294f87-e273-4e07-915b-bbce6c0aeb2c/tasks/af5be45cf9482b210.output', 'r', encoding='utf-8'\\) as f: lines = f.readlines\\(\\) for line in reversed\\(lines\\): data = json.loads\\(line.strip\\(\\)\\) if 'result' in data: print\\(data['result']\\) break \")",
+      "Bash(python3 -c \" import json with open\\('C:/Users/WANGMI~1/AppData/Local/Temp/claude/C--Users-wangminle-Documents-VSCode-1-Cursor-----5-FunASR-Practice-funasr-task-manager/79294f87-e273-4e07-915b-bbce6c0aeb2c/tasks/a6202338f38d445da.output', 'r', encoding='utf-8'\\) as f: lines = f.readlines\\(\\) for line in reversed\\(lines\\): data = json.loads\\(line.strip\\(\\)\\) if 'result' in data: print\\(data['result']\\) break \")",
+      "Bash(docker compose:*)",
+      "Bash(POSTGRES_PASSWORD=dummy docker compose ps -a)",
+      "Bash(uvicorn app.main:app --host 0.0.0.0 --port 8000)",
+      "Bash(pip show:*)",
+      "Bash(asr --help)",
+      "Bash(python3 -c ':*)",
+      "Bash(grep -i \"work_steal\\\\|quota_allocation\\\\|batch_schedule\" runtime/logs/*.log)"
     ]
   }
 }

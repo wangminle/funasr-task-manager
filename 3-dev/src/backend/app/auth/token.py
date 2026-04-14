@@ -16,11 +16,7 @@ logger = get_logger(__name__)
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
-_TOKEN_USER_MAP: dict[str, str] = {
-    "dev-token-user1": "user1",
-    "dev-token-user2": "user2",
-    "dev-token-admin": "admin",
-}
+_TOKEN_USER_MAP: dict[str, str] = {}
 _AUTH_ENABLED = False
 _AUTH_INITIALIZED = False
 
@@ -32,6 +28,22 @@ def configure_auth(token_map: dict[str, str] | None = None, enabled: bool = True
         _TOKEN_USER_MAP = token_map
     _AUTH_ENABLED = enabled
     _AUTH_INITIALIZED = True
+
+    if not enabled:
+        logger.warning(
+            "auth_disabled",
+            hint="Authentication is DISABLED. Set ASR_AUTH_ENABLED=true for production.",
+        )
+
+    dev_token_prefixes = ("dev-token-", "test-token-")
+    dev_tokens = [t for t in _TOKEN_USER_MAP if any(t.startswith(p) for p in dev_token_prefixes)]
+    if dev_tokens and enabled:
+        logger.warning(
+            "auth_dev_tokens_detected",
+            count=len(dev_tokens),
+            hint="Development tokens detected in production auth config. Remove them.",
+        )
+
     logger.info("auth_configured", enabled=enabled, token_count=len(_TOKEN_USER_MAP))
 
 

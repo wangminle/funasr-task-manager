@@ -15,6 +15,7 @@ logger = get_logger(__name__)
 
 WAV_EXTENSIONS = {".wav", ".pcm"}
 FFMPEG_BIN: str | None = None
+_MAX_CONVERSION_LOCKS = 500
 _conversion_locks: dict[str, asyncio.Lock] = {}
 _locks_guard = asyncio.Lock()
 
@@ -22,6 +23,10 @@ _locks_guard = asyncio.Lock()
 async def _get_path_lock(key: str) -> asyncio.Lock:
     async with _locks_guard:
         if key not in _conversion_locks:
+            if len(_conversion_locks) >= _MAX_CONVERSION_LOCKS:
+                stale_keys = [k for k, v in _conversion_locks.items() if not v.locked()]
+                for k in stale_keys[: len(_conversion_locks) - _MAX_CONVERSION_LOCKS + 1]:
+                    del _conversion_locks[k]
             _conversion_locks[key] = asyncio.Lock()
         return _conversion_locks[key]
 

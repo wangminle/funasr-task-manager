@@ -1,5 +1,6 @@
 """File storage management."""
 
+import asyncio
 import shutil
 from pathlib import Path
 
@@ -67,26 +68,29 @@ async def save_result(task_id: str, content: str, fmt: str = "json") -> Path:
 
 async def read_result(task_id: str, fmt: str = "json") -> str | None:
     path = get_result_dir(task_id) / f"result.{fmt}"
-    if not path.exists():
+    exists = await asyncio.to_thread(path.exists)
+    if not exists:
         return None
     async with aiofiles.open(path, "r", encoding="utf-8") as f:
         return await f.read()
 
 
-def delete_file(file_id: str) -> bool:
+async def delete_file(file_id: str) -> bool:
     prefix = file_id[:4]
     target_dir = settings.upload_dir / prefix / file_id
-    if target_dir.exists():
-        shutil.rmtree(target_dir)
+    exists = await asyncio.to_thread(target_dir.exists)
+    if exists:
+        await asyncio.to_thread(shutil.rmtree, target_dir)
         logger.info("file_deleted", file_id=file_id)
         return True
     return False
 
 
-def delete_result(task_id: str) -> bool:
+async def delete_result(task_id: str) -> bool:
     target_dir = get_result_dir(task_id)
-    if target_dir.exists():
-        shutil.rmtree(target_dir)
+    exists = await asyncio.to_thread(target_dir.exists)
+    if exists:
+        await asyncio.to_thread(shutil.rmtree, target_dir)
         logger.info("result_deleted", task_id=task_id)
         return True
     return False

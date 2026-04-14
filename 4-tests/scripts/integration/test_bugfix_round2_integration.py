@@ -95,7 +95,7 @@ class TestBenchmarkCapacityComparisonFiltering:
         body = {
             "server_id": "asr-cap-filter-01",
             "name": "Unreachable Node",
-            "host": "192.168.254.254",
+            "host": "203.0.113.19",
             "port": 19998,
             "protocol_version": "v2_new",
             "max_concurrency": 4,

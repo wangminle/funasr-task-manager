@@ -50,7 +50,7 @@ async def _register_server(client) -> str:
     body = {
         "server_id": "e2e-server-01",
         "name": "E2E Test Server",
-        "host": "127.0.0.1",
+        "host": "203.0.113.21",
         "port": 10095,
         "protocol_version": "funasr-main",
         "max_concurrency": 4,

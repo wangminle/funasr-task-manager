@@ -100,7 +100,7 @@ class TestFullWorkflowE2E:
         body = {
             "server_id": "workflow-srv-01",
             "name": "Workflow Test Server",
-            "host": "192.168.1.100",
+            "host": "203.0.113.24",
             "port": 10095,
             "protocol_version": "funasr-main",
             "max_concurrency": 8,

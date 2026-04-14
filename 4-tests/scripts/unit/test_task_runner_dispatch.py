@@ -53,20 +53,31 @@ def _task(task_id: str, file_id: str, status: TaskStatus) -> Task:
 
 
 def _breaker_mock():
+    async def _allow():
+        return True
+
+    async def _noop():
+        return None
+
     return SimpleNamespace(get=lambda _server_id: SimpleNamespace(
-        allow_request=lambda: True,
-        record_failure=lambda: None,
-        record_success=lambda: None,
+        allow_request=_allow,
+        record_failure=_noop,
+        record_success=_noop,
     ))
 
 
 def _breaker_mock_with_broken(broken_server_ids: set[str]):
     """Circuit breaker mock where specified servers are tripped."""
+    async def _noop():
+        return None
+
     def _get(server_id):
+        async def _allow(sid=server_id):
+            return sid not in broken_server_ids
         return SimpleNamespace(
-            allow_request=lambda sid=server_id: sid not in broken_server_ids,
-            record_failure=lambda: None,
-            record_success=lambda: None,
+            allow_request=_allow,
+            record_failure=_noop,
+            record_success=_noop,
         )
     return SimpleNamespace(get=_get)
 
@@ -452,10 +463,12 @@ class TestPerSlotWorkStealing:
 
 @pytest.mark.unit
 class TestPlanInvalidationOnCompletion:
-    """Verify plan is cleared when a task completes, allowing RTF recalibration."""
+    """Verify slot-queue plan invalidation on task completion (conservative clearing)."""
 
-    async def test_plan_cleared_on_task_success(self, db_engine, monkeypatch):
-        """_mark_task_succeeded should clear _slot_queues so next dispatch replans."""
+    async def test_plan_preserved_when_slot_queues_still_have_decisions_on_success(
+        self, db_engine, monkeypatch,
+    ):
+        """Do not wipe the global plan while other tasks remain in slot queues."""
         session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
         monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
 
@@ -466,23 +479,26 @@ class TestPlanInvalidationOnCompletion:
 
         runner = BackgroundTaskRunner()
         from app.services.scheduler import ScheduleDecision, SlotQueue
+        pending = [
+            ScheduleDecision("t-fake", "srv-1", 0, 10.0, 5.0, 15.0, 2, 30.0),
+        ]
         runner._slot_queues = {
-            "srv-1:0": SlotQueue(server_id="srv-1", slot_index=0, decisions=[
-                ScheduleDecision("t-fake", "srv-1", 0, 10.0, 5.0, 15.0, 2, 30.0),
-            ]),
+            "srv-1:0": SlotQueue(server_id="srv-1", slot_index=0, decisions=pending.copy()),
         }
         runner._planned_task_ids = {"t-fake"}
         runner._planned_available_server_ids = frozenset({"srv-1"})
 
         await runner._mark_task_succeeded("t-done")
 
-        assert runner._slot_queues == {}
-        assert runner._planned_task_ids == set()
-        assert runner._planned_available_server_ids == frozenset()
+        assert runner._slot_queues["srv-1:0"].decisions == pending
+        assert runner._planned_task_ids == {"t-fake"}
+        assert runner._planned_available_server_ids == frozenset({"srv-1"})
         assert runner._dispatch_event.is_set()
 
-    async def test_plan_cleared_on_task_failure(self, db_engine, monkeypatch):
-        """_mark_task_failed should clear _slot_queues so next dispatch replans."""
+    async def test_plan_preserved_when_slot_queues_still_have_decisions_on_failure(
+        self, db_engine, monkeypatch,
+    ):
+        """Same as success path: pending slot-queue work keeps the plan intact."""
         session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
         monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
 
@@ -493,15 +509,43 @@ class TestPlanInvalidationOnCompletion:
 
         runner = BackgroundTaskRunner()
         from app.services.scheduler import ScheduleDecision, SlotQueue
+        pending = [
+            ScheduleDecision("t-fake2", "srv-1", 0, 10.0, 5.0, 15.0, 2, 30.0),
+        ]
         runner._slot_queues = {
-            "srv-1:0": SlotQueue(server_id="srv-1", slot_index=0, decisions=[
-                ScheduleDecision("t-fake2", "srv-1", 0, 10.0, 5.0, 15.0, 2, 30.0),
-            ]),
+            "srv-1:0": SlotQueue(server_id="srv-1", slot_index=0, decisions=pending.copy()),
         }
         runner._planned_task_ids = {"t-fake2"}
         runner._planned_available_server_ids = frozenset({"srv-1"})
 
         await runner._mark_task_failed("t-fail", "some error")
+
+        assert runner._slot_queues["srv-1:0"].decisions == pending
+        assert runner._planned_task_ids == {"t-fake2"}
+        assert runner._planned_available_server_ids == frozenset({"srv-1"})
+        assert runner._dispatch_event.is_set()
+
+    async def test_plan_cleared_on_task_success_when_no_pending_slot_decisions(
+        self, db_engine, monkeypatch,
+    ):
+        """When every slot queue is empty, completion clears the plan for the next replan."""
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+
+        async with session_factory() as session:
+            session.add(_file("f-done2", duration_sec=60.0))
+            session.add(_task("t-done2", "f-done2", TaskStatus.TRANSCRIBING))
+            await session.commit()
+
+        runner = BackgroundTaskRunner()
+        from app.services.scheduler import SlotQueue
+        runner._slot_queues = {
+            "srv-1:0": SlotQueue(server_id="srv-1", slot_index=0, decisions=[]),
+        }
+        runner._planned_task_ids = set()
+        runner._planned_available_server_ids = frozenset({"srv-1"})
+
+        await runner._mark_task_succeeded("t-done2")
 
         assert runner._slot_queues == {}
         assert runner._planned_task_ids == set()

@@ -17,11 +17,21 @@ from ulid import ULID
 from app.models.callback_outbox import CallbackOutbox, OutboxStatus
 from app.fault.retry import calculate_delay
 from app.observability.logging import get_logger
+from app.utils.network_validator import validate_callback_url_async
 
 logger = get_logger(__name__)
 
 MAX_CALLBACK_RETRIES = 5
 CALLBACK_TIMEOUT = 10.0
+
+_shared_client: httpx.AsyncClient | None = None
+
+
+def _get_shared_client() -> httpx.AsyncClient:
+    global _shared_client
+    if _shared_client is None or _shared_client.is_closed:
+        _shared_client = httpx.AsyncClient(timeout=CALLBACK_TIMEOUT)
+    return _shared_client
 
 
 def generate_hmac_signature(payload: str, secret: str) -> str:
@@ -87,13 +97,28 @@ async def deliver_callback(
         headers["X-Webhook-Signature"] = sig
     headers["X-Event-ID"] = outbox.event_id
 
+    url_error = await validate_callback_url_async(outbox.callback_url)
+    if url_error:
+        outbox.retry_count += 1
+        outbox.last_error = f"URL validation: {url_error}"
+        if outbox.retry_count >= MAX_CALLBACK_RETRIES:
+            outbox.status = OutboxStatus.FAILED
+        logger.warning(
+            "callback_url_validation_failed",
+            outbox_id=outbox.outbox_id,
+            url=outbox.callback_url,
+            error=url_error,
+            retry=outbox.retry_count,
+        )
+        return False
+
     try:
-        async with httpx.AsyncClient(timeout=CALLBACK_TIMEOUT) as client:
-            resp = await client.post(
-                outbox.callback_url,
-                content=outbox.payload_json,
-                headers=headers,
-            )
+        client = _get_shared_client()
+        resp = await client.post(
+            outbox.callback_url,
+            content=outbox.payload_json,
+            headers=headers,
+        )
         if 200 <= resp.status_code < 300:
             outbox.status = OutboxStatus.SENT
             outbox.sent_at = datetime.now(timezone.utc)
