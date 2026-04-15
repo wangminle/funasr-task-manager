@@ -12,6 +12,51 @@ from cli import output as out
 app = typer.Typer()
 
 
+def _print_benchmark_event(event: dict) -> None:
+    """Format and print a single NDJSON benchmark progress event."""
+    evt = event.get("type", "")
+    sid = event.get("server_id", "")
+    tag = f"[{sid}] " if sid else ""
+
+    if evt == "benchmark_start":
+        samples = ", ".join(event.get("samples", []))
+        out.info(f"{tag}Benchmark 开始 (样本: {samples})")
+    elif evt == "phase_start":
+        out.info(f"{tag}Phase {event.get('phase')}: {event.get('description', '')}")
+    elif evt == "phase_progress":
+        out.info(f"{tag}  采样 {event.get('rep')}/{event.get('total_reps')}: RTF={event.get('rtf')}")
+    elif evt == "phase_complete":
+        out.success(f"{tag}Phase {event.get('phase')} 完成: single_rtf={event.get('single_rtf')}")
+    elif evt == "gradient_start":
+        n = event.get("concurrency")
+        idx = event.get("level_index")
+        total = event.get("total_levels")
+        out.info(f"{tag}  梯度 N={n} ({idx}/{total})...")
+    elif evt == "gradient_complete":
+        out.success(
+            f"{tag}  ✓ N={event.get('concurrency')}: "
+            f"throughput_rtf={event.get('throughput_rtf')}, "
+            f"wall={event.get('wall_clock_sec')}s"
+        )
+    elif evt == "gradient_error":
+        out.error(f"{tag}  ✗ N={event.get('concurrency')}: {event.get('error', '')}")
+    elif evt == "benchmark_complete":
+        out.success(
+            f"{tag}推荐并发={event.get('recommended_concurrency')}, "
+            f"single_rtf={event.get('single_rtf')}, "
+            f"throughput_rtf={event.get('throughput_rtf')}"
+        )
+    elif evt == "ssl_fallback":
+        out.info(f"{tag}WSS 连接失败，回退到 WS 重试...")
+    elif evt == "all_benchmark_start":
+        sids = event.get("server_ids", [])
+        out.info(f"即将对 {len(sids)} 个节点执行 benchmark: {', '.join(sids)}")
+    elif evt == "server_benchmark_done":
+        out.success(f"[{event.get('server_id')}] 完成 ({event.get('completed')}/{event.get('total')})")
+    elif evt == "server_error":
+        out.error(f"[{event.get('server_id')}] 错误: {event.get('error', '')}")
+
+
 @app.command(name="list")
 def server_list(ctx: typer.Context):
     """查看所有 ASR 节点状态。"""
@@ -49,6 +94,7 @@ def register(
     port: int = typer.Option(..., "--port", help="端口"),
     protocol: str = typer.Option("v2_new", "--protocol", help="协议版本: v1_old/v2_new"),
     max_concurrency: int = typer.Option(4, "--max-concurrency", help="最大并发数"),
+    run_benchmark: bool = typer.Option(False, "--benchmark", help="注册后立即执行完整 Benchmark 测速"),
 ):
     """注册新的 ASR 节点。"""
     from cli.main import get_ctx
@@ -61,15 +107,49 @@ def register(
         "port": port,
         "protocol_version": protocol,
         "max_concurrency": max_concurrency,
+        "run_benchmark": run_benchmark,
     }
-    try:
-        result = c.client.register_server(data)
-    except APIError as e:
-        out.error(e.detail)
-        raise typer.Exit(1)
 
-    out.success(f"节点注册成功: {server_id}")
-    out.render(c.output_format, data=result)
+    if run_benchmark:
+        if not c.quiet:
+            out.info("注册后将自动执行 Benchmark，耗时较长请耐心等待...")
+        bench_failed = False
+        try:
+            server_result = None
+            bench_data = None
+            for event in c.client.register_server_stream(data):
+                evt_type = event.get("type")
+                if evt_type == "server_registered":
+                    server_result = event.get("data", {})
+                    if not c.quiet:
+                        out.success(f"节点注册成功: {server_id}")
+                elif evt_type == "benchmark_result":
+                    bench_data = event.get("data", {})
+                elif evt_type == "benchmark_error":
+                    out.error(f"Benchmark 失败: {event.get('error', '')}")
+                    bench_failed = True
+                elif not c.quiet:
+                    _print_benchmark_event(event)
+        except APIError as e:
+            out.error(e.detail)
+            raise typer.Exit(1)
+
+        if bench_data:
+            rtf = bench_data.get("single_rtf")
+            tp = bench_data.get("throughput_rtf")
+            rec = bench_data.get("recommended_concurrency")
+            out.success(f"Benchmark 完成: single_rtf={rtf}, throughput_rtf={tp}, 推荐并发={rec}")
+        out.render(c.output_format, data=server_result or {})
+        if bench_failed:
+            raise typer.Exit(1)
+    else:
+        try:
+            result = c.client.register_server(data)
+        except APIError as e:
+            out.error(e.detail)
+            raise typer.Exit(1)
+        out.success(f"节点注册成功: {server_id}")
+        out.render(c.output_format, data=result)
 
 
 @app.command(name="delete")
@@ -154,21 +234,54 @@ def benchmark(
         else:
             out.info("正在对所有在线节点执行全量 benchmark（单线程 + 并发梯度测试）...")
 
+    results: list[dict] = []
+    capacity: list[dict] = []
+    error_count = 0
+
     try:
         if server_id:
-            item = c.client.benchmark_server(server_id)
-            data = {"results": [item], "capacity_comparison": []}
+            for event in c.client.benchmark_server_stream(server_id):
+                evt_type = event.get("type")
+                if not c.quiet and evt_type not in ("benchmark_result", "benchmark_error"):
+                    _print_benchmark_event(event)
+                if evt_type == "benchmark_result":
+                    results.append(event.get("data", {}))
+                elif evt_type == "benchmark_error":
+                    out.error(event.get("error", "benchmark failed"))
+                    raise typer.Exit(1)
         else:
-            data = c.client.benchmark_servers()
+            for event in c.client.benchmark_servers_stream():
+                evt_type = event.get("type")
+                if not c.quiet and evt_type not in (
+                    "all_complete", "server_benchmark_done", "server_error",
+                    "benchmark_result",
+                ):
+                    _print_benchmark_event(event)
+                if evt_type == "server_benchmark_done":
+                    results.append(event.get("data", {}))
+                    if not c.quiet:
+                        _print_benchmark_event(event)
+                elif evt_type == "server_error":
+                    error_count += 1
+                    if not c.quiet:
+                        _print_benchmark_event(event)
+                elif evt_type == "all_complete":
+                    data = event.get("data", {})
+                    results = data.get("results", results)
+                    capacity = data.get("capacity_comparison", [])
     except APIError as e:
         out.error(e.detail)
         raise typer.Exit(1)
 
-    results = data.get("results", [])
-    capacity = data.get("capacity_comparison", [])
+    if not results and error_count > 0:
+        out.error(f"所有 {error_count} 个节点 Benchmark 均失败")
+        raise typer.Exit(1)
 
     if not c.quiet:
-        out.success(f"Benchmark 完成: {len(results)} 个节点")
+        msg = f"\nBenchmark 完成: {len(results)} 个节点"
+        if error_count > 0:
+            msg += f" ({error_count} 个失败)"
+        out.success(msg)
 
     for item in results:
         gradient = item.get("concurrency_gradient", [])
@@ -196,6 +309,7 @@ def benchmark(
                 ],
             )
 
+    data = {"results": results, "capacity_comparison": capacity}
     if capacity:
         out.render(
             c.output_format, data=data, title="节点性能对比（基于吞吐量RTF）",

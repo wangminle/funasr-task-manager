@@ -8,13 +8,12 @@ import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from app.deps import DbSession
 from app.models import ServerInstance, ServerStatus
 from app.schemas.server import (
-    ServerBenchmarkResponse,
     ServerBenchmarkItem,
-    ServerCapacityItem,
     ConcurrencyGradientItem,
     ServerProbeResponse,
     ServerRegisterRequest,
@@ -70,6 +69,90 @@ async def register_server(body: ServerRegisterRequest, db: DbSession, admin: Adm
     )
     await repo.register_server(server)
     logger.info("server_registered", server_id=body.server_id, host=body.host, by=admin)
+
+    if body.run_benchmark and initial_status == ServerStatus.ONLINE:
+        await db.commit()
+        host, port, sid = server.host, server.port, body.server_id
+        server_data = ServerResponse.model_validate(server).model_dump(mode="json")
+
+        async def generate():
+            from app.storage.database import async_session_factory
+
+            progress_queue: asyncio.Queue[dict] = asyncio.Queue()
+
+            yield json.dumps({
+                "type": "server_registered",
+                "server_id": sid,
+                "data": server_data,
+            }, ensure_ascii=False) + "\n"
+
+            async def on_progress(event: dict):
+                event["server_id"] = sid
+                await progress_queue.put(event)
+
+            async def run_benchmark():
+                logger.info("server_register_benchmark_start", server_id=sid)
+                try:
+                    bench = await benchmark_server_full_with_ssl_fallback(
+                        host, port, timeout=900.0,
+                        progress_callback=on_progress,
+                    )
+                except Exception as exc:
+                    logger.warning("server_register_benchmark_failed",
+                                   server_id=sid, error=str(exc))
+                    await progress_queue.put({
+                        "type": "benchmark_error",
+                        "server_id": sid,
+                        "error": str(exc),
+                    })
+                    return
+
+                async with async_session_factory() as session:
+                    s_repo = ServerRepository(session)
+                    srv = await s_repo.get_server(sid)
+                    if srv:
+                        if bench.reachable:
+                            _apply_benchmark_result(srv, bench)
+                        else:
+                            srv.status = ServerStatus.OFFLINE
+                        await session.commit()
+
+                if bench.reachable:
+                    logger.info("server_register_benchmark_done",
+                                server_id=sid,
+                                single_rtf=bench.single_rtf,
+                                throughput_rtf=bench.throughput_rtf)
+                else:
+                    logger.warning("server_register_benchmark_unreachable",
+                                   server_id=sid, error=bench.error)
+
+                await progress_queue.put({
+                    "type": "benchmark_result",
+                    "server_id": sid,
+                    "data": _build_benchmark_item(sid, bench).model_dump(mode="json"),
+                })
+
+            task = asyncio.create_task(run_benchmark())
+
+            while True:
+                try:
+                    event = await asyncio.wait_for(progress_queue.get(), timeout=300)
+                except asyncio.TimeoutError:
+                    yield json.dumps({"type": "keepalive"}, ensure_ascii=False) + "\n"
+                    continue
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+                if event["type"] in ("benchmark_result", "benchmark_error"):
+                    break
+
+            await task
+
+        return StreamingResponse(
+            generate(),
+            media_type="application/x-ndjson",
+            status_code=201,
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     return ServerResponse.model_validate(server)
 
 
@@ -80,9 +163,14 @@ async def list_servers(db: DbSession, admin: AdminUser):
     return [ServerResponse.model_validate(s) for s in servers]
 
 
-@router.post("/benchmark", response_model=ServerBenchmarkResponse)
+@router.post("/benchmark")
 async def benchmark_all_servers(db: DbSession, admin: AdminUser):
-    """Run full benchmark (single-thread RTF + concurrent throughput RTF) for all ONLINE servers."""
+    """Run full benchmark for all ONLINE servers.
+
+    Returns an NDJSON stream. Each progress event carries a ``server_id``
+    field. The final event has type ``all_complete`` with aggregated results
+    and capacity comparison.
+    """
     repo = ServerRepository(db)
     all_servers = await repo.list_all_servers()
     online_servers = [s for s in all_servers if s.status == ServerStatus.ONLINE]
@@ -90,98 +178,198 @@ async def benchmark_all_servers(db: DbSession, admin: AdminUser):
     if not online_servers:
         raise HTTPException(status_code=422, detail="No online servers to benchmark")
 
-    async def _bench_one(server: ServerInstance):
-        try:
-            bench = await benchmark_server_full_with_ssl_fallback(
-                server.host, server.port, timeout=900.0,
-            )
-        except (FileNotFoundError, ValueError) as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Benchmark 配置错误（非服务器连通性问题）: {exc}",
-            )
-        return server, bench
+    server_list = [(s.server_id, s.host, s.port) for s in online_servers]
 
-    bench_results = await asyncio.gather(
-        *[_bench_one(s) for s in online_servers],
-        return_exceptions=True,
+    async def generate():
+        from app.storage.database import async_session_factory
+
+        progress_queue: asyncio.Queue[dict] = asyncio.Queue()
+        bench_results: dict[str, ServerBenchmarkItem] = {}
+        completed: set[str] = set()
+        total = len(server_list)
+
+        yield json.dumps({
+            "type": "all_benchmark_start",
+            "server_ids": [sid for sid, _, _ in server_list],
+            "total_servers": total,
+        }, ensure_ascii=False) + "\n"
+
+        async def bench_one(sid: str, host: str, port: int):
+            async def on_progress(event: dict):
+                event["server_id"] = sid
+                await progress_queue.put(event)
+
+            try:
+                bench = await benchmark_server_full_with_ssl_fallback(
+                    host, port, timeout=900.0,
+                    progress_callback=on_progress,
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                await progress_queue.put({
+                    "type": "server_error",
+                    "server_id": sid,
+                    "error": f"Benchmark 配置错误: {exc}",
+                })
+                return
+            except Exception as exc:
+                await progress_queue.put({
+                    "type": "server_error",
+                    "server_id": sid,
+                    "error": str(exc),
+                })
+                return
+
+            async with async_session_factory() as session:
+                s_repo = ServerRepository(session)
+                srv = await s_repo.get_server(sid)
+                if srv:
+                    if not bench.reachable:
+                        srv.status = ServerStatus.OFFLINE
+                        logger.warning("benchmark_server_unreachable",
+                                       server_id=sid, error=bench.error)
+                    else:
+                        _apply_benchmark_result(srv, bench)
+                    await session.commit()
+
+            item = _build_benchmark_item(sid, bench)
+            bench_results[sid] = item
+            await progress_queue.put({
+                "type": "server_benchmark_done",
+                "server_id": sid,
+                "completed": len(bench_results),
+                "total": total,
+                "data": item.model_dump(mode="json"),
+            })
+
+        tasks = [asyncio.create_task(bench_one(sid, h, p))
+                 for sid, h, p in server_list]
+
+        while len(completed) < total:
+            try:
+                event = await asyncio.wait_for(progress_queue.get(), timeout=300)
+            except asyncio.TimeoutError:
+                yield json.dumps({"type": "keepalive"}, ensure_ascii=False) + "\n"
+                continue
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+            if event["type"] in ("server_benchmark_done", "server_error"):
+                completed.add(event["server_id"])
+
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        async with async_session_factory() as session:
+            s_repo = ServerRepository(session)
+            all_srvs = await s_repo.list_all_servers()
+            still_online = [s for s in all_srvs if s.status == ServerStatus.ONLINE]
+
+        profiles = [
+            ServerProfile(
+                server_id=s.server_id, host=s.host, port=s.port,
+                max_concurrency=s.max_concurrency,
+                rtf_baseline=s.rtf_baseline,
+                throughput_rtf=s.throughput_rtf,
+                penalty_factor=s.penalty_factor,
+            )
+            for s in still_online
+        ]
+        comparison = global_scheduler.compare_server_capacity(profiles)
+
+        results_list = [item.model_dump(mode="json") for item in bench_results.values()]
+        logger.info("benchmark_all_complete",
+                    servers=list(bench_results.keys()),
+                    comparison=comparison)
+
+        yield json.dumps({
+            "type": "all_complete",
+            "data": {
+                "results": results_list,
+                "capacity_comparison": comparison,
+            },
+        }, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
-    results: list[ServerBenchmarkItem] = []
-    for br in bench_results:
-        if isinstance(br, Exception):
-            raise br
-        server, bench = br
-        if not bench.reachable:
-            server.status = ServerStatus.OFFLINE
-            logger.warning("benchmark_server_unreachable",
-                           server_id=server.server_id, error=bench.error)
-        else:
-            _apply_benchmark_result(server, bench)
 
-        item_data = bench.to_dict()
-        gradient_raw = item_data.pop("concurrency_gradient", [])
-        results.append(ServerBenchmarkItem(
-            server_id=server.server_id,
-            concurrency_gradient=[ConcurrencyGradientItem(**g) for g in gradient_raw],
-            **item_data,
-        ))
-
-    await db.commit()
-
-    still_online = [s for s in online_servers if s.status == ServerStatus.ONLINE]
-    profiles = [
-        ServerProfile(
-            server_id=s.server_id, host=s.host, port=s.port,
-            max_concurrency=s.max_concurrency,
-            rtf_baseline=s.rtf_baseline,
-            throughput_rtf=s.throughput_rtf,
-            penalty_factor=s.penalty_factor,
-        )
-        for s in still_online
-    ]
-    comparison = global_scheduler.compare_server_capacity(profiles)
-
-    logger.info("benchmark_all_complete",
-                servers=[r.server_id for r in results],
-                comparison=comparison)
-
-    return ServerBenchmarkResponse(
-        results=results,
-        capacity_comparison=[ServerCapacityItem(**c) for c in comparison],
-    )
-
-
-@router.post("/{server_id}/benchmark", response_model=ServerBenchmarkItem)
+@router.post("/{server_id}/benchmark")
 async def benchmark_server_endpoint(server_id: str, db: DbSession, admin: AdminUser):
-    """Run full benchmark (single + concurrent) for one registered server."""
+    """Run full benchmark (single + concurrent) for one registered server.
+
+    Returns an NDJSON stream with real-time progress events. The final event
+    has type ``benchmark_result`` (success) or ``benchmark_error`` (failure).
+    """
     repo = ServerRepository(db)
     server = await repo.get_server(server_id)
     if server is None:
         raise HTTPException(status_code=404, detail="Server not found")
 
-    try:
-        bench = await benchmark_server_full_with_ssl_fallback(
-            server.host, server.port,
-            timeout=900.0,
-        )
-    except (FileNotFoundError, ValueError) as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Benchmark 配置错误（非服务器连通性问题）: {exc}",
-        )
+    host, port = server.host, server.port
 
-    server.status = ServerStatus.ONLINE if bench.reachable else ServerStatus.OFFLINE
-    if bench.reachable:
-        _apply_benchmark_result(server, bench)
-    await db.commit()
+    async def generate():
+        from app.storage.database import async_session_factory
 
-    item_data = bench.to_dict()
-    gradient_raw = item_data.pop("concurrency_gradient", [])
-    return ServerBenchmarkItem(
-        server_id=server_id,
-        concurrency_gradient=[ConcurrencyGradientItem(**g) for g in gradient_raw],
-        **item_data,
+        progress_queue: asyncio.Queue[dict] = asyncio.Queue()
+
+        async def on_progress(event: dict):
+            event["server_id"] = server_id
+            await progress_queue.put(event)
+
+        async def run_benchmark():
+            try:
+                bench = await benchmark_server_full_with_ssl_fallback(
+                    host, port, timeout=900.0,
+                    progress_callback=on_progress,
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                await progress_queue.put({
+                    "type": "benchmark_error",
+                    "server_id": server_id,
+                    "error": f"Benchmark 配置错误（非服务器连通性问题）: {exc}",
+                })
+                return
+            except Exception as exc:
+                await progress_queue.put({
+                    "type": "benchmark_error",
+                    "server_id": server_id,
+                    "error": str(exc),
+                })
+                return
+
+            async with async_session_factory() as session:
+                s_repo = ServerRepository(session)
+                srv = await s_repo.get_server(server_id)
+                if srv:
+                    srv.status = ServerStatus.ONLINE if bench.reachable else ServerStatus.OFFLINE
+                    if bench.reachable:
+                        _apply_benchmark_result(srv, bench)
+                    await session.commit()
+
+            await progress_queue.put({
+                "type": "benchmark_result",
+                "server_id": server_id,
+                "data": _build_benchmark_item(server_id, bench).model_dump(mode="json"),
+            })
+
+        task = asyncio.create_task(run_benchmark())
+
+        while True:
+            try:
+                event = await asyncio.wait_for(progress_queue.get(), timeout=300)
+            except asyncio.TimeoutError:
+                yield json.dumps({"type": "keepalive"}, ensure_ascii=False) + "\n"
+                continue
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+            if event["type"] in ("benchmark_result", "benchmark_error"):
+                break
+
+        await task
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -333,6 +521,17 @@ def _apply_benchmark_result(
                     new=bench.recommended_concurrency,
                     reason="degradation_detection" if bench.gradient_complete else "partial_gradient_upgrade",
                 )
+
+
+def _build_benchmark_item(server_id: str, bench) -> ServerBenchmarkItem:
+    """Convert a ServerBenchmarkResult to the API response schema."""
+    item_data = bench.to_dict()
+    gradient_raw = item_data.pop("concurrency_gradient", [])
+    return ServerBenchmarkItem(
+        server_id=server_id,
+        concurrency_gradient=[ConcurrencyGradientItem(**g) for g in gradient_raw],
+        **item_data,
+    )
 
 
 def _extract_modes(caps) -> list[str]:

@@ -13,6 +13,7 @@ class ServerRegisterRequest(BaseModel):
     protocol_version: str
     max_concurrency: int = 4
     labels: dict | None = None
+    run_benchmark: bool = False
 
 
 class ServerUpdateRequest(BaseModel):

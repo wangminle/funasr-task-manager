@@ -251,18 +251,22 @@ class TestQuotaAllocation:
             "Both tasks should go to fastest server when tasks < servers"
         )
 
-    def test_quota_respects_available_slots(self):
-        """Quota should not exceed server's free slot count."""
+    def test_eft_respects_physical_slots(self):
+        """EFT naturally limits tasks to a server based on slot depth, not quota cap.
+
+        With global soft quota, fast gets a higher planning quota, but EFT
+        shifts tasks to slow once fast's single slot queue gets deep.
+        """
         sched = TaskScheduler()
         tasks = [{"task_id": f"t{i}", "audio_duration_sec": 300} for i in range(5)]
         fast = _make_server("fast", concurrency=4, rtf=0.1, running=3)
         slow = _make_server("slow", concurrency=4, rtf=0.5, running=0)
         decisions = sched.schedule_batch(tasks, [fast, slow])
+        assert len(decisions) == 5
         fast_count = sum(1 for d in decisions if d.server_id == "fast")
         slow_count = sum(1 for d in decisions if d.server_id == "slow")
-        assert fast_count <= 1, "Fast server only has 1 free slot"
-        assert slow_count <= 4, "Slow server has 4 free slots"
-        assert len(decisions) == 5
+        assert fast_count >= 1, "Fast server should get at least 1 task"
+        assert slow_count >= 1, "Slow server should get tasks when fast queue is deep"
 
     def test_select_dispatchable_now_limits_to_current_free_slots(self):
         """Only first-wave tasks should be started immediately."""
@@ -370,8 +374,8 @@ class TestQuotaAllocation:
         assert sum(quotas.values()) == 4
         assert quotas["fast"] >= 3, "20:1 speed ratio → fast should get almost all"
 
-    def test_quota_sum_always_equals_effective_count(self):
-        """Quota sum must always equal min(task_count, total_free)."""
+    def test_quota_sum_always_equals_task_count(self):
+        """Global soft quota: sum must equal task_count (covers entire batch)."""
         sched = TaskScheduler()
         servers = [
             _make_server("s1", concurrency=4, rtf=0.1),
@@ -380,10 +384,34 @@ class TestQuotaAllocation:
         ]
         for task_count in [1, 3, 5, 8, 12, 15, 25]:
             quotas = sched._allocate_quotas(task_count, servers)
-            expected = min(task_count, 12)
-            assert sum(quotas.values()) == expected, (
-                f"task_count={task_count}: sum={sum(quotas.values())} != {expected}"
+            assert sum(quotas.values()) == task_count, (
+                f"task_count={task_count}: sum={sum(quotas.values())} != {task_count}"
             )
+
+    def test_heterogeneous_concurrency_quota_favors_more_slots(self):
+        """Servers with similar per-slot RTF but more slots should get more tasks.
+
+        Reproduces the production scenario: 3 servers with similar per-slot
+        speed but different slot counts (2, 4, 1). The 4-slot server should
+        get the most tasks, not the fewest.
+        """
+        sched = TaskScheduler()
+        fast_2slots = _make_server("fast-2", concurrency=2, rtf=0.063)
+        slow_4slots = _make_server("slow-4", concurrency=4, rtf=0.083)
+        mid_1slot = _make_server("mid-1", concurrency=1, rtf=0.078)
+        quotas = sched._allocate_quotas(12, [fast_2slots, slow_4slots, mid_1slot])
+        assert sum(quotas.values()) == 12
+        assert quotas["slow-4"] > quotas["fast-2"], (
+            f"4-slot server (quota={quotas['slow-4']}) should get more tasks "
+            f"than 2-slot server (quota={quotas['fast-2']})"
+        )
+        assert quotas["slow-4"] > quotas["mid-1"], (
+            f"4-slot server (quota={quotas['slow-4']}) should get more tasks "
+            f"than 1-slot server (quota={quotas['mid-1']})"
+        )
+        assert quotas["slow-4"] >= 5, (
+            f"4-slot server should get at least 5 of 12 tasks, got {quotas['slow-4']}"
+        )
 
 
 @pytest.mark.unit

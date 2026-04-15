@@ -122,8 +122,113 @@ export async function listServers(config = {}) {
   return data
 }
 
-export async function registerServer(serverData) {
-  const { data } = await api.post('/servers', serverData)
+/**
+ * Issue a fetch() request with the stored API Key. On 401, prompt the user
+ * for a new key (mirroring the axios interceptor flow) and retry once.
+ */
+async function _authedFetch(url, init = {}) {
+  const attempt = (key) => {
+    const headers = { ...init.headers }
+    if (key) headers['X-API-Key'] = key
+    return fetch(url, { ...init, headers })
+  }
+
+  let resp = await attempt(getApiKey())
+
+  if (resp.status === 401) {
+    try {
+      const { value } = await ElMessageBox.prompt(
+        '当前请求需要认证，请输入有效的 API Key。',
+        '认证失败',
+        {
+          confirmButtonText: '确定',
+          cancelButtonText: '取消',
+          inputValue: getApiKey(),
+          inputPlaceholder: '请输入 API Key',
+          type: 'warning',
+        },
+      )
+      if (value) {
+        setApiKey(value)
+        resp = await attempt(value)
+      }
+    } catch {
+      /* user cancelled prompt */
+    }
+  }
+  return resp
+}
+
+/**
+ * Parse an NDJSON stream from a fetch Response, calling onEvent for each line.
+ * Returns a promise that resolves when the stream ends.
+ */
+async function _streamNdjson(url, { method = 'POST', body, onEvent, timeoutMs = 600000 }) {
+  const headers = {}
+  if (body) headers['Content-Type'] = 'application/json'
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    const resp = await _authedFetch(`/api/v1${url}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop()
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        try { onEvent(JSON.parse(trimmed)) } catch { /* skip malformed */ }
+      }
+    }
+    if (buffer.trim()) {
+      try { onEvent(JSON.parse(buffer.trim())) } catch { /* skip */ }
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+export async function benchmarkServerStream(serverId, onEvent) {
+  await _streamNdjson(`/servers/${serverId}/benchmark`, { onEvent })
+}
+
+export async function benchmarkAllServersStream(onEvent) {
+  await _streamNdjson('/servers/benchmark', { onEvent })
+}
+
+export async function registerServer(serverData, onEvent = null) {
+  if (serverData.run_benchmark && onEvent) {
+    let serverResult = null
+    let benchmarkError = null
+    await _streamNdjson('/servers', {
+      body: serverData,
+      onEvent(event) {
+        if (event.type === 'server_registered') serverResult = event.data
+        if (event.type === 'benchmark_error') benchmarkError = event.error || 'benchmark failed'
+        onEvent(event)
+      },
+    })
+    return { _server: serverResult || {}, _benchmarkError: benchmarkError }
+  }
+  const timeout = serverData.run_benchmark ? 600000 : 30000
+  const { data } = await api.post('/servers', serverData, { timeout })
   return data
 }
 

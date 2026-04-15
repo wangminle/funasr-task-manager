@@ -4,9 +4,11 @@ Scheduling algorithm:
 1. Estimate processing time per task: p(i,s) = duration(i) * rtf(s) + overhead
    where rtf(s) uses per-server RTF baseline (from benchmark/history) for
    capacity-aware assignment — faster servers handle bigger files.
-2. Allocate per-server task quotas strictly proportional to speed (1/RTF).
-   Faster servers get proportionally more tasks; slow servers may receive 0
-   when their speed share rounds down. No minimum-per-server guarantee.
+2. Allocate per-server task quotas proportional to throughput speed
+   (max_concurrency / base_rtf). This uses per-slot RTF from production
+   history (P90) or benchmark with representative samples, scaled by slot
+   count — more accurate than throughput_rtf which is measured with very
+   short benchmark samples.
 3. Expand each server's FREE slots into virtual machines (respecting running_tasks)
 4. Sort tasks by estimated duration descending (LPT: Longest Processing Time First)
 5. Assign each task to the eligible slot with earliest expected finish time,
@@ -149,14 +151,16 @@ class TaskScheduler:
     def get_throughput_speed(self, server: ServerProfile) -> float:
         """Get throughput-based speed for quota allocation.
 
-        Uses throughput_rtf (concurrent benchmark) if available, otherwise
-        falls back to rtf_baseline (single-thread) as a conservative estimate.
+        Formula: max_concurrency / base_rtf
+
+        Uses per-slot RTF (from production P90 or rtf_baseline benchmark)
+        scaled by slot count. This is more representative than 1/throughput_rtf
+        because throughput_rtf is measured with very short samples (~6s) whose
+        RTF characteristics differ significantly from real workloads (3-30 min).
         """
-        tp_rtf = server.throughput_rtf
-        if tp_rtf and tp_rtf > 0:
-            return 1.0 / tp_rtf
-        base = server.rtf_baseline or DEFAULT_RTF
-        return 1.0 / max(base, 0.01)
+        base_rtf = self.get_base_rtf(server)
+        slots = max(server.max_concurrency, 1)
+        return slots / max(base_rtf, 0.01)
 
     def estimate_processing_time(
         self,
@@ -173,13 +177,16 @@ class TaskScheduler:
         task_count: int,
         servers: list[ServerProfile],
     ) -> dict[str, int]:
-        """Allocate per-server task quotas strictly proportional to speed (1/RTF).
+        """Allocate per-server task quotas proportional to throughput speed.
+
+        Speed = max_concurrency / base_rtf, so servers with more slots AND
+        faster per-slot processing get proportionally more tasks. Global soft
+        quota distributes the ENTIRE batch by this speed ratio so the slot
+        queue shape reflects true throughput proportions.
 
         Quotas are purely proportional to server speed with no minimum guarantee.
         Slow servers may receive 0 tasks when their speed share rounds down.
         Rounding remainders go to the fastest server first.
-        Quotas are capped by each server's free slot count, with excess
-        redistributed to faster servers first.
         """
         if not servers or task_count <= 0:
             return {}
@@ -189,11 +196,6 @@ class TaskScheduler:
         if not servers_with_slots:
             return {}
 
-        free_map = {s.server_id: max(s.max_concurrency - s.running_tasks, 0)
-                    for s in servers_with_slots}
-        total_free = sum(free_map.values())
-        effective_count = min(task_count, total_free)
-
         speeds = {}
         for s in servers_with_slots:
             speeds[s.server_id] = self.get_throughput_speed(s)
@@ -201,11 +203,11 @@ class TaskScheduler:
         total_speed = sum(speeds.values())
         quotas: dict[str, int] = {}
         for sid, spd in speeds.items():
-            raw = effective_count * spd / total_speed
+            raw = task_count * spd / total_speed
             quotas[sid] = round(raw)
 
         allocated = sum(quotas.values())
-        diff = effective_count - allocated
+        diff = task_count - allocated
         if diff > 0:
             fastest = max(speeds, key=speeds.get)
             quotas[fastest] += diff
@@ -215,19 +217,6 @@ class TaskScheduler:
                 quotas[sid] -= take
                 diff += take
                 if diff >= 0:
-                    break
-
-        for sid in list(quotas):
-            quotas[sid] = min(quotas[sid], free_map[sid])
-
-        remainder = effective_count - sum(quotas.values())
-        if remainder > 0:
-            for sid in sorted(speeds, key=speeds.get, reverse=True):
-                can_add = free_map[sid] - quotas[sid]
-                give = min(remainder, can_add)
-                quotas[sid] += give
-                remainder -= give
-                if remainder <= 0:
                     break
 
         logger.info("quota_allocation",

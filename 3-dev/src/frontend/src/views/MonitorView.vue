@@ -155,9 +155,30 @@
         <el-form-item label="最大并发" prop="max_concurrency">
           <el-input-number v-model="form.max_concurrency" :min="1" :max="64" style="width:100%;" />
         </el-form-item>
+        <el-form-item v-if="!isEditing" label="运行测速">
+          <el-switch v-model="form.run_benchmark" active-text="添加后自动 Benchmark" />
+          <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+            开启后将在注册成功时执行一次完整性能基准测试，耗时较长
+          </div>
+        </el-form-item>
       </el-form>
+      <div v-if="benchmarkProgress.length > 0" style="margin-top: 12px; max-height: 320px; overflow-y: auto;">
+        <el-divider content-position="left">Benchmark 进度</el-divider>
+        <el-timeline>
+          <el-timeline-item
+            v-for="(item, idx) in benchmarkProgress"
+            :key="idx"
+            :type="item.tagType"
+            :timestamp="item.time"
+            placement="top"
+            :hollow="idx < benchmarkProgress.length - 1"
+          >
+            {{ item.message }}
+          </el-timeline-item>
+        </el-timeline>
+      </div>
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
+        <el-button @click="dialogVisible = false" :disabled="submitting">取消</el-button>
         <el-button type="primary" :loading="submitting" @click="handleSubmit">{{ isEditing ? '保存' : '添加' }}</el-button>
       </template>
     </el-dialog>
@@ -329,9 +350,47 @@ const isEditing = ref(false)
 const submitting = ref(false)
 const formRef = ref(null)
 const form = ref(defaultForm())
+const benchmarkProgress = ref([])
 
 function defaultForm() {
-  return { server_id: '', name: '', host: '', port: 10095, protocol_version: 'funasr-main', max_concurrency: 4 }
+  return { server_id: '', name: '', host: '', port: 10095, protocol_version: 'funasr-main', max_concurrency: 4, run_benchmark: false }
+}
+
+function addBenchmarkProgress(message, tagType = '') {
+  benchmarkProgress.value.push({
+    message,
+    tagType,
+    time: new Date().toLocaleTimeString('zh-CN'),
+  })
+}
+
+function handleBenchmarkEvent(event) {
+  const t = event.type
+  if (t === 'server_registered') {
+    addBenchmarkProgress('服务器注册成功', 'success')
+  } else if (t === 'benchmark_start') {
+    addBenchmarkProgress(`Benchmark 开始 (样本: ${(event.samples || []).join(', ')})`, 'primary')
+  } else if (t === 'phase_start') {
+    addBenchmarkProgress(`Phase ${event.phase}: ${event.description || ''}`, 'primary')
+  } else if (t === 'phase_progress') {
+    addBenchmarkProgress(`采样 ${event.rep}/${event.total_reps}: RTF=${event.rtf}`)
+  } else if (t === 'phase_complete') {
+    addBenchmarkProgress(`Phase ${event.phase} 完成: single_rtf=${event.single_rtf}`, 'success')
+  } else if (t === 'gradient_start') {
+    addBenchmarkProgress(`梯度 N=${event.concurrency} (${event.level_index}/${event.total_levels})...`)
+  } else if (t === 'gradient_complete') {
+    addBenchmarkProgress(`N=${event.concurrency}: throughput_rtf=${event.throughput_rtf}, wall=${event.wall_clock_sec}s`, 'success')
+  } else if (t === 'gradient_error') {
+    addBenchmarkProgress(`N=${event.concurrency}: ${event.error || '失败'}`, 'warning')
+  } else if (t === 'benchmark_complete') {
+    addBenchmarkProgress(`完成: 推荐并发=${event.recommended_concurrency}, throughput_rtf=${event.throughput_rtf}`, 'success')
+  } else if (t === 'benchmark_result') {
+    addBenchmarkProgress('结果已保存到数据库', 'success')
+  } else if (t === 'benchmark_error') {
+    addBenchmarkProgress(`Benchmark 错误: ${event.error || ''}`, 'danger')
+  } else if (t === 'ssl_fallback') {
+    addBenchmarkProgress('WSS 连接失败，回退到 WS 重试...', 'warning')
+  }
 }
 
 const formRules = {
@@ -362,22 +421,33 @@ function openEditDialog(row) {
 
 function resetForm() {
   formRef.value?.resetFields()
+  benchmarkProgress.value = []
 }
 
 async function handleSubmit() {
   const valid = await formRef.value.validate().catch(() => false)
   if (!valid) return
   submitting.value = true
+  benchmarkProgress.value = []
   try {
     if (isEditing.value) {
-      const { server_id, ...updates } = form.value
+      const { server_id, run_benchmark, ...updates } = form.value
       await updateServer(server_id, updates)
       ElMessage.success('服务器已更新')
+      dialogVisible.value = false
+    } else if (form.value.run_benchmark) {
+      const result = await registerServer(form.value, handleBenchmarkEvent)
+      if (result._benchmarkError) {
+        ElMessage.warning(`服务器已添加，但 Benchmark 失败: ${result._benchmarkError}`)
+      } else {
+        ElMessage.success('服务器已添加，Benchmark 完成')
+      }
+      dialogVisible.value = false
     } else {
       await registerServer(form.value)
       ElMessage.success('服务器已添加')
+      dialogVisible.value = false
     }
-    dialogVisible.value = false
     await fetchServers()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || e.message)

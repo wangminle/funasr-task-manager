@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json as _json
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Iterator
 
 import httpx
 
@@ -46,6 +47,20 @@ class ASRClient:
         """Like _check, but also stores the HTTP status code for 2xx inspection."""
         self._last_status = resp.status_code
         return self._check(resp)
+
+    def _stream_ndjson(self, method: str, url: str, **kwargs) -> Iterator[dict]:
+        """Iterate NDJSON lines from a streaming HTTP response."""
+        with self._client.stream(method, url, **kwargs) as resp:
+            if resp.status_code >= 400:
+                resp.read()
+                self._check(resp)
+            for line in resp.iter_lines():
+                line = line.strip()
+                if line:
+                    try:
+                        yield _json.loads(line)
+                    except _json.JSONDecodeError:
+                        pass
 
     # --- health ---
     def health(self) -> dict:
@@ -141,7 +156,21 @@ class ASRClient:
         return self._check(self._client.get("/api/v1/servers")).json()
 
     def register_server(self, data: dict) -> dict:
-        return self._check(self._client.post("/api/v1/servers", json=data)).json()
+        if not data.get("run_benchmark"):
+            return self._check(self._client.post(
+                "/api/v1/servers", json=data, timeout=30.0,
+            )).json()
+        result: dict = {}
+        for event in self.register_server_stream(data):
+            if event.get("type") == "server_registered":
+                result = event.get("data", {})
+        return result
+
+    def register_server_stream(self, data: dict) -> Iterator[dict]:
+        """Yield NDJSON progress events for register + benchmark."""
+        yield from self._stream_ndjson(
+            "POST", "/api/v1/servers", json=data, timeout=960.0,
+        )
 
     def probe_server(self, server_id: str, level: str = "offline_light") -> dict:
         return self._check(self._client.post(
@@ -149,14 +178,32 @@ class ASRClient:
         )).json()
 
     def benchmark_server(self, server_id: str, timeout: float = 960.0) -> dict:
-        return self._check(self._client.post(
-            f"/api/v1/servers/{server_id}/benchmark", timeout=timeout,
-        )).json()
+        """Non-streaming wrapper: collects final benchmark_result."""
+        for event in self.benchmark_server_stream(server_id, timeout=timeout):
+            if event.get("type") == "benchmark_result":
+                return event.get("data", {})
+            if event.get("type") == "benchmark_error":
+                raise APIError(422, event.get("error", "benchmark failed"))
+        return {}
+
+    def benchmark_server_stream(self, server_id: str, timeout: float = 960.0) -> Iterator[dict]:
+        """Yield NDJSON progress events for a single server benchmark."""
+        yield from self._stream_ndjson(
+            "POST", f"/api/v1/servers/{server_id}/benchmark", timeout=timeout,
+        )
 
     def benchmark_servers(self, timeout: float = 960.0) -> dict:
-        return self._check(self._client.post(
-            "/api/v1/servers/benchmark", timeout=timeout,
-        )).json()
+        """Non-streaming wrapper: collects final all_complete result."""
+        for event in self.benchmark_servers_stream(timeout=timeout):
+            if event.get("type") == "all_complete":
+                return event.get("data", {})
+        return {}
+
+    def benchmark_servers_stream(self, timeout: float = 960.0) -> Iterator[dict]:
+        """Yield NDJSON progress events for all-server benchmark."""
+        yield from self._stream_ndjson(
+            "POST", "/api/v1/servers/benchmark", timeout=timeout,
+        )
 
     def update_server(self, server_id: str, data: dict) -> dict:
         return self._check(self._client.patch(f"/api/v1/servers/{server_id}", json=data)).json()

@@ -85,7 +85,11 @@
       "Bash(pip show:*)",
       "Bash(asr --help)",
       "Bash(python3 -c ':*)",
-      "Bash(grep -i \"work_steal\\\\|quota_allocation\\\\|batch_schedule\" runtime/logs/*.log)"
+      "Bash(grep -i \"work_steal\\\\|quota_allocation\\\\|batch_schedule\" runtime/logs/*.log)",
+      "Bash(nohup python:*)",
+      "Bash(echo \"PID: $!\")",
+      "Bash(.venv/Scripts/python:*)",
+      "Bash(.claude/settings.local.json:*)"
     ]
   }
 }

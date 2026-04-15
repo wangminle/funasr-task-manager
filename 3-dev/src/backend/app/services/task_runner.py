@@ -27,6 +27,9 @@ from app.auth.rate_limiter import rate_limiter
 logger = get_logger(__name__)
 
 
+REPLAN_IMBALANCE_RATIO = 1.5
+
+
 class BackgroundTaskRunner:
     """Polls tasks and executes transcription jobs in-process."""
 
@@ -209,8 +212,9 @@ class BackgroundTaskRunner:
                 t.task_id not in self._planned_task_ids for t, _ in dispatchable
             )
             servers_changed = current_available_ids != self._planned_available_server_ids
+            queue_imbalanced = self._check_queue_imbalance(current_available_ids)
 
-            if has_unplanned or servers_changed:
+            if has_unplanned or servers_changed or queue_imbalanced:
                 self._clear_slot_queues()
                 batch_input = [d[1] for d in dispatchable]
                 decisions = global_scheduler.schedule_batch(batch_input, available_profiles)
@@ -249,20 +253,10 @@ class BackgroundTaskRunner:
                     free_slots[decision.server_id] -= 1
                     break
 
-            # Phase B: work stealing — idle slots steal from other queues' tails
+            # Phase B: work stealing — any server with free slots can steal
             for sp in available_profiles:
                 sid = sp.server_id
-                if free_slots.get(sid, 0) <= 0:
-                    continue
-                own_active_queues = sum(
-                    1 for sq in self._slot_queues.values()
-                    if sq.server_id == sid and sq.decisions
-                )
-                stealable_slots = free_slots.get(sid, 0) - own_active_queues
-                if stealable_slots <= 0:
-                    continue
-                stolen_count = 0
-                while stolen_count < stealable_slots:
+                while free_slots.get(sid, 0) > 0:
                     result = self._find_steal_candidate(sp, profile_map, task_map, inflight)
                     if result is None:
                         break
@@ -279,7 +273,6 @@ class BackgroundTaskRunner:
                     source_sq.decisions.remove(decision)
                     self._planned_task_ids.discard(decision.task_id)
                     free_slots[sid] -= 1
-                    stolen_count += 1
                     logger.info("work_steal",
                                 task_id=decision.task_id,
                                 from_server=source_sq.server_id,
@@ -656,10 +649,12 @@ class BackgroundTaskRunner:
         profile_map: dict[str, ServerProfile],
         task_map: dict[str, "Task"],
         inflight: set[str],
+        max_candidates_per_queue: int = 3,
     ) -> tuple[ScheduleDecision, SlotQueue, float] | None:
-        """Find a task to steal for an idle server.
+        """Find the best task to steal for an idle server.
 
-        Scans other servers' queue tails (shortest tasks first, due to LPT ordering).
+        Scans other servers' queue tails, checking up to max_candidates_per_queue
+        items per queue to find the candidate with the greatest improvement.
         Returns (decision, source_queue, est_processing_time_on_idle) or None.
         """
         best: tuple[ScheduleDecision, SlotQueue, float] | None = None
@@ -668,12 +663,16 @@ class BackgroundTaskRunner:
         for sq in self._slot_queues.values():
             if sq.server_id == idle_profile.server_id or not sq.decisions:
                 continue
+            checked = 0
             for idx_from_end, decision in enumerate(reversed(sq.decisions)):
+                if checked >= max_candidates_per_queue:
+                    break
                 if decision.task_id in inflight:
                     continue
                 task = task_map.get(decision.task_id)
                 if task is None:
                     continue
+                checked += 1
                 est_stolen = global_scheduler.estimate_processing_time(
                     decision.audio_duration_sec, idle_profile)
                 decision_idx = len(sq.decisions) - 1 - idx_from_end
@@ -685,8 +684,49 @@ class BackgroundTaskRunner:
                 if improvement > 0 and improvement > best_improvement:
                     best = (decision, sq, est_stolen)
                     best_improvement = improvement
-                break
         return best
+
+    def _check_queue_imbalance(self, available_server_ids: frozenset[str]) -> bool:
+        """Detect if remaining slot queue workload is significantly imbalanced.
+
+        Triggers re-plan when:
+        1. A server that was part of the active plan has exhausted its queue
+           (removed by cleanup) while other planned servers still have work.
+        2. The ratio of max-to-min remaining work across planned servers
+           exceeds REPLAN_IMBALANCE_RATIO.
+        """
+        if not self._slot_queues:
+            return False
+
+        server_remaining: dict[str, float] = {}
+        for sq in self._slot_queues.values():
+            total = sum(d.estimated_duration for d in sq.decisions)
+            server_remaining[sq.server_id] = server_remaining.get(sq.server_id, 0.0) + total
+
+        has_backlog = any(v > 0.0 for v in server_remaining.values())
+        if not has_backlog:
+            return False
+
+        exhausted_ids = (
+            self._planned_available_server_ids - set(server_remaining.keys())
+        ) & available_server_ids
+        if exhausted_ids:
+            logger.info("queue_imbalance_idle_server",
+                        exhausted=list(exhausted_ids),
+                        remaining={sid: f"{v:.1f}s" for sid, v in server_remaining.items()})
+            return True
+
+        positives = [v for v in server_remaining.values() if v > 0]
+        if len(positives) >= 2:
+            ratio = max(positives) / min(positives)
+            if ratio > REPLAN_IMBALANCE_RATIO:
+                logger.info("queue_imbalance_ratio",
+                            ratio=f"{ratio:.2f}",
+                            threshold=f"{REPLAN_IMBALANCE_RATIO:.1f}",
+                            remaining={sid: f"{v:.1f}s" for sid, v in server_remaining.items()})
+                return True
+
+        return False
 
     def _clear_slot_queues(self) -> None:
         self._slot_queues.clear()
