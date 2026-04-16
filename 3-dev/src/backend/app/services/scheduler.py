@@ -37,6 +37,75 @@ PENALTY_DECREASE_RATE = 0.1
 CONSECUTIVE_FAST_THRESHOLD = 10
 IMMEDIATE_START_TOLERANCE = 1e-9
 
+ETA_CAL_HISTORY_SIZE = 2
+ETA_CAL_CHANGE_THRESHOLD = 0.05
+ETA_CAL_STEP = 0.1
+ETA_CAL_MIN_FACTOR = 0.5
+ETA_CAL_MAX_FACTOR = 3.0
+
+
+class ETACalibrationTracker:
+    """Per-server ETA calibration using recent (predicted, actual) history.
+
+    After accumulating HISTORY_SIZE records, computes the average
+    actual/predicted ratio.  When the ratio diverges from 1.0 by more
+    than CHANGE_THRESHOLD, the factor is updated to the nearest 0.1 step
+    and clamped to [MIN_FACTOR, MAX_FACTOR].
+    """
+
+    def __init__(
+        self,
+        history_size: int = ETA_CAL_HISTORY_SIZE,
+        change_threshold: float = ETA_CAL_CHANGE_THRESHOLD,
+    ):
+        self._history_size = history_size
+        self._change_threshold = change_threshold
+        self._history: dict[str, deque[tuple[float, float]]] = {}
+        self._factors: dict[str, float] = {}
+
+    def record(self, server_id: str, predicted: float, actual: float) -> None:
+        if predicted <= 0 or actual <= 0:
+            return
+        window = self._history.get(server_id)
+        if window is None:
+            window = deque(maxlen=self._history_size)
+            self._history[server_id] = window
+        window.append((predicted, actual))
+        if len(window) >= self._history_size:
+            self._recalc(server_id)
+
+    def get_factor(self, server_id: str) -> float:
+        return self._factors.get(server_id, 1.0)
+
+    def _recalc(self, server_id: str) -> None:
+        window = self._history.get(server_id)
+        if not window or len(window) < self._history_size:
+            return
+        ratios = [actual / predicted for predicted, actual in window]
+        avg_ratio = statistics.mean(ratios)
+        if abs(avg_ratio - 1.0) > self._change_threshold:
+            stepped = round(avg_ratio / ETA_CAL_STEP) * ETA_CAL_STEP
+            stepped = round(stepped, 1)
+            clamped = max(ETA_CAL_MIN_FACTOR, min(ETA_CAL_MAX_FACTOR, stepped))
+            old = self._factors.get(server_id, 1.0)
+            self._factors[server_id] = clamped
+            if old != clamped:
+                logger.info(
+                    "eta_calibration_factor_updated",
+                    server_id=server_id,
+                    old_factor=f"{old:.1f}",
+                    new_factor=f"{clamped:.1f}",
+                    avg_ratio=f"{avg_ratio:.3f}",
+                )
+
+    def clear(self, server_id: str | None = None) -> None:
+        if server_id:
+            self._history.pop(server_id, None)
+            self._factors.pop(server_id, None)
+        else:
+            self._history.clear()
+            self._factors.clear()
+
 
 @dataclass
 class ServerSlot:
@@ -131,6 +200,7 @@ class TaskScheduler:
 
     def __init__(self):
         self.rtf_tracker = RTFTracker()
+        self.eta_tracker = ETACalibrationTracker()
 
     def get_effective_rtf(self, server: ServerProfile) -> float:
         """Get effective RTF for a server, applying concurrency penalty."""
@@ -168,9 +238,15 @@ class TaskScheduler:
         server: ServerProfile,
         overhead: float = DEFAULT_OVERHEAD,
     ) -> float:
-        """Estimate total processing time for a task on a server."""
+        """Estimate total processing time for a task on a server.
+
+        Applies the per-server ETA calibration factor when available,
+        so estimates converge toward observed reality over time.
+        """
         rtf = self.get_effective_rtf(server)
-        return audio_duration_sec * rtf + overhead
+        raw = audio_duration_sec * rtf + overhead
+        factor = self.eta_tracker.get_factor(server.server_id)
+        return raw * factor
 
     def _allocate_quotas(
         self,
@@ -448,6 +524,11 @@ class TaskScheduler:
         }
 
         if predicted_duration_sec and predicted_duration_sec > 0:
+            current_factor = self.eta_tracker.get_factor(server_id)
+            raw_predicted = predicted_duration_sec / current_factor if current_factor != 1.0 else predicted_duration_sec
+            self.eta_tracker.record(server_id, raw_predicted, actual_duration_sec)
+            result["eta_calibration_factor"] = self.eta_tracker.get_factor(server_id)
+
             deviation = actual_duration_sec / predicted_duration_sec
             result["deviation"] = deviation
 

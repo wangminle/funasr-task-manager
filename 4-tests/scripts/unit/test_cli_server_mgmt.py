@@ -94,41 +94,69 @@ class TestServerProbe:
 @pytest.mark.unit
 class TestServerBenchmark:
     def test_single_server_benchmark_success(self, mock_client):
-        mock_client.benchmark_server.return_value = {
-            "server_id": "asr-01", "reachable": True, "responsive": True,
-            "single_rtf": 0.124, "throughput_rtf": 0.031, "benchmark_concurrency": 4,
-            "benchmark_audio_sec": 300.0,
-            "benchmark_elapsed_sec": 37.2, "benchmark_samples": ["test.mp4", "tv-report-1.wav"],
-            "benchmark_notes": [], "error": None, "concurrency_gradient": [],
-        }
+        events = [
+            *_make_benchmark_events("asr-01"),
+            {"type": "benchmark_result", "server_id": "asr-01",
+             "data": {"server_id": "asr-01", "reachable": True, "responsive": True,
+                      "single_rtf": 0.124, "throughput_rtf": 0.031, "benchmark_concurrency": 4,
+                      "recommended_concurrency": 4,
+                      "benchmark_audio_sec": 300.0, "benchmark_elapsed_sec": 37.2,
+                      "benchmark_samples": ["test.mp4", "tv-report-1.wav"],
+                      "benchmark_notes": [], "concurrency_gradient": []}},
+        ]
+        mock_client.benchmark_server_stream.return_value = iter(events)
         result = runner.invoke(app, [
             "--server", "http://test:8000", "--quiet",
             "server", "benchmark", "asr-01",
         ])
         assert result.exit_code == 0
-        mock_client.benchmark_server.assert_called_once_with("asr-01")
+        mock_client.benchmark_server_stream.assert_called_once_with("asr-01")
 
     def test_benchmark_success(self, mock_client):
-        mock_client.benchmark_servers.return_value = {
-            "results": [
-                {"server_id": "asr-01", "reachable": True, "responsive": True, "single_rtf": 0.124, "throughput_rtf": 0.031, "benchmark_concurrency": 4, "benchmark_audio_sec": 300.0, "benchmark_elapsed_sec": 37.2, "benchmark_samples": ["test.mp4", "tv-report-1.wav"], "benchmark_notes": [], "concurrency_gradient": []},
-                {"server_id": "asr-02", "reachable": True, "responsive": True, "single_rtf": 0.737, "throughput_rtf": 0.184, "benchmark_concurrency": 4, "benchmark_audio_sec": 300.0, "benchmark_elapsed_sec": 221.1, "benchmark_samples": ["test.mp4", "tv-report-1.wav"], "benchmark_notes": [], "concurrency_gradient": []},
-            ],
-            "capacity_comparison": [
-                {"server_id": "asr-01", "rtf": 0.124, "relative_speed": 1.0, "acceleration_ratio": 32.26},
-                {"server_id": "asr-02", "rtf": 0.737, "relative_speed": 0.168, "acceleration_ratio": 5.43},
-            ],
-        }
+        events = [
+            {"type": "all_benchmark_start", "server_ids": ["asr-01", "asr-02"], "total_servers": 2},
+            {"type": "server_benchmark_done", "server_id": "asr-01", "completed": 1, "total": 2,
+             "data": {"server_id": "asr-01", "reachable": True, "responsive": True,
+                      "single_rtf": 0.124, "throughput_rtf": 0.031, "benchmark_concurrency": 4,
+                      "recommended_concurrency": 4, "benchmark_audio_sec": 300.0,
+                      "benchmark_elapsed_sec": 37.2, "benchmark_samples": ["test.mp4", "tv-report-1.wav"],
+                      "benchmark_notes": [], "concurrency_gradient": []}},
+            {"type": "server_benchmark_done", "server_id": "asr-02", "completed": 2, "total": 2,
+             "data": {"server_id": "asr-02", "reachable": True, "responsive": True,
+                      "single_rtf": 0.737, "throughput_rtf": 0.184, "benchmark_concurrency": 4,
+                      "recommended_concurrency": 4, "benchmark_audio_sec": 300.0,
+                      "benchmark_elapsed_sec": 221.1, "benchmark_samples": ["test.mp4", "tv-report-1.wav"],
+                      "benchmark_notes": [], "concurrency_gradient": []}},
+            {"type": "all_complete", "data": {
+                "results": [
+                    {"server_id": "asr-01", "single_rtf": 0.124, "throughput_rtf": 0.031,
+                     "benchmark_concurrency": 4, "recommended_concurrency": 4,
+                     "benchmark_audio_sec": 300.0, "benchmark_elapsed_sec": 37.2,
+                     "benchmark_samples": ["test.mp4"], "benchmark_notes": [],
+                     "concurrency_gradient": [], "reachable": True, "responsive": True},
+                    {"server_id": "asr-02", "single_rtf": 0.737, "throughput_rtf": 0.184,
+                     "benchmark_concurrency": 4, "recommended_concurrency": 4,
+                     "benchmark_audio_sec": 300.0, "benchmark_elapsed_sec": 221.1,
+                     "benchmark_samples": ["test.mp4"], "benchmark_notes": [],
+                     "concurrency_gradient": [], "reachable": True, "responsive": True},
+                ],
+                "capacity_comparison": [
+                    {"server_id": "asr-01", "rtf": 0.124, "relative_speed": 1.0, "acceleration_ratio": 32.26},
+                    {"server_id": "asr-02", "rtf": 0.737, "relative_speed": 0.168, "acceleration_ratio": 5.43},
+                ],
+            }},
+        ]
+        mock_client.benchmark_servers_stream.return_value = iter(events)
         result = runner.invoke(app, [
             "--server", "http://test:8000", "--quiet",
             "server", "benchmark",
         ])
         assert result.exit_code == 0
-        mock_client.benchmark_servers.assert_called_once()
+        mock_client.benchmark_servers_stream.assert_called_once()
 
     def test_benchmark_no_servers(self, mock_client):
         from cli.api_client import APIError
-        mock_client.benchmark_servers.side_effect = APIError(422, "No online servers to benchmark")
+        mock_client.benchmark_servers_stream.side_effect = APIError(422, "No online servers to benchmark")
         result = runner.invoke(app, [
             "--server", "http://test:8000", "--quiet",
             "server", "benchmark",
@@ -136,12 +164,27 @@ class TestServerBenchmark:
         assert result.exit_code == 1
 
     def test_benchmark_json_output(self, mock_client):
-        mock_client.benchmark_servers.return_value = {
-            "results": [{"server_id": "s1", "reachable": True, "responsive": True, "single_rtf": 0.5, "throughput_rtf": 0.125, "benchmark_concurrency": 4, "benchmark_audio_sec": 300.0, "benchmark_elapsed_sec": 150.0, "benchmark_samples": ["test.mp4", "tv-report-1.wav"], "benchmark_notes": [], "concurrency_gradient": []}],
-            "capacity_comparison": [
-                {"server_id": "s1", "rtf": 0.5, "relative_speed": 1.0, "acceleration_ratio": 8.0}
-            ],
-        }
+        events = [
+            {"type": "all_benchmark_start", "server_ids": ["s1"], "total_servers": 1},
+            {"type": "server_benchmark_done", "server_id": "s1", "completed": 1, "total": 1,
+             "data": {"server_id": "s1", "single_rtf": 0.5, "throughput_rtf": 0.125,
+                      "benchmark_concurrency": 4, "recommended_concurrency": 4,
+                      "benchmark_audio_sec": 300.0, "benchmark_elapsed_sec": 150.0,
+                      "benchmark_samples": ["test.mp4", "tv-report-1.wav"],
+                      "benchmark_notes": [], "concurrency_gradient": [],
+                      "reachable": True, "responsive": True}},
+            {"type": "all_complete", "data": {
+                "results": [{"server_id": "s1", "reachable": True, "responsive": True,
+                             "single_rtf": 0.5, "throughput_rtf": 0.125,
+                             "benchmark_concurrency": 4, "recommended_concurrency": 4,
+                             "benchmark_audio_sec": 300.0, "benchmark_elapsed_sec": 150.0,
+                             "benchmark_samples": ["test.mp4", "tv-report-1.wav"],
+                             "benchmark_notes": [], "concurrency_gradient": []}],
+                "capacity_comparison": [
+                    {"server_id": "s1", "rtf": 0.5, "relative_speed": 1.0, "acceleration_ratio": 8.0}],
+            }},
+        ]
+        mock_client.benchmark_servers_stream.return_value = iter(events)
         result = runner.invoke(app, [
             "--server", "http://test:8000", "--output", "json", "--quiet",
             "server", "benchmark",
@@ -198,3 +241,144 @@ class TestServerUpdate:
             "server", "update", "nonexistent", "--name", "x",
         ])
         assert result.exit_code == 1
+
+
+def _make_benchmark_events(server_id: str = "asr-01") -> list[dict]:
+    """Build a complete NDJSON benchmark event sequence."""
+    return [
+        {"type": "benchmark_start", "server_id": server_id, "total_phases": 2, "samples": ["test.mp4"]},
+        {"type": "phase_start", "server_id": server_id, "phase": 1, "description": "单线程测速"},
+        {"type": "phase_progress", "server_id": server_id, "phase": 1, "rep": 1, "total_reps": 2, "rtf": 0.15},
+        {"type": "phase_progress", "server_id": server_id, "phase": 1, "rep": 2, "total_reps": 2, "rtf": 0.14},
+        {"type": "phase_complete", "server_id": server_id, "phase": 1, "single_rtf": 0.14},
+        {"type": "phase_start", "server_id": server_id, "phase": 2, "description": "并发梯度测试"},
+        {"type": "gradient_start", "server_id": server_id, "concurrency": 1, "level_index": 1, "total_levels": 4},
+        {"type": "gradient_complete", "server_id": server_id, "concurrency": 1, "throughput_rtf": 0.14, "wall_clock_sec": 5.0},
+        {"type": "gradient_start", "server_id": server_id, "concurrency": 2, "level_index": 2, "total_levels": 4},
+        {"type": "gradient_complete", "server_id": server_id, "concurrency": 2, "throughput_rtf": 0.08, "wall_clock_sec": 5.5},
+        {"type": "benchmark_complete", "server_id": server_id, "recommended_concurrency": 2,
+         "single_rtf": 0.14, "throughput_rtf": 0.08},
+    ]
+
+
+@pytest.mark.unit
+class TestRegisterBenchmarkStream:
+    """Tests for `register --benchmark` NDJSON streaming path."""
+
+    def test_register_benchmark_stream_success(self, mock_client):
+        events = [
+            {"type": "server_registered", "server_id": "asr-01",
+             "data": {"server_id": "asr-01", "host": "10.0.0.1", "port": 10095, "status": "ONLINE"}},
+            *_make_benchmark_events("asr-01"),
+            {"type": "benchmark_result", "server_id": "asr-01",
+             "data": {"single_rtf": 0.14, "throughput_rtf": 0.08, "recommended_concurrency": 2}},
+        ]
+        mock_client.register_server_stream.return_value = iter(events)
+        result = runner.invoke(app, [
+            "--server", "http://test:8000",
+            "server", "register",
+            "--id", "asr-01", "--host", "10.0.0.1", "--port", "10095",
+            "--benchmark",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "Benchmark 完成" in result.output
+        mock_client.register_server_stream.assert_called_once()
+
+    def test_register_benchmark_stream_error(self, mock_client):
+        events = [
+            {"type": "server_registered", "server_id": "asr-01",
+             "data": {"server_id": "asr-01", "host": "10.0.0.1", "port": 10095, "status": "ONLINE"}},
+            {"type": "benchmark_error", "server_id": "asr-01", "error": "Connection refused"},
+        ]
+        mock_client.register_server_stream.return_value = iter(events)
+        result = runner.invoke(app, [
+            "--server", "http://test:8000", "--quiet",
+            "server", "register",
+            "--id", "asr-01", "--host", "10.0.0.1", "--port", "10095",
+            "--benchmark",
+        ])
+        assert result.exit_code == 1
+        assert "Connection refused" in result.output
+
+
+@pytest.mark.unit
+class TestSingleBenchmarkStream:
+    """Tests for `server benchmark <id>` NDJSON streaming path."""
+
+    def test_single_benchmark_stream_success(self, mock_client):
+        events = [
+            *_make_benchmark_events("asr-01"),
+            {"type": "benchmark_result", "server_id": "asr-01",
+             "data": {"server_id": "asr-01", "single_rtf": 0.14,
+                      "throughput_rtf": 0.08, "benchmark_concurrency": 2,
+                      "recommended_concurrency": 2,
+                      "benchmark_audio_sec": 300.0, "benchmark_elapsed_sec": 37.2,
+                      "benchmark_samples": ["test.mp4"], "benchmark_notes": [],
+                      "concurrency_gradient": [], "reachable": True, "responsive": True}},
+        ]
+        mock_client.benchmark_server_stream.return_value = iter(events)
+        result = runner.invoke(app, [
+            "--server", "http://test:8000",
+            "server", "benchmark", "asr-01",
+        ])
+        assert result.exit_code == 0, result.output
+        mock_client.benchmark_server_stream.assert_called_once_with("asr-01")
+
+    def test_single_benchmark_stream_error(self, mock_client):
+        events = [
+            {"type": "benchmark_start", "server_id": "asr-01", "total_phases": 2, "samples": ["test.mp4"]},
+            {"type": "benchmark_error", "server_id": "asr-01", "error": "WebSocket timeout"},
+        ]
+        mock_client.benchmark_server_stream.return_value = iter(events)
+        result = runner.invoke(app, [
+            "--server", "http://test:8000", "--quiet",
+            "server", "benchmark", "asr-01",
+        ])
+        assert result.exit_code == 1
+
+
+@pytest.mark.unit
+class TestBatchBenchmarkStream:
+    """Tests for `server benchmark` (all servers) NDJSON streaming path."""
+
+    def test_batch_benchmark_stream_all_fail(self, mock_client):
+        events = [
+            {"type": "all_benchmark_start", "server_ids": ["s1", "s2"], "total_servers": 2},
+            {"type": "server_error", "server_id": "s1", "error": "timeout"},
+            {"type": "server_error", "server_id": "s2", "error": "unreachable"},
+        ]
+        mock_client.benchmark_servers_stream.return_value = iter(events)
+        result = runner.invoke(app, [
+            "--server", "http://test:8000", "--quiet",
+            "server", "benchmark",
+        ])
+        assert result.exit_code == 1
+
+    def test_batch_benchmark_stream_partial_fail(self, mock_client):
+        events = [
+            {"type": "all_benchmark_start", "server_ids": ["s1", "s2"], "total_servers": 2},
+            *_make_benchmark_events("s1"),
+            {"type": "server_benchmark_done", "server_id": "s1", "completed": 1, "total": 2,
+             "data": {"server_id": "s1", "single_rtf": 0.14, "throughput_rtf": 0.08,
+                      "benchmark_concurrency": 2, "recommended_concurrency": 2,
+                      "benchmark_audio_sec": 300.0, "benchmark_elapsed_sec": 37.2,
+                      "benchmark_samples": ["test.mp4"], "benchmark_notes": [],
+                      "concurrency_gradient": [], "reachable": True, "responsive": True}},
+            {"type": "server_error", "server_id": "s2", "error": "timeout"},
+            {"type": "all_complete", "data": {
+                "results": [{"server_id": "s1", "single_rtf": 0.14, "throughput_rtf": 0.08,
+                             "benchmark_concurrency": 2, "recommended_concurrency": 2,
+                             "benchmark_audio_sec": 300.0, "benchmark_elapsed_sec": 37.2,
+                             "benchmark_samples": ["test.mp4"], "benchmark_notes": [],
+                             "concurrency_gradient": [], "reachable": True, "responsive": True}],
+                "capacity_comparison": [
+                    {"server_id": "s1", "rtf": 0.14, "relative_speed": 1.0, "acceleration_ratio": 14.29}],
+            }},
+        ]
+        mock_client.benchmark_servers_stream.return_value = iter(events)
+        result = runner.invoke(app, [
+            "--server", "http://test:8000",
+            "server", "benchmark",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "1 个失败" in result.output

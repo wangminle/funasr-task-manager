@@ -1,9 +1,9 @@
-"""Scheduler unit tests - LPT, EFT, capacity-aware, concurrency penalty, ETA."""
+"""Scheduler unit tests - LPT, EFT, capacity-aware, concurrency penalty, ETA, calibration."""
 
 import pytest
 
 from app.services.scheduler import (
-    RTFTracker, ServerProfile, TaskScheduler, DEFAULT_RTF,
+    ETACalibrationTracker, RTFTracker, ServerProfile, TaskScheduler, DEFAULT_RTF,
 )
 
 
@@ -559,3 +559,211 @@ class TestSlotQueues:
         dur_map = {d.task_id: d.audio_duration_sec for d in decisions}
         assert dur_map["t1"] == 60.0
         assert dur_map["t2"] == 120.0
+
+
+@pytest.mark.unit
+class TestETACalibrationTracker:
+    """Tests for ETACalibrationTracker — stepped calibration factor per server."""
+
+    def test_default_factor_is_one(self):
+        tracker = ETACalibrationTracker()
+        assert tracker.get_factor("unknown") == 1.0
+
+    def test_single_record_no_update(self):
+        """Factor shouldn't change until HISTORY_SIZE records accumulate."""
+        tracker = ETACalibrationTracker()
+        tracker.record("s1", predicted=200.0, actual=160.0)
+        assert tracker.get_factor("s1") == 1.0
+
+    def test_two_records_triggers_calibration(self):
+        """Example from design doc: actual ~179s vs predicted ~200s → factor 0.9."""
+        tracker = ETACalibrationTracker()
+        tracker.record("s1", predicted=200.0, actual=179.0)
+        tracker.record("s1", predicted=210.0, actual=185.0)
+        factor = tracker.get_factor("s1")
+        assert factor == 0.9, f"Expected 0.9, got {factor}"
+
+    def test_within_threshold_no_change(self):
+        """Deviation < 5% should keep factor at 1.0."""
+        tracker = ETACalibrationTracker()
+        tracker.record("s1", predicted=200.0, actual=195.0)
+        tracker.record("s1", predicted=200.0, actual=198.0)
+        assert tracker.get_factor("s1") == 1.0
+
+    def test_overshoot_factor_above_one(self):
+        """When actual >> predicted, factor should be > 1.0."""
+        tracker = ETACalibrationTracker()
+        tracker.record("s1", predicted=100.0, actual=150.0)
+        tracker.record("s1", predicted=100.0, actual=145.0)
+        factor = tracker.get_factor("s1")
+        assert factor == 1.5, f"Expected 1.5, got {factor}"
+
+    def test_min_clamp(self):
+        """Factor should never go below MIN_FACTOR (0.5)."""
+        tracker = ETACalibrationTracker()
+        tracker.record("s1", predicted=1000.0, actual=100.0)
+        tracker.record("s1", predicted=1000.0, actual=100.0)
+        assert tracker.get_factor("s1") == 0.5
+
+    def test_max_clamp(self):
+        """Factor should never exceed MAX_FACTOR (3.0)."""
+        tracker = ETACalibrationTracker()
+        tracker.record("s1", predicted=100.0, actual=500.0)
+        tracker.record("s1", predicted=100.0, actual=500.0)
+        assert tracker.get_factor("s1") == 3.0
+
+    def test_rolling_window_replaces_old(self):
+        """New records push out old ones; factor re-calibrates progressively."""
+        tracker = ETACalibrationTracker()
+        tracker.record("s1", predicted=200.0, actual=160.0)
+        tracker.record("s1", predicted=200.0, actual=158.0)
+        assert tracker.get_factor("s1") == 0.8
+
+        tracker.record("s1", predicted=200.0, actual=195.0)
+        assert tracker.get_factor("s1") == 0.9
+
+        tracker.record("s1", predicted=200.0, actual=198.0)
+        assert tracker.get_factor("s1") == 0.9
+
+    def test_factor_converges_back_to_one(self):
+        """When predictions become accurate, factor converges back toward 1.0."""
+        tracker = ETACalibrationTracker()
+        tracker.record("s1", predicted=200.0, actual=160.0)
+        tracker.record("s1", predicted=200.0, actual=158.0)
+        assert tracker.get_factor("s1") == 0.8
+
+        tracker.record("s1", predicted=200.0, actual=220.0)
+        tracker.record("s1", predicted=200.0, actual=218.0)
+        assert tracker.get_factor("s1") == 1.1
+
+    def test_clear_single_server(self):
+        tracker = ETACalibrationTracker()
+        tracker.record("s1", predicted=200.0, actual=160.0)
+        tracker.record("s1", predicted=200.0, actual=158.0)
+        assert tracker.get_factor("s1") != 1.0
+        tracker.clear("s1")
+        assert tracker.get_factor("s1") == 1.0
+
+    def test_clear_all(self):
+        tracker = ETACalibrationTracker()
+        tracker.record("s1", predicted=200.0, actual=160.0)
+        tracker.record("s1", predicted=200.0, actual=158.0)
+        tracker.clear()
+        assert tracker.get_factor("s1") == 1.0
+
+    def test_independent_per_server(self):
+        """Different servers have independent calibration factors."""
+        tracker = ETACalibrationTracker()
+        tracker.record("fast", predicted=200.0, actual=160.0)
+        tracker.record("fast", predicted=200.0, actual=158.0)
+        tracker.record("slow", predicted=100.0, actual=150.0)
+        tracker.record("slow", predicted=100.0, actual=145.0)
+        assert tracker.get_factor("fast") == 0.8
+        assert tracker.get_factor("slow") == 1.5
+
+    def test_zero_predicted_ignored(self):
+        tracker = ETACalibrationTracker()
+        tracker.record("s1", predicted=0.0, actual=100.0)
+        tracker.record("s1", predicted=200.0, actual=0.0)
+        assert tracker.get_factor("s1") == 1.0
+
+
+@pytest.mark.unit
+class TestETACalibrationIntegration:
+    """Test calibration factor integration with TaskScheduler."""
+
+    def test_estimate_processing_time_applies_factor(self):
+        sched = TaskScheduler()
+        srv = _make_server("s1", rtf=0.3, running=0)
+        raw_eta = sched.estimate_processing_time(600, srv)
+
+        sched.eta_tracker.record("s1", predicted=200.0, actual=160.0)
+        sched.eta_tracker.record("s1", predicted=200.0, actual=158.0)
+        assert sched.eta_tracker.get_factor("s1") == 0.8
+
+        calibrated_eta = sched.estimate_processing_time(600, srv)
+        assert abs(calibrated_eta - raw_eta * 0.8) < 0.01
+
+    def test_calibrate_after_completion_updates_eta_tracker(self):
+        sched = TaskScheduler()
+        result1 = sched.calibrate_after_completion(
+            "s1", audio_duration_sec=600, actual_duration_sec=160,
+            predicted_duration_sec=200, current_penalty_factor=0.1,
+        )
+        assert result1.get("eta_calibration_factor") == 1.0
+
+        result2 = sched.calibrate_after_completion(
+            "s1", audio_duration_sec=600, actual_duration_sec=158,
+            predicted_duration_sec=200, current_penalty_factor=0.1,
+        )
+        assert result2.get("eta_calibration_factor") == 0.8
+
+    def test_design_doc_example(self):
+        """Verify the exact example from design doc section 7.2."""
+        sched = TaskScheduler()
+        sched.calibrate_after_completion(
+            "s1", audio_duration_sec=600, actual_duration_sec=179,
+            predicted_duration_sec=200, current_penalty_factor=0.1,
+        )
+        sched.calibrate_after_completion(
+            "s1", audio_duration_sec=700, actual_duration_sec=185,
+            predicted_duration_sec=210, current_penalty_factor=0.1,
+        )
+        assert sched.eta_tracker.get_factor("s1") == 0.9
+
+    def test_no_oscillation_when_base_prediction_changes(self):
+        """Factor should converge, not oscillate, when base predictions shift.
+
+        Scenario: factor learns 0.8 from (200, 160) pairs. Then the base
+        RTF changes so raw prediction is now 180, but the predicted value
+        that reaches calibrate_after_completion is 180*0.8=144 (already
+        calibrated). Without de-calibration, the tracker would see
+        (144, 160) → ratio=1.111 → factor jumps to 1.1 (oscillation).
+        With the fix, the tracker de-calibrates 144/0.8=180 and records
+        (180, 160) → ratio=0.889 → factor converges to 0.9 (correct).
+        """
+        sched = TaskScheduler()
+        sched.calibrate_after_completion(
+            "s1", audio_duration_sec=600, actual_duration_sec=160,
+            predicted_duration_sec=200, current_penalty_factor=0.1,
+        )
+        sched.calibrate_after_completion(
+            "s1", audio_duration_sec=600, actual_duration_sec=158,
+            predicted_duration_sec=200, current_penalty_factor=0.1,
+        )
+        assert sched.eta_tracker.get_factor("s1") == 0.8
+
+        sched.calibrate_after_completion(
+            "s1", audio_duration_sec=600, actual_duration_sec=160,
+            predicted_duration_sec=144, current_penalty_factor=0.1,
+        )
+        sched.calibrate_after_completion(
+            "s1", audio_duration_sec=600, actual_duration_sec=160,
+            predicted_duration_sec=144, current_penalty_factor=0.1,
+        )
+        assert sched.eta_tracker.get_factor("s1") == 0.9, (
+            "Factor should converge to 0.9, not oscillate to 1.1"
+        )
+
+    def test_stable_workload_factor_holds(self):
+        """After learning a factor, stable workload should not drift it."""
+        sched = TaskScheduler()
+        sched.calibrate_after_completion(
+            "s1", audio_duration_sec=600, actual_duration_sec=160,
+            predicted_duration_sec=200, current_penalty_factor=0.1,
+        )
+        sched.calibrate_after_completion(
+            "s1", audio_duration_sec=600, actual_duration_sec=158,
+            predicted_duration_sec=200, current_penalty_factor=0.1,
+        )
+        assert sched.eta_tracker.get_factor("s1") == 0.8
+
+        for _ in range(10):
+            sched.calibrate_after_completion(
+                "s1", audio_duration_sec=600, actual_duration_sec=160,
+                predicted_duration_sec=160,
+                current_penalty_factor=0.1,
+            )
+        assert sched.eta_tracker.get_factor("s1") == 0.8, (
+            "Stable workload with calibrated predictions should not drift factor"
+        )
