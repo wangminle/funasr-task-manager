@@ -1,0 +1,57 @@
+{
+  "skill": "funasr-task-manager-media-preflight",
+  "version": "1.0",
+  "evals": [
+    {
+      "id": "trigger-check-file",
+      "type": "should_trigger",
+      "prompt": "用户问「这个 meeting.mp4 能转写吗」",
+      "expected_skill": "funasr-task-manager-media-preflight",
+      "expected_behavior": "执行预检查，返回格式、时长、转码需求和耗时预估",
+      "assert_contains": ["格式", "时长", "预处理"]
+    },
+    {
+      "id": "trigger-intake-phase2",
+      "type": "should_trigger",
+      "prompt": "funasr-task-manager-channel-intake 在 Phase 2 提交前检查文件",
+      "expected_skill": "funasr-task-manager-media-preflight",
+      "expected_behavior": "返回 ready/warnings/needs_conversion 等预检结果"
+    },
+    {
+      "id": "trigger-duration-issue",
+      "type": "should_trigger",
+      "prompt": "用户问「为什么上传后显示的时长不准」",
+      "expected_skill": "funasr-task-manager-media-preflight",
+      "expected_behavior": "检查 ffprobe 可用性，对比文件大小估算和实际元数据"
+    },
+    {
+      "id": "no-trigger-benchmark",
+      "type": "should_not_trigger",
+      "prompt": "用户说「跑一下 benchmark」",
+      "expected_skill": null,
+      "reason": "benchmark 请求应触发 funasr-task-manager-server-benchmark，不是 preflight"
+    },
+    {
+      "id": "no-trigger-chat",
+      "type": "should_not_trigger",
+      "prompt": "用户说「今天天气怎么样」",
+      "expected_skill": null,
+      "reason": "纯闲聊不涉及文件检查"
+    },
+    {
+      "id": "no-trigger-server",
+      "type": "should_not_trigger",
+      "prompt": "用户说「服务器调度有什么策略」",
+      "expected_skill": null,
+      "reason": "服务器调度讨论不是文件预检查"
+    },
+    {
+      "id": "fail-ffprobe-unavailable",
+      "type": "failure_path",
+      "prompt": "ffprobe 不可用时预检查文件",
+      "expected_behavior": "返回估算值和 warning，不直接中断",
+      "assert_contains": ["精确元数据不可用", "估算"],
+      "assert_not_contains": ["中断", "无法处理"]
+    }
+  ]
+}

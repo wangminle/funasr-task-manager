@@ -1,0 +1,33 @@
+{
+  "version": "1.0",
+  "file_extensions": {
+    "audio": [".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wma", ".pcm"],
+    "video": [".mp4", ".webm", ".mkv", ".avi", ".mov"],
+    "description": "与后端 file_manager.py ALLOWED_EXTENSIONS 一致"
+  },
+  "keywords": {
+    "zh": {
+      "high_confidence": ["转写", "语音转文本", "语音识别", "生成字幕", "批量转写"],
+      "medium_confidence": ["识别", "字幕", "转文字", "批量任务", "批量处理"],
+      "context_keywords": ["FunASR", "ASR", "音频", "视频", "录音", "会议录音"]
+    },
+    "en": {
+      "high_confidence": ["transcribe", "speech to text", "generate subtitle", "batch transcribe"],
+      "medium_confidence": ["subtitle", "ASR", "FunASR", "recognize speech"],
+      "context_keywords": ["audio", "video", "recording", "meeting recording"]
+    }
+  },
+  "profiles": {
+    "keywords": ["smoke", "remote-standard", "standard", "full"],
+    "description": "测试 profile 名称也可触发（用于批量测试场景）"
+  },
+  "sensitive_keywords": {
+    "keywords": ["保密", "加密", "机密", "隐私", "敏感", "不要落盘", "私密会议", "法律录音", "医疗", "合同", "病历", "内部会议", "encrypted", "confidential", "private"],
+    "action": "进入安全 fallback：告知用户当前系统未支持加密文件处理管道，不假装具备加密能力，提供本地处理或明文确认替代方案。未来 funasr-task-manager-secure-ingest 上线后切换到该规程"
+  },
+  "negative_patterns": {
+    "image_extensions": [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".webp"],
+    "document_extensions": [".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".csv"],
+    "description": "这些文件类型不触发 intake（除非用户明确提及转写）"
+  }
+}

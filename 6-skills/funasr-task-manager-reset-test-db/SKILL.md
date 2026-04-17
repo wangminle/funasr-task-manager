@@ -1,5 +1,5 @@
 ---
-name: reset-asr-db-before-test
+name: funasr-task-manager-reset-test-db
 description: Use when preparing a clean backend database state for local debugging, pytest, Playwright E2E, or repeated regression runs in the funasr-task-manager repository. Trigger when task data must be wiped, the SQLite backend must be rebuilt after a failed run, or server configuration should be preserved or reseeded before tests.
 ---
 
@@ -12,13 +12,13 @@ description: Use when preparing a clean backend database state for local debuggi
 这个技能封装的是一个可执行脚本，而不是已经注册好的聊天斜杠命令。实际脚本位于 `scripts/` 目录。手动执行时，直接运行下面的命令：
 
 ```bash
-python 6-skills/reset-asr-db-before-test/scripts/reset_db.py
+python 6-skills/funasr-task-manager-reset-test-db/scripts/reset_db.py
 ```
 
 在 macOS 或 Linux 上如果默认解释器是 Python 3，请优先使用：
 
 ```bash
-python3 6-skills/reset-asr-db-before-test/scripts/reset_db.py
+python3 6-skills/funasr-task-manager-reset-test-db/scripts/reset_db.py
 ```
 
 ## 适用场景
@@ -56,7 +56,7 @@ python3 6-skills/reset-asr-db-before-test/scripts/reset_db.py
 如果只想评估当前 runtime storage 的状态，而不真的执行清理，使用：
 
 ```bash
-python 6-skills/reset-asr-db-before-test/scripts/reset_db.py --dry-run
+python 6-skills/funasr-task-manager-reset-test-db/scripts/reset_db.py --dry-run
 ```
 
 这个模式会输出：
@@ -72,7 +72,7 @@ python 6-skills/reset-asr-db-before-test/scripts/reset_db.py --dry-run
 如果希望把 `uploads/` 也纳入估算，可以组合：
 
 ```bash
-python 6-skills/reset-asr-db-before-test/scripts/reset_db.py --dry-run --clear-uploads
+python 6-skills/funasr-task-manager-reset-test-db/scripts/reset_db.py --dry-run --clear-uploads
 ```
 
 注意：`--dry-run` 只读取和评估，不会触发备份、删库、迁移或目录清理。
@@ -84,31 +84,31 @@ python 6-skills/reset-asr-db-before-test/scripts/reset_db.py --dry-run --clear-u
 基础重置：
 
 ```bash
-python 6-skills/reset-asr-db-before-test/scripts/reset_db.py
+python 6-skills/funasr-task-manager-reset-test-db/scripts/reset_db.py
 ```
 
 重置服务器配置并插入 3 台默认测试节点：
 
 ```bash
-python 6-skills/reset-asr-db-before-test/scripts/reset_db.py --reset-servers
+python 6-skills/funasr-task-manager-reset-test-db/scripts/reset_db.py --reset-servers
 ```
 
 删除上传文件并跳过确认：
 
 ```bash
-python 6-skills/reset-asr-db-before-test/scripts/reset_db.py --clear-uploads --force
+python 6-skills/funasr-task-manager-reset-test-db/scripts/reset_db.py --clear-uploads --force
 ```
 
 跳过备份以加快执行：
 
 ```bash
-python 6-skills/reset-asr-db-before-test/scripts/reset_db.py --no-backup
+python 6-skills/funasr-task-manager-reset-test-db/scripts/reset_db.py --no-backup
 ```
 
 只做容量和状态评估：
 
 ```bash
-python 6-skills/reset-asr-db-before-test/scripts/reset_db.py --dry-run
+python 6-skills/funasr-task-manager-reset-test-db/scripts/reset_db.py --dry-run
 ```
 
 ## 参数规则

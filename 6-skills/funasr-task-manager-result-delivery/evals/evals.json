@@ -1,0 +1,66 @@
+{
+  "skill": "funasr-task-manager-result-delivery",
+  "version": "1.0",
+  "evals": [
+    {
+      "id": "trigger-task-result",
+      "type": "should_trigger",
+      "prompt": "用户提供了 task_id 说「把结果发我」",
+      "expected_skill": "funasr-task-manager-result-delivery",
+      "expected_behavior": "拉取任务结果并返回",
+      "assert_contains": ["转写", "结果"]
+    },
+    {
+      "id": "trigger-group-zip",
+      "type": "should_trigger",
+      "prompt": "用户提供了 task_group_id 说「下载 zip」",
+      "expected_skill": "funasr-task-manager-result-delivery",
+      "expected_behavior": "拉取批次 zip 结果并返回",
+      "assert_contains": ["zip", "批"]
+    },
+    {
+      "id": "trigger-export-srt",
+      "type": "should_trigger",
+      "prompt": "用户说「重新导出字幕」并提供了任务编号",
+      "expected_skill": "funasr-task-manager-result-delivery",
+      "expected_behavior": "按 srt 格式重新导出结果"
+    },
+    {
+      "id": "no-trigger-upload",
+      "type": "should_not_trigger",
+      "prompt": "用户发了一个新的 wav 文件要求转写",
+      "expected_skill": null,
+      "reason": "新文件上传应触发 channel-intake，不是 result-delivery"
+    },
+    {
+      "id": "no-trigger-benchmark",
+      "type": "should_not_trigger",
+      "prompt": "用户说「跑一下 benchmark」",
+      "expected_skill": null,
+      "reason": "benchmark 应触发 server-benchmark"
+    },
+    {
+      "id": "no-trigger-register",
+      "type": "should_not_trigger",
+      "prompt": "用户说「注册一个新的 ASR 服务器」",
+      "expected_skill": null,
+      "reason": "服务器注册不是结果交付"
+    },
+    {
+      "id": "fail-task-failed",
+      "type": "failure_path",
+      "prompt": "任务状态为 FAILED，用户要求获取结果",
+      "expected_behavior": "返回失败原因，不生成空结果",
+      "assert_contains": ["失败", "原因"],
+      "assert_not_contains": ["转写成功"]
+    },
+    {
+      "id": "fail-empty-text",
+      "type": "failure_path",
+      "prompt": "任务成功但转写文本为空",
+      "expected_behavior": "标记质量异常，建议检查音频",
+      "assert_contains": ["异常", "检查"],
+      "assert_not_contains": ["转写成功，文本"]
+    }
+  ]
+}

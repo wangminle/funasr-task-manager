@@ -573,19 +573,19 @@ docker compose exec web alembic upgrade head
 cd 3-dev/src/backend
 
 # 先做只读评估，确认当前 runtime/storage 状态
-python ../../../6-skills/reset-asr-db-before-test/scripts/reset_db.py --dry-run
+python ../../../6-skills/funasr-task-manager-reset-test-db/scripts/reset_db.py --dry-run
 
 # 需要干净测试环境时执行重置（会自动检测数据库是否被后端占用）
-python ../../../6-skills/reset-asr-db-before-test/scripts/reset_db.py
+python ../../../6-skills/funasr-task-manager-reset-test-db/scripts/reset_db.py
 
 # 重置服务器配置并插入默认测试节点
-python ../../../6-skills/reset-asr-db-before-test/scripts/reset_db.py --reset-servers
+python ../../../6-skills/funasr-task-manager-reset-test-db/scripts/reset_db.py --reset-servers
 
 # CI 环境：跳过备份和确认
-python ../../../6-skills/reset-asr-db-before-test/scripts/reset_db.py --no-backup --force
+python ../../../6-skills/funasr-task-manager-reset-test-db/scripts/reset_db.py --no-backup --force
 ```
 
-详细参数和行为说明见 [6-skills/reset-asr-db-before-test/SKILL.md](6-skills/reset-asr-db-before-test/SKILL.md)。该技能默认针对 `runtime/storage/` 工作，不会扫描旧的 `3-dev/src/backend/data/` 或仓库根目录 `data/` 目录。
+详细参数和行为说明见 [6-skills/funasr-task-manager-reset-test-db/SKILL.md](6-skills/funasr-task-manager-reset-test-db/SKILL.md)。该技能默认针对 `runtime/storage/` 工作，不会扫描旧的 `3-dev/src/backend/data/` 或仓库根目录 `data/` 目录。
 
 ### 后端测试
 
@@ -665,7 +665,7 @@ funasr-task-manager/
 │       ├── e2e/                       # 端到端测试（API/CLI 视角）
 │       └── load/                      # 压力测试
 ├── 6-skills/                          # Agent 可复用的自动化技能
-│   ├── reset-asr-db-before-test/      # 测试前数据库重置与 dry-run 评估
+│   ├── funasr-task-manager-reset-test-db/      # 测试前数据库重置与 dry-run 评估
 │   └── funasr-task-manager-web-e2e/   # 浏览器 E2E 测试流程编排与素材管理
 ├── runtime/                           # 运行时目录（gitignore）
 │   ├── storage/                       # 数据库 / 上传 / 结果 / 临时文件

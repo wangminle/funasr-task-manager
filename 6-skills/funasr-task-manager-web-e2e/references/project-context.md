@@ -1,4 +1,7 @@
-# 项目上下文
+# 项目上下文（Web E2E）
+
+> 共享项目事实（路径、API、状态流转等）见 `6-skills/_shared/references/project-context.md`。
+> 本文件仅包含 Web E2E 测试专属的上下文。
 
 ## 目标
 

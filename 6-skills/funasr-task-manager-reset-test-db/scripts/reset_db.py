@@ -237,10 +237,22 @@ def table_exists(db_path: str | Path, table_name: str) -> bool:
     return exists
 
 
+_ALLOWED_TABLES = frozenset(
+    POST_RESET_EMPTY_TABLES + ("server_instances",)
+)
+
+
+def _validate_table_name(table_name: str) -> str:
+    if table_name not in _ALLOWED_TABLES:
+        raise ValueError(f"unexpected table name: {table_name!r}")
+    return table_name
+
+
 def get_table_columns(db_path: str | Path, table_name: str) -> list[str]:
+    safe_name = _validate_table_name(table_name)
     conn = sqlite3.connect(_path(db_path))
     cursor = conn.cursor()
-    cursor.execute(f"PRAGMA table_info({table_name})")
+    cursor.execute(f"PRAGMA table_info({safe_name})")
     columns = [desc[0] for desc in cursor.description]
     rows = cursor.fetchall()
     conn.close()
@@ -252,9 +264,10 @@ def get_table_columns(db_path: str | Path, table_name: str) -> list[str]:
 
 
 def get_table_row_count(db_path: str | Path, table_name: str) -> int:
+    safe_name = _validate_table_name(table_name)
     conn = sqlite3.connect(_path(db_path))
     cursor = conn.cursor()
-    cursor.execute(f'SELECT COUNT(*) FROM "{table_name}"')
+    cursor.execute(f'SELECT COUNT(*) FROM "{safe_name}"')
     count = int(cursor.fetchone()[0])
     conn.close()
     return count
@@ -626,7 +639,10 @@ def main(argv: list[str] | None = None):
             result_data["servers_preserved"] = len(servers_backup)
         except sqlite3.DatabaseError:
             servers_backup = []
-            result_data["servers_preservation_skipped"] = "数据库损坏，无法导出服务器配置，将创建空库"
+            result_data["servers_preservation_skipped"] = (
+                "数据库损坏，无法导出服务器配置，将创建空库。"
+                "如需恢复默认测试服务器，请重新运行并加 --reset-servers 参数。"
+            )
         except Exception as e:
             output_result(False, f"导出服务器配置失败: {str(e)}")
 
@@ -648,7 +664,10 @@ def main(argv: list[str] | None = None):
                 upload_count = sum(len(files) for _, _, files in os.walk(uploads_dir)) if uploads_dir.exists() else 0
                 total_size = sum(file_path.stat().st_size for file_path in uploads_dir.rglob("*") if file_path.is_file()) if uploads_dir.exists() else 0
                 size_mb = round(total_size / 1024 / 1024, 2)
-                confirm = input(f"⚠️  你确定要删除uploads目录下的 {upload_count} 个文件（共 {size_mb} MB）吗？此操作不可逆！(y/N): ")
+                try:
+                    confirm = input(f"⚠️  你确定要删除uploads目录下的 {upload_count} 个文件（共 {size_mb} MB）吗？此操作不可逆！(y/N): ")
+                except EOFError:
+                    output_result(False, "非交互环境无法确认，请加 --force 跳过确认，或在终端中运行")
                 if confirm.lower() not in {"y", "yes"}:
                     output_result(False, "已取消删除uploads目录操作")
 

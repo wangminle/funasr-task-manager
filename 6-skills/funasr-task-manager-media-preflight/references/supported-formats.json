@@ -1,0 +1,10 @@
+{
+  "allowed_extensions": [
+    ".wav", ".mp3", ".mp4", ".flac", ".ogg", ".webm",
+    ".m4a", ".aac", ".wma", ".mkv", ".avi", ".mov", ".pcm"
+  ],
+  "no_conversion_needed": [".wav", ".pcm"],
+  "source": "3-dev/src/backend/app/storage/file_manager.py :: ALLOWED_EXTENSIONS",
+  "conversion_source": "3-dev/src/backend/app/services/audio_preprocessor.py :: needs_conversion()",
+  "notes": "WAV/PCM 不转码直接使用；其他格式由 ffmpeg 转为 16kHz 单声道 s16 WAV。当前不检查 WAV 采样率/声道数。"
+}

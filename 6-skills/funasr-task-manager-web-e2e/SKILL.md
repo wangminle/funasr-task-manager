@@ -89,7 +89,7 @@ python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --lis
 
 1. 后端健康：`GET http://localhost:8000/health` → `status: "ok"`。
 2. 前端可达：`GET http://localhost:5173` → HTTP 200。
-3. 至少注册了一台 FunASR 服务器：`GET /api/v1/servers` → `len(servers) > 0`。
+3. 至少有一台在线 FunASR 服务器：有 admin token 时用 `GET /api/v1/servers` → `len(servers) > 0`；无 admin token 时用 `GET /api/v1/stats` → `server_online > 0`。
 4. 测试素材存在：`4-tests/batch-testing/assets/1-测试audioFiles/` 包含音视频文件。
 
 任何检查失败时，停止并报告缺失的前置条件，而不是继续运行到令人困惑的浏览器错误。

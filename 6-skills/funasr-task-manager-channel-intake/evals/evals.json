@@ -1,0 +1,65 @@
+{
+  "skill": "funasr-task-manager-channel-intake",
+  "version": "1.0",
+  "evals": [
+    {
+      "id": "trigger-wav-upload",
+      "type": "should_trigger",
+      "prompt": "用户发了一个 meeting-notes.wav 文件，说「帮我把这个转成文字」",
+      "expected_skill": "funasr-task-manager-channel-intake",
+      "expected_behavior": "识别转写意图，进入 intake 规程",
+      "assert_contains": ["转写", "格式", "确认提交"]
+    },
+    {
+      "id": "trigger-batch-mp4",
+      "type": "should_trigger",
+      "prompt": "用户发了 3 个 mp4 文件，说「批量处理一下」",
+      "expected_skill": "funasr-task-manager-channel-intake",
+      "expected_behavior": "识别批量转写意图，自动生成 task_group_id",
+      "assert_contains": ["批量", "文件"]
+    },
+    {
+      "id": "trigger-file-only",
+      "type": "should_trigger",
+      "prompt": "用户发了一个 recording.mp3 文件，没有任何文字说明",
+      "expected_skill": "funasr-task-manager-channel-intake",
+      "expected_behavior": "主动询问是否需要转写"
+    },
+    {
+      "id": "no-trigger-image",
+      "type": "should_not_trigger",
+      "prompt": "用户发了一个 screenshot.png，说「看看这个图片」",
+      "expected_skill": null,
+      "reason": "图片文件不属于音视频，不应触发 intake"
+    },
+    {
+      "id": "no-trigger-chat",
+      "type": "should_not_trigger",
+      "prompt": "用户说「你好，最近怎么样」",
+      "expected_skill": null,
+      "reason": "纯闲聊不涉及 ASR"
+    },
+    {
+      "id": "no-trigger-pdf",
+      "type": "should_not_trigger",
+      "prompt": "用户发了一个 report.pdf，没有提及转写",
+      "expected_skill": null,
+      "reason": "文档文件不触发 intake（除非用户明确提及转写）"
+    },
+    {
+      "id": "fail-no-file",
+      "type": "failure_path",
+      "prompt": "用户说「帮我转写一下」，但没有附带任何文件",
+      "expected_behavior": "提示用户上传文件，不创建空任务",
+      "assert_not_contains": ["任务已创建", "task_id"]
+    },
+    {
+      "id": "fail-server-offline",
+      "type": "failure_path",
+      "prompt": "用户上传了音频，但所有服务器 OFFLINE",
+      "expected_behavior": "报告服务器不可用，不提交任务",
+      "assert_contains": ["服务器", "不可用"],
+      "assert_not_contains": ["任务已提交"]
+    }
+  ]
+}
