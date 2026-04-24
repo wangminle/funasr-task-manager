@@ -2,12 +2,13 @@
 
 from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import and_, func, select
 
 from app.deps import DbSession, CurrentUser
 from app.models import Task, TaskStatus, ServerInstance, ServerStatus
+from app.auth.token import get_admin_user_ids, is_auth_enabled
 
 
 router = APIRouter(prefix="/api/v1", tags=["stats"])
@@ -26,7 +27,13 @@ class SystemStats(BaseModel):
 
 
 @router.get("/stats", response_model=SystemStats)
-async def get_system_stats(db: DbSession, user_id: CurrentUser) -> SystemStats:
+async def get_system_stats(
+    db: DbSession,
+    user_id: CurrentUser,
+    global_stats: bool = Query(False, alias="global"),
+) -> SystemStats:
+    if global_stats and is_auth_enabled() and user_id not in get_admin_user_ids():
+        raise HTTPException(status_code=403, detail="Admin access required for global stats")
     now = datetime.now(timezone.utc)
     since_24h = now - timedelta(hours=24)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -62,7 +69,9 @@ async def get_system_stats(db: DbSession, user_id: CurrentUser) -> SystemStats:
             Task.status == TaskStatus.SUCCEEDED,
             Task.completed_at >= since_24h,
         )).label("succeeded_24h"),
-    ).where(Task.user_id == user_id)
+    )
+    if not global_stats:
+        stats_stmt = stats_stmt.where(Task.user_id == user_id)
 
     row = (await db.execute(stats_stmt)).one()
 

@@ -269,7 +269,7 @@ async def benchmark_server_full(
         upload_ms=f"{single_timing.upload_ms:.1f}",
         post_upload_wait_ms=f"{single_timing.post_upload_wait_ms:.1f}",
         repeats=len(single_timings),
-        all_rtfs=[f"{r:.4f}" for r in single_rtfs],
+        all_rtfs=[f"{t.total_ms / 1000 / single_sample.duration_sec:.4f}" for t in single_timings],
     )
     await _emit_progress(progress_callback, {
         "type": "phase_complete",

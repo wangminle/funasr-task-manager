@@ -14,6 +14,14 @@ from cli.main import app
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _no_archive():
+    """Prevent benchmark archive side-effects during tests."""
+    with patch("cli.commands.server._archive_benchmark"), \
+         patch("cli.commands.server._last_benchmark_age_minutes", return_value=None):
+        yield
+
+
 @pytest.fixture
 def mock_client():
     with patch("cli.main.ASRClient") as MockClient:
@@ -382,3 +390,154 @@ class TestBatchBenchmarkStream:
         ])
         assert result.exit_code == 0, result.output
         assert "1 个失败" in result.output
+
+
+@pytest.mark.unit
+class TestBenchmarkSafetyChecks:
+    """Tests for benchmark pre-flight safety checks."""
+
+    def test_busy_system_blocks_benchmark(self, mock_client):
+        """slots_used > 0 should block benchmark."""
+        mock_client.stats.return_value = {"slots_used": 2, "queue_depth": 0}
+        result = runner.invoke(app, [
+            "--server", "http://test:8000", "--quiet",
+            "server", "benchmark",
+        ])
+        assert result.exit_code == 1
+        assert "系统繁忙" in result.output
+        mock_client.benchmark_servers_stream.assert_not_called()
+        mock_client.stats.assert_called_once_with(global_stats=True)
+
+    def test_queued_tasks_blocks_benchmark(self, mock_client):
+        """queue_depth > 0 should block benchmark."""
+        mock_client.stats.return_value = {"slots_used": 0, "queue_depth": 1}
+        result = runner.invoke(app, [
+            "--server", "http://test:8000", "--quiet",
+            "server", "benchmark",
+        ])
+        assert result.exit_code == 1
+        assert "系统繁忙" in result.output
+        mock_client.stats.assert_called_once_with(global_stats=True)
+
+    def test_force_bypasses_busy_check(self, mock_client):
+        """--force should skip the busy-system check."""
+        mock_client.stats.return_value = {"slots_used": 3, "queue_depth": 5}
+        events = [
+            {"type": "all_benchmark_start", "server_ids": ["s1"], "total_servers": 1},
+            {"type": "server_benchmark_done", "server_id": "s1", "completed": 1, "total": 1,
+             "data": {"server_id": "s1", "single_rtf": 0.3, "throughput_rtf": 0.1,
+                      "benchmark_concurrency": 4, "recommended_concurrency": 4,
+                      "benchmark_audio_sec": 100.0, "benchmark_elapsed_sec": 30.0,
+                      "benchmark_samples": ["test.mp4"], "benchmark_notes": [],
+                      "concurrency_gradient": [], "reachable": True, "responsive": True}},
+            {"type": "all_complete", "data": {
+                "results": [{"server_id": "s1", "single_rtf": 0.3, "throughput_rtf": 0.1,
+                             "benchmark_concurrency": 4, "recommended_concurrency": 4,
+                             "benchmark_samples": [], "benchmark_notes": [],
+                             "concurrency_gradient": [], "reachable": True, "responsive": True}],
+                "capacity_comparison": [],
+            }},
+        ]
+        mock_client.benchmark_servers_stream.return_value = iter(events)
+        result = runner.invoke(app, [
+            "--server", "http://test:8000", "--quiet",
+            "server", "benchmark", "--force",
+        ])
+        assert result.exit_code == 0
+        mock_client.benchmark_servers_stream.assert_called_once()
+        mock_client.stats.assert_not_called()
+
+    def test_repeat_window_blocks_benchmark(self, mock_client):
+        """Benchmark within repeat window should be blocked."""
+        with patch("cli.commands.server._last_benchmark_age_minutes", return_value=3.5):
+            result = runner.invoke(app, [
+                "--server", "http://test:8000", "--quiet",
+                "server", "benchmark",
+            ])
+        assert result.exit_code == 1
+        assert "3.5 分钟" in result.output
+        mock_client.benchmark_servers_stream.assert_not_called()
+
+    def test_repeat_window_force_bypass(self, mock_client):
+        """--force should skip the repeat-window check."""
+        events = [
+            {"type": "all_benchmark_start", "server_ids": ["s1"], "total_servers": 1},
+            {"type": "server_benchmark_done", "server_id": "s1", "completed": 1, "total": 1,
+             "data": {"server_id": "s1", "single_rtf": 0.3, "throughput_rtf": 0.1,
+                      "benchmark_concurrency": 4, "recommended_concurrency": 4,
+                      "benchmark_audio_sec": 100.0, "benchmark_elapsed_sec": 30.0,
+                      "benchmark_samples": ["test.mp4"], "benchmark_notes": [],
+                      "concurrency_gradient": [], "reachable": True, "responsive": True}},
+            {"type": "all_complete", "data": {
+                "results": [{"server_id": "s1", "single_rtf": 0.3, "throughput_rtf": 0.1,
+                             "benchmark_concurrency": 4, "recommended_concurrency": 4,
+                             "benchmark_samples": [], "benchmark_notes": [],
+                             "concurrency_gradient": [], "reachable": True, "responsive": True}],
+                "capacity_comparison": [],
+            }},
+        ]
+        mock_client.benchmark_servers_stream.return_value = iter(events)
+        with patch("cli.commands.server._last_benchmark_age_minutes", return_value=2.0):
+            result = runner.invoke(app, [
+                "--server", "http://test:8000", "--quiet",
+                "server", "benchmark", "--force",
+            ])
+        assert result.exit_code == 0
+
+    def test_offline_server_blocks_single_benchmark(self, mock_client):
+        """Benchmarking an OFFLINE server should be blocked."""
+        mock_client.stats.return_value = {"slots_used": 0, "queue_depth": 0}
+        mock_client.list_servers.return_value = [
+            {"server_id": "asr-01", "status": "OFFLINE", "host": "10.0.0.1", "port": 10095},
+        ]
+        result = runner.invoke(app, [
+            "--server", "http://test:8000", "--quiet",
+            "server", "benchmark", "asr-01",
+        ])
+        assert result.exit_code == 1
+        assert "OFFLINE" in result.output
+        mock_client.benchmark_server_stream.assert_not_called()
+        mock_client.stats.assert_called_once_with(global_stats=True)
+
+    def test_force_bypasses_offline_check(self, mock_client):
+        """--force should skip OFFLINE check."""
+        mock_client.list_servers.return_value = [
+            {"server_id": "asr-01", "status": "OFFLINE", "host": "10.0.0.1", "port": 10095},
+        ]
+        events = [
+            *_make_benchmark_events("asr-01"),
+            {"type": "benchmark_result", "server_id": "asr-01",
+             "data": {"server_id": "asr-01", "single_rtf": 0.14, "throughput_rtf": 0.08,
+                      "benchmark_concurrency": 2, "recommended_concurrency": 2,
+                      "benchmark_audio_sec": 300.0, "benchmark_elapsed_sec": 37.2,
+                      "benchmark_samples": ["test.mp4"], "benchmark_notes": [],
+                      "concurrency_gradient": [], "reachable": True, "responsive": True}},
+        ]
+        mock_client.benchmark_server_stream.return_value = iter(events)
+        result = runner.invoke(app, [
+            "--server", "http://test:8000", "--quiet",
+            "server", "benchmark", "asr-01", "--force",
+        ])
+        assert result.exit_code == 0
+        mock_client.benchmark_server_stream.assert_called_once_with("asr-01")
+        mock_client.stats.assert_not_called()
+
+    def test_idle_system_allows_benchmark(self, mock_client):
+        """slots_used=0, queue_depth=0, no recent benchmark → should proceed."""
+        mock_client.stats.return_value = {"slots_used": 0, "queue_depth": 0}
+        events = [
+            *_make_benchmark_events("asr-01"),
+            {"type": "benchmark_result", "server_id": "asr-01",
+             "data": {"server_id": "asr-01", "single_rtf": 0.14, "throughput_rtf": 0.08,
+                      "benchmark_concurrency": 2, "recommended_concurrency": 2,
+                      "benchmark_audio_sec": 300.0, "benchmark_elapsed_sec": 37.2,
+                      "benchmark_samples": ["test.mp4"], "benchmark_notes": [],
+                      "concurrency_gradient": [], "reachable": True, "responsive": True}},
+        ]
+        mock_client.benchmark_server_stream.return_value = iter(events)
+        result = runner.invoke(app, [
+            "--server", "http://test:8000", "--quiet",
+            "server", "benchmark", "asr-01",
+        ])
+        assert result.exit_code == 0
+        mock_client.stats.assert_called_once_with(global_stats=True)

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json as _json
+import logging
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class APIError(Exception):
@@ -60,7 +63,7 @@ class ASRClient:
                     try:
                         yield _json.loads(line)
                     except _json.JSONDecodeError:
-                        pass
+                        logger.warning("收到无法解析的进度事件, raw_line=%s", line)
 
     # --- health ---
     def health(self) -> dict:
@@ -69,8 +72,11 @@ class ASRClient:
     def metrics(self) -> str:
         return self._check(self._client.get("/metrics")).text
 
-    def stats(self) -> dict:
-        return self._check(self._client.get("/api/v1/stats")).json()
+    def stats(self, global_stats: bool = False) -> dict:
+        params = {}
+        if global_stats:
+            params["global"] = "true"
+        return self._check(self._client.get("/api/v1/stats", params=params)).json()
 
     # --- files ---
     def upload_file(self, path: Path) -> dict:
@@ -125,12 +131,17 @@ class ASRClient:
                 if line.startswith("data:"):
                     event_data = line[5:].strip()
                 elif line == "" and event_data:
-                    import json
                     try:
-                        yield json.loads(event_data)
-                    except json.JSONDecodeError:
-                        pass
+                        yield _json.loads(event_data)
+                    except _json.JSONDecodeError:
+                        logger.warning("收到无法解析的SSE事件, raw_data=%s", event_data)
                     event_data = ""
+            # Flush trailing event_data if connection closed without a final empty line
+            if event_data:
+                try:
+                    yield _json.loads(event_data)
+                except _json.JSONDecodeError:
+                    logger.warning("收到无法解析的SSE事件(尾帧), raw_data=%s", event_data)
 
     # --- task groups ---
     def get_task_group(self, group_id: str) -> dict:

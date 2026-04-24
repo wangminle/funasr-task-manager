@@ -2,12 +2,70 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import os
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import typer
 
 from cli.api_client import APIError
 from cli import output as out
+
+logger = logging.getLogger(__name__)
+
+BENCHMARK_REPEAT_WINDOW_MINUTES = 10
+
+
+def _detect_archive_dir() -> Path | None:
+    """Locate benchmark archive directory via ASR_PROJECT_ROOT or git root."""
+    env_root = os.environ.get("ASR_PROJECT_ROOT")
+    if env_root:
+        return Path(env_root) / "4-tests" / "batch-testing" / "outputs" / "benchmark"
+    # Fallback: walk up from this file to find repo root (has .git)
+    candidate = Path(__file__).resolve()
+    for _ in range(10):
+        candidate = candidate.parent
+        if (candidate / ".git").exists():
+            return candidate / "4-tests" / "batch-testing" / "outputs" / "benchmark"
+    return None
+
+
+def _last_benchmark_age_minutes() -> float | None:
+    """Return minutes since the most recent benchmark archive, or None if unknown."""
+    archive_dir = _detect_archive_dir()
+    if archive_dir is None or not archive_dir.exists():
+        return None
+    archives = sorted(archive_dir.glob("benchmark-*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not archives:
+        return None
+    last_mtime = archives[0].stat().st_mtime
+    age_sec = datetime.now(timezone.utc).timestamp() - last_mtime
+    return age_sec / 60.0
+
+
+def _archive_benchmark(results: list[dict], capacity: list[dict]) -> Path | None:
+    """Write benchmark results to JSON archive file. Returns archive dir on success."""
+    archive_dir = _detect_archive_dir()
+    if archive_dir is None:
+        logger.debug("benchmark_archive_skip: cannot detect project root")
+        return None
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    server_ids = [r.get("server_id", "unknown") for r in results]
+    tag = "_".join(server_ids) if len(server_ids) <= 3 else f"{len(server_ids)}servers"
+    filename = f"benchmark-{tag}-{ts}.json"
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "results": results,
+        "capacity_comparison": capacity,
+    }
+    out_path = archive_dir / filename
+    out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("benchmark_archived: %s", out_path)
+    return archive_dir
 
 app = typer.Typer()
 
@@ -223,10 +281,60 @@ def probe(
 def benchmark(
     ctx: typer.Context,
     server_id: Optional[str] = typer.Argument(None, help="可选：仅对单个节点执行 benchmark"),
+    force: bool = typer.Option(False, "--force", "-f", help="跳过繁忙/离线等前置安全检查"),
 ):
     """使用公开 benchmark 样本对单个或全部在线节点执行真实 RTF 基准测试。"""
     from cli.main import get_ctx
     c = get_ctx(ctx)
+
+    # --- 前置安全检查 ---
+    if not force:
+        try:
+            stats = c.client.stats(global_stats=True)
+            if isinstance(stats, dict):
+                slots_used = stats.get("slots_used", 0)
+                queue_depth = stats.get("queue_depth", 0)
+                if slots_used > 0 or queue_depth > 0:
+                    out.error(
+                        f"系统繁忙 (slots_used={slots_used}, queue_depth={queue_depth})，"
+                        f"benchmark 会影响正在进行的任务。请等待队列空闲后重试，"
+                        f"或使用 --force 强制执行。"
+                    )
+                    raise typer.Exit(1)
+        except typer.Exit:
+            raise
+        except Exception:
+            pass  # stats 不可用时不阻塞 benchmark
+
+        try:
+            age = _last_benchmark_age_minutes()
+            if age is not None and age < BENCHMARK_REPEAT_WINDOW_MINUTES:
+                out.error(
+                    f"距上次 benchmark 仅 {age:.1f} 分钟（窗口 {BENCHMARK_REPEAT_WINDOW_MINUTES} 分钟），"
+                    f"跳过重复执行。使用 --force 强制执行。"
+                )
+                raise typer.Exit(1)
+        except typer.Exit:
+            raise
+        except Exception:
+            pass
+
+        if server_id:
+            try:
+                servers = c.client.list_servers()
+                if isinstance(servers, list):
+                    target = next((s for s in servers
+                                   if isinstance(s, dict) and s.get("server_id") == server_id), None)
+                    if target and target.get("status") == "OFFLINE":
+                        out.error(
+                            f"节点 {server_id} 当前状态为 OFFLINE，请先执行 "
+                            f"'server probe {server_id}' 确认可达后再 benchmark。"
+                        )
+                        raise typer.Exit(1)
+            except typer.Exit:
+                raise
+            except Exception:
+                pass
 
     if not c.quiet:
         if server_id:
@@ -342,6 +450,14 @@ def benchmark(
                 ", ".join(item.get("benchmark_samples", [])),
             ] for item in results],
         )
+
+    if results:
+        try:
+            archived_to = _archive_benchmark(results, capacity)
+            if not c.quiet and archived_to:
+                out.info(f"结果已归档到 {archived_to}/")
+        except Exception as exc:
+            logger.warning("benchmark_archive_failed: %s", exc)
 
 
 @app.command(name="update")

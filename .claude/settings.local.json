@@ -90,7 +90,10 @@
       "Bash(echo \"PID: $!\")",
       "Bash(.venv/Scripts/python:*)",
       "Bash(.claude/settings.local.json:*)",
-      "Bash(pytest 4-tests/scripts/unit/test_funasr_task_manager_reset_test_db.py -v)"
+      "Bash(pytest 4-tests/scripts/unit/test_funasr_task_manager_reset_test_db.py -v)",
+      "Bash(gh status:*)",
+      "Bash(ping -n 2 github.com)",
+      "Bash(powershell.exe *)"
     ]
   }
 }
