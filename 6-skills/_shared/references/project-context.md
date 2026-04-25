@@ -39,6 +39,13 @@
 | POST | `/api/v1/servers/{id}/benchmark` | 单节点 benchmark | **AdminUser** |
 | POST | `/api/v1/servers/benchmark` | 全量 benchmark（并发） | **AdminUser** |
 
+### 任务创建参数
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `auto_segment` | `auto` / `on` / `off` | `auto` | VAD 切分策略。`auto` 按时长阈值自动决定；`on` 强制切分；`off` 关闭切分 |
+| `segment_level` | `10m` / `20m` / `30m` | `10m` | 切分力度。控制目标切分时长和搜索窗口。`auto_segment=off` 时忽略 |
+
 ### 任务状态流转
 
 ```
@@ -46,6 +53,8 @@ PENDING → PREPROCESSING → QUEUED → DISPATCHED → TRANSCRIBING → SUCCEED
                                                               → FAILED
                                               → CANCELED
 ```
+
+长音频（超过 `segment_level` 对应阈值）在 PREPROCESSING 阶段自动 VAD 切分为多个内部 segment，segment 独立调度执行，全部完成后合并结果。父任务状态对外不变。
 
 ### 服务器状态
 

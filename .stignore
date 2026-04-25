@@ -1,6 +1,7 @@
 // Syncthing ignore patterns for funasr-task-manager
 // SQLite databases MUST NOT be synced — file replacement causes "readonly database" errors
 runtime/
+.runtime/
 .venv/
 __pycache__/
 *.db-wal

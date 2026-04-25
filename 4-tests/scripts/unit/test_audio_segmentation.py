@@ -412,3 +412,182 @@ class TestPlanSegments:
         plans = plan_segments(1_400_000, silence, **PLAN_DEFAULTS)
         assert len(plans) == 2
         assert plans[0].keep_end_ms == 650_175
+
+
+# ---------------------------------------------------------------------------
+# Segment level presets (10m / 20m / 30m)
+# ---------------------------------------------------------------------------
+
+from app.config import SEGMENT_LEVEL_PRESETS, SegmentLevelPreset
+
+PLAN_20M = dict(
+    target_duration_ms=1_200_000,
+    min_duration_ms=120_000,
+    max_duration_ms=1_380_000,
+    overlap_ms=400,
+    search_step_ms=60_000,
+    search_max_rounds=3,
+    fallback_silence_ms=300,
+    min_silence_ms=800,
+)
+
+PLAN_30M = dict(
+    target_duration_ms=1_800_000,
+    min_duration_ms=120_000,
+    max_duration_ms=1_980_000,
+    overlap_ms=400,
+    search_step_ms=60_000,
+    search_max_rounds=3,
+    fallback_silence_ms=300,
+    min_silence_ms=800,
+)
+
+
+@pytest.mark.unit
+class TestSegmentLevelPresets:
+    """Verify the SEGMENT_LEVEL_PRESETS configuration dictionary."""
+
+    def test_presets_keys(self):
+        assert set(SEGMENT_LEVEL_PRESETS.keys()) == {"10m", "20m", "30m"}
+
+    def test_10m_preset_values(self):
+        p = SEGMENT_LEVEL_PRESETS["10m"]
+        assert p.target_duration_sec == 600
+        assert p.max_duration_sec == 780
+        assert p.min_file_duration_sec == 600
+
+    def test_20m_preset_values(self):
+        p = SEGMENT_LEVEL_PRESETS["20m"]
+        assert p.target_duration_sec == 1200
+        assert p.max_duration_sec == 1380
+        assert p.min_file_duration_sec == 1200
+
+    def test_30m_preset_values(self):
+        p = SEGMENT_LEVEL_PRESETS["30m"]
+        assert p.target_duration_sec == 1800
+        assert p.max_duration_sec == 1980
+        assert p.min_file_duration_sec == 1800
+
+    def test_preset_is_frozen(self):
+        p = SEGMENT_LEVEL_PRESETS["10m"]
+        with pytest.raises(AttributeError):
+            p.target_duration_sec = 999
+
+
+@pytest.mark.unit
+class TestPlanSegments20m:
+    """plan_segments with 20-minute level parameters."""
+
+    def test_20m_no_split_under_max(self):
+        """20-minute audio (1200s) fits within 1380s max → single segment."""
+        plans = plan_segments(1_200_000, [], **PLAN_20M)
+        assert len(plans) == 1
+        assert plans[0].keep_end_ms == 1_200_000
+
+    def test_20m_no_split_at_max(self):
+        """Audio at exactly 1380s (23 min) → single segment."""
+        plans = plan_segments(1_380_000, [], **PLAN_20M)
+        assert len(plans) == 1
+
+    def test_20m_split_40min_audio(self):
+        """40-minute (2400s) audio with silence at ~1220s → 2 segments, cut in 20~23m window."""
+        silence = [SilenceRange(start_ms=1_219_000, end_ms=1_222_000)]
+        plans = plan_segments(2_400_000, silence, **PLAN_20M)
+        assert len(plans) == 2
+        cut_ms = plans[0].keep_end_ms
+        assert 1_200_000 <= cut_ms <= 1_380_000
+
+    def test_20m_hard_cut_no_silence(self):
+        """No silence → hard cut at 1380s for 20m level."""
+        plans = plan_segments(2_800_000, [], **PLAN_20M)
+        assert len(plans) == 2
+        assert plans[0].keep_end_ms == 1_380_000
+
+    def test_20m_progressive_round2(self):
+        """Silence only in round 2 window [1260s, 1320s]."""
+        silence = [SilenceRange(start_ms=1_289_000, end_ms=1_291_000)]
+        plans = plan_segments(2_600_000, silence, **PLAN_20M)
+        assert len(plans) == 2
+        assert plans[0].keep_end_ms == 1_290_000
+
+    def test_20m_trailing_merge(self):
+        """Trailing fragment < min_duration merged with previous segment."""
+        # 1480s audio: hard cut at 1380s → trailing 100s < 120s → single segment
+        plans = plan_segments(1_480_000, [], **PLAN_20M)
+        assert len(plans) == 1
+
+    def test_20m_keep_regions_tile(self):
+        """Keep regions tile the entire audio with no gaps."""
+        silence = [
+            SilenceRange(start_ms=1_219_000, end_ms=1_222_000),
+            SilenceRange(start_ms=2_439_000, end_ms=2_442_000),
+        ]
+        total = 3_600_000
+        plans = plan_segments(total, silence, **PLAN_20M)
+        assert plans[0].keep_start_ms == 0
+        for i in range(1, len(plans)):
+            assert plans[i].keep_start_ms == plans[i - 1].keep_end_ms
+        assert plans[-1].keep_end_ms == total
+
+
+@pytest.mark.unit
+class TestPlanSegments30m:
+    """plan_segments with 30-minute level parameters."""
+
+    def test_30m_no_split_under_max(self):
+        """30-minute audio (1800s) fits within 1980s max → single segment."""
+        plans = plan_segments(1_800_000, [], **PLAN_30M)
+        assert len(plans) == 1
+        assert plans[0].keep_end_ms == 1_800_000
+
+    def test_30m_no_split_at_max(self):
+        """Audio at exactly 1980s (33 min) → single segment."""
+        plans = plan_segments(1_980_000, [], **PLAN_30M)
+        assert len(plans) == 1
+
+    def test_30m_split_60min_audio(self):
+        """60-minute (3600s) audio with silence at ~1820s → 2 segments, cut in 30~33m window."""
+        silence = [SilenceRange(start_ms=1_819_000, end_ms=1_822_000)]
+        plans = plan_segments(3_600_000, silence, **PLAN_30M)
+        assert len(plans) == 2
+        cut_ms = plans[0].keep_end_ms
+        assert 1_800_000 <= cut_ms <= 1_980_000
+
+    def test_30m_hard_cut_no_silence(self):
+        """No silence → hard cut at 1980s for 30m level."""
+        plans = plan_segments(4_000_000, [], **PLAN_30M)
+        assert len(plans) == 2
+        assert plans[0].keep_end_ms == 1_980_000
+
+    def test_30m_progressive_round3(self):
+        """Silence only in round 3 window [1920s, 1980s]."""
+        silence = [SilenceRange(start_ms=1_949_000, end_ms=1_951_000)]
+        plans = plan_segments(4_000_000, silence, **PLAN_30M)
+        assert len(plans) == 2
+        assert plans[0].keep_end_ms == 1_950_000
+
+    def test_30m_trailing_merge(self):
+        """Trailing fragment < min_duration merged with previous segment."""
+        # 2080s audio: hard cut at 1980s → trailing 100s < 120s → single segment
+        plans = plan_segments(2_080_000, [], **PLAN_30M)
+        assert len(plans) == 1
+
+    def test_30m_fallback_short_silence(self):
+        """30m level: 400ms gap in [1800s, 1980s] → fallback picks it."""
+        silence = [SilenceRange(start_ms=1_850_000, end_ms=1_850_400)]
+        plans = plan_segments(3_700_000, silence, **PLAN_30M)
+        assert len(plans) == 2
+        assert plans[0].keep_end_ms == 1_850_200
+
+    def test_30m_keep_regions_tile(self):
+        """Keep regions tile the entire audio with no gaps."""
+        silence = [
+            SilenceRange(start_ms=1_819_000, end_ms=1_822_000),
+            SilenceRange(start_ms=3_639_000, end_ms=3_642_000),
+        ]
+        total = 5_400_000
+        plans = plan_segments(total, silence, **PLAN_30M)
+        assert plans[0].keep_start_ms == 0
+        for i in range(1, len(plans)):
+            assert plans[i].keep_start_ms == plans[i - 1].keep_end_ms
+        assert plans[-1].keep_end_ms == total

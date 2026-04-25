@@ -1,6 +1,6 @@
 # ASR 任务管理器
 
-集中式离线语音识别（ASR）任务管理系统，对接 FunASR 服务器集群，提供统一的文件上传、智能任务调度、实时进度追踪和多格式结果下载。支持 CLI / REST API / Web UI 三种使用方式。
+集中式离线语音识别（ASR）任务管理系统，对接 FunASR 服务器集群，提供统一的文件上传、智能任务调度、实时进度追踪和多格式结果下载。支持 CLI / REST API / Web UI 三种使用方式。内置 VAD 分段并行转写能力，长音频自动切分后分发到多台服务器并行处理，结果按时间戳合并输出。
 
 ## 你想做什么？
 
@@ -198,12 +198,17 @@ python -m cli transcribe *.mp3 --no-wait --json-summary
 | `--callback` | 完成后回调地址 |
 | `--poll-interval` | 轮询间隔(秒)，默认 5 |
 | `--timeout` | 等待超时(秒)，默认 3600 |
+| `--auto-segment` | VAD 切分策略：`auto`（默认，按时长阈值自动决定）/ `on`（强制切分）/ `off`（关闭切分） |
+| `--segment-level` | 切分力度：`10m`（默认）/ `20m` / `30m`，控制目标切分时长 |
 
 ### task — 任务管理
 
 ```bash
 # 创建任务
 python -m cli task create <file_id1> <file_id2> --language zh
+
+# 创建任务（指定 VAD 切分策略和切分力度）
+python -m cli task create <file_id> --auto-segment on --segment-level 20m
 
 # 查看任务列表
 python -m cli task list
@@ -361,6 +366,15 @@ curl -X POST http://localhost:8000/api/v1/tasks \
     "callback": {"url": "https://your-server.com/webhook", "secret": "your-hmac-key"}
   }'
 
+# 创建任务（控制 VAD 切分行为）
+curl -X POST http://localhost:8000/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "items": [{"file_id": "FILE_ID", "language": "zh"}],
+    "auto_segment": "on",
+    "segment_level": "20m"
+  }'
+
 # 查看批次状态
 curl http://localhost:8000/api/v1/task-groups/<group_id>
 # → {"task_group_id": "...", "total": 5, "succeeded": 3, "failed": 0, ...}
@@ -422,6 +436,7 @@ python -m cli server list
 | **配额分配** | 按 `max_concurrency / base_rtf` 速度比例在全局批次内分配任务配额，并发多且单线程快的节点获得更多任务 |
 | **槽位队列预规划** | 首轮为每个虚拟并发槽位生成有序任务队列，补位时直接从本槽位取下一个 |
 | **工作窃取** | 快节点空闲且自身队列清空时，可从其他节点队列尾部窃取更快完成的短任务 |
+| **VAD 分段并行** | 超过阈值（默认 10 分钟）的长音频自动 VAD 切分为多个段，并行分发到多台服务器，结果按时间戳合并。支持 10m/20m/30m 三级切分力度 |
 | **自动重试** | 瞬时故障（网络超时、协议错误）的任务自动从 FAILED 回到 QUEUED 重新调度，回调和并发槽位仅在真正终态时释放 |
 | **自动探测** | 服务器协议版本（v1_old/v2_new）自动探测 |
 | **断路器** | CLOSED→OPEN→HALF_OPEN 三态切换，故障服务器自动隔离 |
@@ -508,6 +523,12 @@ python -m cli config set api_key dev-token-user1
 
 **Q: 任务显示 FAILED 但随后又变成 SUCCEEDED 了？**
 系统内置自动重试机制。任务首次失败（如网络抖动）后会自动从 FAILED 重新排队，在未达到最大重试次数前属于可恢复状态。API 响应中的 `is_terminal` 字段标识任务是否已到达真正终态——SUCCEEDED 和 CANCELED 总是终态，FAILED 仅在重试耗尽后才是终态。SSE 流和 CLI 批量轮询都依赖此字段判断何时停止观察。
+
+**Q: 长音频（10 分钟以上）是怎么处理的？**
+系统内置 VAD 分段并行转写。默认当音频超过 10 分钟时，自动执行 canonical WAV 转换 → VAD 静音检测 → 渐进式搜索最佳切点 → 物理切段 → 并行分发到多台服务器 → 结果按时间戳合并。用户侧看到的仍然是一个任务，段级调度和合并完全透明。可通过 `--auto-segment=off` 关闭切分，或用 `--segment-level=20m/30m` 调整切分粒度（减少切分次数）。
+
+**Q: `segment_level` 的三个级别有什么区别？**
+`10m`（默认）以 10 分钟为目标切分，搜索窗口 10~13 分钟；`20m` 以 20 分钟为目标，搜索窗口 20~23 分钟；`30m` 以 30 分钟为目标，搜索窗口 30~33 分钟。级别越大，切分次数越少，边界质量损失越小，但单段处理时间更长。三个级别共享同样的渐进搜索和降级策略，仅起点和上限不同。
 
 **Q: 任务创建后处于 PREPROCESSING 状态很久？**
 检查是否有 ASR 服务器在线：`python -m cli server list`。如果没有在线节点，任务会排队等待。

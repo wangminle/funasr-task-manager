@@ -48,11 +48,12 @@ description: >
 - 批量：`GET /api/v1/task-groups/{group_id}`
 - 可选：`GET /api/v1/tasks/{task_id}/progress`（SSE 实时进度）
 - 状态变化时回报关键节点：
-  - `PREPROCESSING` → "文件预处理中..."
+  - `PREPROCESSING` → "文件预处理中..."（长音频会自动 VAD 切分）
   - `QUEUED` → "等待调度..."
   - `TRANSCRIBING` → "正在转写..."
   - `SUCCEEDED` → "转写完成！"
   - `FAILED` → "转写失败：{原因}"
+- 分段任务：响应中包含 `segments` 字段（`total`/`succeeded`/`failed`/`pending`/`active`），可用于汇报 "3/5 段已完成"
 - 批量任务：定期汇报 "{completed}/{total} 已完成"
 - 超时后给出当前状态和下一步建议，不盲目取消任务
 

@@ -92,13 +92,16 @@ class ASRClient:
 
     # --- tasks ---
     def create_tasks(
-        self, items: list[dict], callback: dict | None = None, auto_segment: str = "auto",
+        self, items: list[dict], callback: dict | None = None,
+        auto_segment: str = "auto", segment_level: str = "10m",
     ) -> list[dict]:
         body: dict[str, Any] = {"items": items}
         if callback:
             body["callback"] = callback
         if auto_segment != "auto":
             body["auto_segment"] = auto_segment
+        if segment_level != "10m":
+            body["segment_level"] = segment_level
         return self._check(self._client.post("/api/v1/tasks", json=body)).json()
 
     def list_tasks(

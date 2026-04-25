@@ -1,10 +1,28 @@
 """Application configuration via environment variables and .env files."""
 
+from __future__ import annotations
+
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentLevelPreset:
+    """Parameter preset for a given segment granularity level."""
+    target_duration_sec: int
+    max_duration_sec: int
+    min_file_duration_sec: int
+
+
+SEGMENT_LEVEL_PRESETS: dict[str, SegmentLevelPreset] = {
+    "10m": SegmentLevelPreset(target_duration_sec=600,  max_duration_sec=780,  min_file_duration_sec=600),
+    "20m": SegmentLevelPreset(target_duration_sec=1200, max_duration_sec=1380, min_file_duration_sec=1200),
+    "30m": SegmentLevelPreset(target_duration_sec=1800, max_duration_sec=1980, min_file_duration_sec=1800),
+}
 
 
 def _detect_project_root() -> Path:

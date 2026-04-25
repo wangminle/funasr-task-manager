@@ -11,6 +11,12 @@ class AutoSegmentMode(StrEnum):
     OFF = "off"
 
 
+class SegmentLevel(StrEnum):
+    L10M = "10m"
+    L20M = "20m"
+    L30M = "30m"
+
+
 class CallbackConfig(BaseModel):
     url: str
     secret: str | None = None
@@ -26,6 +32,7 @@ class TaskCreateRequest(BaseModel):
     items: list[TaskItemCreate] = Field(..., min_length=1, max_length=100)
     callback: CallbackConfig | None = None
     auto_segment: AutoSegmentMode = AutoSegmentMode.AUTO
+    segment_level: SegmentLevel = SegmentLevel.L10M
 
 
 class SegmentSummary(BaseModel):

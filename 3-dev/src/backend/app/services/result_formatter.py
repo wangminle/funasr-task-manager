@@ -22,11 +22,27 @@ def parse_timestamp_segments(raw_result: dict) -> list[TimestampSegment]:
                 continue
             text_seg = sent.get("text_seg", "")
             punc = sent.get("punc", "")
+            start_ms = end_ms = None
             ts = sent.get("ts")
-            if ts and isinstance(ts, list) and len(ts) >= 2:
+            if ts and isinstance(ts, list) and len(ts) >= 2 and ts[0] is not None and ts[1] is not None:
+                start_ms = int(ts[0])
+                end_ms = int(ts[1])
+            elif sent.get("start") is not None and sent.get("end") is not None:
+                start_ms = int(sent["start"])
+                end_ms = int(sent["end"])
+            else:
+                ts_list = sent.get("ts_list")
+                if ts_list and isinstance(ts_list, list) and len(ts_list) > 0:
+                    first = ts_list[0]
+                    last = ts_list[-1]
+                    if isinstance(first, (list, tuple)) and len(first) >= 2 and first[0] is not None:
+                        start_ms = int(first[0])
+                    if isinstance(last, (list, tuple)) and len(last) >= 2 and last[1] is not None:
+                        end_ms = int(last[1])
+            if start_ms is not None and end_ms is not None:
                 segments.append(TimestampSegment(
-                    start_ms=int(ts[0]),
-                    end_ms=int(ts[1]),
+                    start_ms=start_ms,
+                    end_ms=end_ms,
                     text=text_seg + punc,
                 ))
         return segments

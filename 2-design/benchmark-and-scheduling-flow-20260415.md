@@ -145,15 +145,46 @@ flowchart TD
 flowchart TD
     START([BackgroundTaskRunner.start]) --> LOOP["while not stop_event"]
     LOOP --> PROMO["Step 1: _promote_preprocessing_tasks()<br/>PREPROCESSING → QUEUED<br/>(created_at 超过 2s 的任务)"]
-    PROMO --> DISPATCH["Step 2: _dispatch_queued_tasks()<br/>核心调度逻辑 (见 2.2)"]
+    PROMO --> DISPATCH["Step 2: _dispatch_queued_tasks()<br/>核心调度逻辑 (见 2.2)<br/>普通任务 + segment work item 混排"]
     DISPATCH --> RETRY["Step 3 (每10轮): _retry_failed_tasks()<br/>FAILED → QUEUED (retry_count < max)"]
     RETRY --> CALLBACK["Step 4 (每30轮): _retry_pending_callbacks()<br/>重试未送达的回调"]
     CALLBACK --> WAIT["_wait_for_dispatch_signal()<br/>等 1s 或被唤醒"]
     WAIT --> LOOP
 
-    TASK_DONE["任务完成/失败"] --> CLEAR["清除已完成的 slot queue"]
+    TASK_DONE["任务/段完成或失败"] --> CLEAR["清除已完成的 slot queue"]
     CLEAR --> REQ["_request_dispatch()<br/>唤醒主循环立即调度"]
     REQ --> WAIT
+```
+
+### 2.1.1 预处理阶段 VAD 分段路径
+
+```mermaid
+flowchart TD
+    PROMO(["_promote_preprocessing_tasks()"]) --> LOAD["加载 PREPROCESSING 任务<br/>(created_at > 2s)"]
+    LOAD --> EACH["遍历每个候选任务"]
+    EACH --> PARSE["解析 options_json:<br/>auto_segment = auto/on/off<br/>segment_level = 10m/20m/30m"]
+    PARSE --> OFF{"auto_segment == off?"}
+    OFF -->|是| NO_SEG["不切分，直接 QUEUED"]
+    OFF -->|否| ON{"auto_segment == on?"}
+    ON -->|是| DO_SEG["强制切分（跳过时长阈值检查）"]
+    ON -->|否 auto| AUTO_CHECK{"duration >= min_file_duration?<br/>(10m: 600s / 20m: 1200s / 30m: 1800s)<br/>默认沿用 settings 配置"}
+    AUTO_CHECK -->|否| NO_SEG
+    AUTO_CHECK -->|是| DO_SEG
+
+    DO_SEG --> CREATE["_create_segments_for_task()"]
+    CREATE --> CANON["ensure_canonical_wav()<br/>→ 16kHz / mono / s16 WAV"]
+    CANON --> SILENCE["silence_detect()<br/>→ ffmpeg silencedetect"]
+    SILENCE --> PLAN["plan_segments()<br/>按 segment_level 预设传入<br/>target/max duration"]
+    PLAN --> SPLIT{"len(plans) > 1?"}
+    SPLIT -->|否| NO_SEG
+    SPLIT -->|是| WAV_SPLIT["split_wav_segments()<br/>物理切段"]
+    WAV_SPLIT --> WRITE_SEG["写入 TaskSegment 记录<br/>状态 PENDING"]
+    WRITE_SEG --> NO_SEG
+
+    NO_SEG --> QUEUED["父任务 → QUEUED"]
+
+    style DO_SEG fill:#e8f4f8,stroke:#333
+    style WRITE_SEG fill:#d3f9d8,stroke:#333
 ```
 
 ### 2.2 核心调度流程 `_dispatch_queued_tasks`
@@ -222,7 +253,31 @@ flowchart TD
     style PHASE_B fill:#d3f9d8,stroke:#333
 ```
 
-### 2.3 任务执行与 RTF 校准时序
+### 2.3 段级执行与父任务合并
+
+对于分段任务，调度器将 segment 作为内部 work item 分发到不同服务器并行执行，段成功后触发合并检查。
+
+```mermaid
+flowchart TD
+    DISPATCH(["dispatch segment"]) --> EXEC["_execute_segment(segment_id)"]
+    EXEC --> TRANS["segment: DISPATCHED → TRANSCRIBING<br/>父任务: → TRANSCRIBING"]
+    TRANS --> ASR["adapter.transcribe(segment WAV)"]
+    ASR -->|成功| SEG_OK["segment: SUCCEEDED<br/>写入 raw_result_json"]
+    ASR -->|失败| SEG_FAIL{"retry_count < max?"}
+    SEG_FAIL -->|是| SEG_RETRY["segment → PENDING<br/>重新调度到其他服务器"]
+    SEG_FAIL -->|否| PARENT_FAIL["父任务 → FAILED"]
+    SEG_OK --> CHECK["_maybe_finalize_segmented_task()"]
+    CHECK --> ALL_DONE{"所有 segment SUCCEEDED?"}
+    ALL_DONE -->|否| WAIT_MORE["继续等待其他 segment"]
+    ALL_DONE -->|是| MERGE["merge_segment_results()<br/>按 keep 区间过滤、时间戳偏移、拼接"]
+    MERGE --> WRITE["写入 JSON/TXT/SRT"]
+    WRITE --> PARENT_OK["父任务 → SUCCEEDED"]
+
+    style MERGE fill:#d3f9d8,stroke:#333
+    style PARENT_FAIL fill:#ff6b6b,color:#fff
+```
+
+### 2.4 普通任务执行与 RTF 校准时序
 
 ```mermaid
 sequenceDiagram
@@ -266,7 +321,7 @@ sequenceDiagram
     TR->>TR: _request_dispatch()<br/>唤醒主循环立即调度下一批
 ```
 
-### 2.4 RTF 校准与 Penalty 调整
+### 2.5 RTF 校准与 Penalty 调整
 
 ```mermaid
 flowchart TD
@@ -299,7 +354,7 @@ flowchart TD
     style STABLE fill:#74c0fc,color:#fff
 ```
 
-### 2.5 Quota 分配算法
+### 2.6 Quota 分配算法
 
 ```mermaid
 flowchart TD

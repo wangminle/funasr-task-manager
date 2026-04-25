@@ -104,6 +104,8 @@ async def create_tasks(body: TaskCreateRequest, db: DbSession, user_id: CurrentU
         merged_options = dict(item.options) if item.options else {}
         if body.auto_segment != "auto":
             merged_options["auto_segment"] = body.auto_segment
+        if body.segment_level != "10m":
+            merged_options["segment_level"] = body.segment_level
         task = Task(
             task_id=str(ULID()), user_id=user_id, file_id=item.file_id,
             task_group_id=task_group_id, status=TaskStatus.PENDING,

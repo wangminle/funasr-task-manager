@@ -49,6 +49,10 @@
 
 > 生产环境 CLI 等价命令：`asr-cli`（通过 `pip install -e .` 安装后可用）
 
+## VAD 分段与调度
+
+长音频在 PREPROCESSING 阶段根据 `auto_segment`（auto/on/off）和 `segment_level`（10m/20m/30m）自动 VAD 切分。切分后的 segment 作为内部 work item 参与调度，复用 LPT + EFT 算法。段级 RTF 校准使用段长而非父任务总时长。
+
 ## 调度器如何使用 Benchmark 结果
 
 - `get_effective_rtf(server)` → 使用生产 P90 RTF，无生产数据时回退到 `rtf_baseline`

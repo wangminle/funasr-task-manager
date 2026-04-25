@@ -93,6 +93,7 @@ Layer C：决策（Decision）
   - 1 个文件 → 单文件流程
   - 多个文件 → 批量流程，自动生成 `task_group_id`
 - 特殊参数（如有）：语言、热词列表、回调 URL
+- 长音频切分：用户可选 `auto_segment`（auto/on/off）和 `segment_level`（10m/20m/30m）
 - 如果用户说"默认就行" → 全部使用默认值
 
 ### Phase 4：任务提交
@@ -105,11 +106,18 @@ Layer C：决策（Decision）
     "items": [
       {"file_id": "...", "language": "zh", "options": {...}}
     ],
-    "callback": {"url": "...", "secret": "..."}
+    "callback": {"url": "...", "secret": "..."},
+    "auto_segment": "auto",
+    "segment_level": "10m"
   }
   ```
 
   → 记录 `task_id(s)` 和 `task_group_id`
+
+  **分段参数协商**：
+  - `auto_segment`（默认 `auto`）：长音频自动 VAD 切分。用户说"不要切分"时传 `off`；用户说"强制切分"时传 `on`
+  - `segment_level`（默认 `10m`）：切分力度。用户偏好较少切分时可选 `20m` 或 `30m`
+  - 如用户未提及，使用默认值即可
 - 向用户确认："已提交 N 个文件，任务编号 xxx"
 - 提交失败 → 报告错误原因
 

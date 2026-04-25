@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.adapters.base import MessageProfile
 from app.adapters.registry import get_adapter
-from app.config import settings
+from app.config import SEGMENT_LEVEL_PRESETS, settings
 from app.fault.circuit_breaker import breaker_registry
 from app.models import (
     File, ServerInstance, Task, TaskStatus,
@@ -243,21 +243,24 @@ class BackgroundTaskRunner:
 
         for task_id, duration_sec, audio_path, options_json in candidates:
             auto_seg = self._parse_auto_segment(options_json)
+            seg_level = self._parse_segment_level(options_json)
 
             if auto_seg == "off":
                 needs_segmentation = False
             elif auto_seg == "on":
                 needs_segmentation = bool(audio_path) and settings.segment_enabled
             else:
+                preset = SEGMENT_LEVEL_PRESETS.get(seg_level) if seg_level != "10m" else None
+                min_file_dur = preset.min_file_duration_sec if preset else settings.segment_min_file_duration_sec
                 needs_segmentation = (
                     settings.segment_enabled
-                    and duration_sec >= settings.segment_min_file_duration_sec
+                    and duration_sec >= min_file_dur
                     and bool(audio_path)
                 )
 
             if needs_segmentation:
                 try:
-                    await self._create_segments_for_task(task_id, audio_path)
+                    await self._create_segments_for_task(task_id, audio_path, seg_level=seg_level)
                 except Exception as e:
                     if auto_seg == "on":
                         logger.error(
@@ -290,7 +293,9 @@ class BackgroundTaskRunner:
 
         self._request_dispatch()
 
-    async def _create_segments_for_task(self, task_id: str, audio_path: str) -> None:
+    async def _create_segments_for_task(
+        self, task_id: str, audio_path: str, *, seg_level: str = "10m",
+    ) -> None:
         """Execute canonical WAV → silence detect → plan → split → write segments.
 
         Heavy I/O (ffmpeg) happens outside any database session.  Writing
@@ -316,7 +321,13 @@ class BackgroundTaskRunner:
             canonical_path = await ensure_canonical_wav(audio_path)
             duration_ms = await get_audio_duration_ms(canonical_path)
             silence_ranges = await silence_detect(canonical_path)
-            plans = plan_segments(duration_ms, silence_ranges)
+
+            plan_kwargs: dict[str, int] = {}
+            preset = SEGMENT_LEVEL_PRESETS.get(seg_level)
+            if preset and seg_level != "10m":
+                plan_kwargs["target_duration_ms"] = preset.target_duration_sec * 1000
+                plan_kwargs["max_duration_ms"] = preset.max_duration_sec * 1000
+            plans = plan_segments(duration_ms, silence_ranges, **plan_kwargs)
 
             if len(plans) <= 1:
                 logger.info("segmentation_single_segment", task_id=task_id,
@@ -1494,6 +1505,21 @@ class BackgroundTaskRunner:
             return value if value in ("auto", "on", "off") else "auto"
         except (json.JSONDecodeError, AttributeError):
             return "auto"
+
+    @staticmethod
+    def _parse_segment_level(options_json: str | None) -> str:
+        """Extract segment_level preference from task options_json.
+
+        Returns ``"10m"`` (default), ``"20m"``, or ``"30m"``.
+        """
+        if not options_json:
+            return "10m"
+        try:
+            opts = json.loads(options_json)
+            value = opts.get("segment_level", "10m")
+            return value if value in SEGMENT_LEVEL_PRESETS else "10m"
+        except (json.JSONDecodeError, AttributeError):
+            return "10m"
 
     def _request_dispatch(self) -> None:
         self._dispatch_event.set()
