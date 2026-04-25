@@ -1,11 +1,11 @@
 """Repository pattern for database operations."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import File, Task, TaskEvent, ServerInstance, TaskStatus
+from app.models import File, Task, TaskEvent, ServerInstance, TaskStatus, TaskSegment, SegmentStatus
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -128,3 +128,149 @@ class ServerRepository:
         if last_heartbeat is not None:
             server.last_heartbeat = last_heartbeat
         await self._session.flush()
+
+
+class SegmentRepository:
+    """CRUD operations for TaskSegment (VAD parallel transcription work units)."""
+
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    async def create_segments(self, segments: list[TaskSegment]) -> list[TaskSegment]:
+        self._session.add_all(segments)
+        await self._session.flush()
+        return segments
+
+    async def get_segment(self, segment_id: str) -> TaskSegment | None:
+        stmt = select(TaskSegment).where(TaskSegment.segment_id == segment_id)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_segments_by_task(self, task_id: str) -> list[TaskSegment]:
+        stmt = (
+            select(TaskSegment)
+            .where(TaskSegment.task_id == task_id)
+            .order_by(TaskSegment.segment_index.asc())
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def count_by_status(self, task_id: str) -> dict[str, int]:
+        """Return {status: count} for all segments of a parent task."""
+        stmt = (
+            select(TaskSegment.status, func.count())
+            .where(TaskSegment.task_id == task_id)
+            .group_by(TaskSegment.status)
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return {status: count for status, count in rows}
+
+    async def count_active_segments(self, task_id: str) -> int:
+        """Count segments currently DISPATCHED or TRANSCRIBING for a parent task."""
+        stmt = (
+            select(func.count())
+            .where(
+                TaskSegment.task_id == task_id,
+                TaskSegment.status.in_([
+                    SegmentStatus.DISPATCHED,
+                    SegmentStatus.TRANSCRIBING,
+                ]),
+            )
+        )
+        return (await self._session.execute(stmt)).scalar() or 0
+
+    async def get_pending_segments(
+        self, task_id: str, limit: int = 10,
+    ) -> list[TaskSegment]:
+        stmt = (
+            select(TaskSegment)
+            .where(
+                TaskSegment.task_id == task_id,
+                TaskSegment.status == SegmentStatus.PENDING,
+            )
+            .order_by(TaskSegment.segment_index.asc())
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def update_segment_status(
+        self,
+        segment: TaskSegment,
+        new_status: SegmentStatus,
+        *,
+        server_id: str | None = None,
+        error_message: str | None = None,
+        raw_result_json: str | None = None,
+    ) -> None:
+        segment.status = new_status.value
+        now = datetime.now(timezone.utc)
+        if new_status == SegmentStatus.DISPATCHED and server_id:
+            segment.assigned_server_id = server_id
+        if new_status == SegmentStatus.TRANSCRIBING:
+            segment.started_at = now
+        if new_status == SegmentStatus.SUCCEEDED:
+            segment.completed_at = now
+            if raw_result_json is not None:
+                segment.raw_result_json = raw_result_json
+        if new_status == SegmentStatus.FAILED:
+            segment.completed_at = now
+            if error_message is not None:
+                segment.error_message = error_message[:2000]
+        await self._session.flush()
+
+    async def increment_retry(self, segment: TaskSegment) -> None:
+        prev_error = segment.error_message or ""
+        segment.retry_count += 1
+        segment.status = SegmentStatus.PENDING.value
+        segment.assigned_server_id = None
+        if prev_error:
+            history = f"[retry#{segment.retry_count - 1}] {prev_error}"
+            segment.error_message = history[-2000:]
+        segment.started_at = None
+        segment.completed_at = None
+        await self._session.flush()
+
+    async def sum_completed_duration_ms(self, task_id: str) -> int:
+        """Sum of keep_duration for all SUCCEEDED segments — used for progress calculation."""
+        stmt = (
+            select(func.coalesce(
+                func.sum(TaskSegment.keep_end_ms - TaskSegment.keep_start_ms), 0,
+            ))
+            .where(
+                TaskSegment.task_id == task_id,
+                TaskSegment.status == SegmentStatus.SUCCEEDED,
+            )
+        )
+        return (await self._session.execute(stmt)).scalar() or 0
+
+    async def total_keep_duration_ms(self, task_id: str) -> int:
+        """Sum of keep_duration for ALL segments — the denominator for progress."""
+        stmt = (
+            select(func.coalesce(
+                func.sum(TaskSegment.keep_end_ms - TaskSegment.keep_start_ms), 0,
+            ))
+            .where(TaskSegment.task_id == task_id)
+        )
+        return (await self._session.execute(stmt)).scalar() or 0
+
+    async def list_segments_by_status(
+        self, task_id: str, status: SegmentStatus,
+    ) -> list[TaskSegment]:
+        stmt = (
+            select(TaskSegment)
+            .where(TaskSegment.task_id == task_id, TaskSegment.status == status)
+            .order_by(TaskSegment.segment_index.asc())
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def delete_segments_by_task(self, task_id: str) -> int:
+        """Delete all segments for a task. Returns count deleted."""
+        stmt = select(TaskSegment).where(TaskSegment.task_id == task_id)
+        result = await self._session.execute(stmt)
+        segments = list(result.scalars().all())
+        for seg in segments:
+            await self._session.delete(seg)
+        await self._session.flush()
+        return len(segments)

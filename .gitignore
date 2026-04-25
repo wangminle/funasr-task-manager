@@ -222,5 +222,5 @@ cython_debug/
 /tests/
 /e2e/
 
-# Claude Code local settings (keep in repo for team)
-# .claude/ is tracked
+# Claude Code local settings
+.claude/

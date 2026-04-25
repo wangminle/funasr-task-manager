@@ -27,7 +27,7 @@ VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.DISPATCHED: {TaskStatus.TRANSCRIBING, TaskStatus.FAILED, TaskStatus.CANCELED},
     TaskStatus.TRANSCRIBING: {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED},
     TaskStatus.SUCCEEDED: set(),
-    TaskStatus.FAILED: {TaskStatus.QUEUED},
+    TaskStatus.FAILED: {TaskStatus.QUEUED, TaskStatus.TRANSCRIBING},
     TaskStatus.CANCELED: set(),
 }
 
@@ -74,6 +74,12 @@ class Task(Base):
 
     file: Mapped["File"] = relationship(back_populates="tasks", lazy="selectin")  # type: ignore[name-defined]
     events: Mapped[list["TaskEvent"]] = relationship(back_populates="task", lazy="selectin")  # type: ignore[name-defined]
+    segments: Mapped[list["TaskSegment"]] = relationship(  # type: ignore[name-defined]
+        back_populates="task",
+        lazy="noload",
+        cascade="all, delete-orphan",
+        order_by="TaskSegment.segment_index",
+    )
 
     @property
     def file_name(self) -> str | None:

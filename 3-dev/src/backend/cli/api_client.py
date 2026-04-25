@@ -91,10 +91,14 @@ class ASRClient:
         return self._check(self._client.get(f"/api/v1/files/{file_id}")).json()
 
     # --- tasks ---
-    def create_tasks(self, items: list[dict], callback: dict | None = None) -> list[dict]:
+    def create_tasks(
+        self, items: list[dict], callback: dict | None = None, auto_segment: str = "auto",
+    ) -> list[dict]:
         body: dict[str, Any] = {"items": items}
         if callback:
             body["callback"] = callback
+        if auto_segment != "auto":
+            body["auto_segment"] = auto_segment
         return self._check(self._client.post("/api/v1/tasks", json=body)).json()
 
     def list_tasks(

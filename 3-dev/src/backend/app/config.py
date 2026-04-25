@@ -92,6 +92,21 @@ class Settings(BaseSettings):
 
     preprocess_fallback_enabled: bool = True
 
+    # --- VAD segmentation for long audio parallel transcription ---
+    segment_enabled: bool = True
+    segment_min_file_duration_sec: int = 600
+    segment_target_duration_sec: int = 600
+    segment_min_duration_sec: int = 120
+    segment_max_duration_sec: int = 780
+    segment_overlap_ms: int = 400
+    segment_silence_noise_db: int = -35
+    segment_silence_min_duration: float = 0.8
+    segment_search_step_sec: int = 60
+    segment_search_max_rounds: int = 3
+    segment_fallback_silence_sec: float = 0.3
+    segment_max_parallel_per_task: int = 3
+    segment_max_retry_count: int = 3
+
     rate_limit_enabled: bool = False
     rate_limit_max_concurrent: int = 10
     rate_limit_max_daily: int = 100

@@ -128,6 +128,8 @@ class ScheduleDecision:
     estimated_finish: float
     queue_position: int = 0
     audio_duration_sec: float = 0.0
+    kind: str = "task"
+    parent_task_id: str | None = None
 
 
 @dataclass
@@ -385,6 +387,8 @@ class TaskScheduler:
                 estimated_finish=best_slot.earliest_free + est_duration,
                 queue_position=pos + 1,
                 audio_duration_sec=dur,
+                kind=task_info.get("kind", "task"),
+                parent_task_id=task_info.get("parent_task_id"),
             )
             decisions.append(decision)
             best_slot.earliest_free += est_duration
@@ -467,6 +471,9 @@ class TaskScheduler:
         task_id: str,
         audio_duration_sec: float,
         servers: list[ServerProfile],
+        *,
+        kind: str = "task",
+        parent_task_id: str | None = None,
     ) -> ScheduleDecision | None:
         """Assign a single task to the best available server."""
         online_servers = [s for s in servers if s.status == "ONLINE"]
@@ -496,6 +503,8 @@ class TaskScheduler:
             estimated_start=0.0,
             estimated_duration=best_finish,
             estimated_finish=best_finish,
+            kind=kind,
+            parent_task_id=parent_task_id,
         )
 
     def calibrate_after_completion(

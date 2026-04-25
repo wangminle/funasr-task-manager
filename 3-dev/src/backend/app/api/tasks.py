@@ -5,12 +5,15 @@ import json
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import delete as sql_delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from ulid import ULID
 
 from app.auth.rate_limiter import rate_limiter
 from app.deps import CurrentUser, DbSession
-from app.models import Task, TaskEvent, TaskStatus
-from app.schemas.task import TaskCreateRequest, TaskListResponse, TaskResponse
+from app.models import Task, TaskEvent, TaskSegment, TaskStatus, SegmentStatus
+from app.schemas.task import (
+    SegmentSummary, TaskCreateRequest, TaskListResponse, TaskResponse,
+)
 from app.storage.repository import FileRepository, TaskRepository
 from app.storage.file_manager import read_result
 from app.config import settings
@@ -18,6 +21,71 @@ from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
+
+
+async def _batch_segment_summaries(
+    db: AsyncSession, task_ids: list[str],
+) -> dict[str, SegmentSummary]:
+    """Build SegmentSummary per task in two batch queries (status counts + server IDs)."""
+    if not task_ids:
+        return {}
+
+    count_stmt = (
+        select(TaskSegment.task_id, TaskSegment.status, func.count())
+        .where(TaskSegment.task_id.in_(task_ids))
+        .group_by(TaskSegment.task_id, TaskSegment.status)
+    )
+    rows = (await db.execute(count_stmt)).all()
+    if not rows:
+        return {}
+
+    counts: dict[str, dict[str, int]] = {}
+    for tid, status, cnt in rows:
+        counts.setdefault(tid, {})[status] = cnt
+
+    server_stmt = (
+        select(TaskSegment.task_id, TaskSegment.assigned_server_id)
+        .where(
+            TaskSegment.task_id.in_(list(counts.keys())),
+            TaskSegment.assigned_server_id.isnot(None),
+        )
+        .distinct()
+    )
+    server_rows = (await db.execute(server_stmt)).all()
+    task_servers: dict[str, list[str]] = {}
+    for tid, sid in server_rows:
+        task_servers.setdefault(tid, []).append(sid)
+
+    result: dict[str, SegmentSummary] = {}
+    for tid, sc in counts.items():
+        total = sum(sc.values())
+        result[tid] = SegmentSummary(
+            total=total,
+            succeeded=sc.get(SegmentStatus.SUCCEEDED, 0),
+            failed=sc.get(SegmentStatus.FAILED, 0),
+            pending=sc.get(SegmentStatus.PENDING, 0),
+            active=(
+                sc.get(SegmentStatus.DISPATCHED, 0)
+                + sc.get(SegmentStatus.TRANSCRIBING, 0)
+            ),
+            assigned_server_ids=task_servers.get(tid, []),
+        )
+    return result
+
+
+async def _enrich_task_responses(
+    tasks: list[Task], db: AsyncSession,
+) -> list[TaskResponse]:
+    """Convert ORM Task list into TaskResponse list, attaching segment diagnostics."""
+    task_ids = [t.task_id for t in tasks]
+    summaries = await _batch_segment_summaries(db, task_ids)
+    responses: list[TaskResponse] = []
+    for t in tasks:
+        resp = TaskResponse.model_validate(t)
+        if t.task_id in summaries:
+            resp.segment_info = summaries[t.task_id]
+        responses.append(resp)
+    return responses
 
 
 @router.post("", response_model=list[TaskResponse], status_code=201)
@@ -33,11 +101,14 @@ async def create_tasks(body: TaskCreateRequest, db: DbSession, user_id: CurrentU
         file_record = await file_repo.get_file(item.file_id, user_id)
         if file_record is None:
             raise HTTPException(status_code=404, detail=f"File not found: {item.file_id}")
+        merged_options = dict(item.options) if item.options else {}
+        if body.auto_segment != "auto":
+            merged_options["auto_segment"] = body.auto_segment
         task = Task(
             task_id=str(ULID()), user_id=user_id, file_id=item.file_id,
             task_group_id=task_group_id, status=TaskStatus.PENDING,
             language=item.language,
-            options_json=json.dumps(item.options) if item.options else None,
+            options_json=json.dumps(merged_options) if merged_options else None,
             callback_url=body.callback.url if body.callback else None,
             callback_secret=body.callback.secret if body.callback else None,
         )
@@ -63,7 +134,8 @@ async def list_tasks(
     tasks, total = await task_repo.list_tasks(
         user_id, status=status, search=search, group=group, page=page, page_size=page_size,
     )
-    return TaskListResponse(items=[TaskResponse.model_validate(t) for t in tasks], total=total, page=page, page_size=page_size)
+    items = await _enrich_task_responses(tasks, db)
+    return TaskListResponse(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.get("/{task_id}", response_model=TaskResponse)
@@ -72,7 +144,8 @@ async def get_task(task_id: str, db: DbSession, user_id: CurrentUser):
     task = await task_repo.get_task(task_id, user_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    return TaskResponse.model_validate(task)
+    responses = await _enrich_task_responses([task], db)
+    return responses[0]
 
 
 @router.post("/{task_id}/cancel", response_model=TaskResponse)
@@ -83,9 +156,19 @@ async def cancel_task(task_id: str, db: DbSession, user_id: CurrentUser):
         raise HTTPException(status_code=404, detail="Task not found")
     if not task.can_transition_to(TaskStatus.CANCELED):
         raise HTTPException(status_code=409, detail=f"Cannot cancel task in {task.status} status")
+
+    from app.storage.repository import SegmentRepository
+    seg_repo = SegmentRepository(db)
+    for cancel_status in (SegmentStatus.PENDING, SegmentStatus.DISPATCHED):
+        segs = await seg_repo.list_segments_by_status(task_id, cancel_status)
+        for seg in segs:
+            seg.status = SegmentStatus.FAILED
+            seg.error_message = "Parent task canceled"
+
     await task_repo.update_task_status(task, TaskStatus.CANCELED)
     await rate_limiter.record_task_completed(user_id)
-    return TaskResponse.model_validate(task)
+    responses = await _enrich_task_responses([task], db)
+    return responses[0]
 
 
 _ACTIVE_STATUSES = {TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING}
@@ -124,6 +207,7 @@ async def delete_all_tasks(db: DbSession, user_id: CurrentUser, status: str | No
         skipped = (await db.execute(skip_stmt)).scalar() or 0
 
     del_events_sub = select(Task.task_id).where(*base_where)
+    await db.execute(sql_delete(TaskSegment).where(TaskSegment.task_id.in_(del_events_sub)))
     await db.execute(sql_delete(TaskEvent).where(TaskEvent.task_id.in_(del_events_sub)))
 
     del_stmt = (
@@ -151,12 +235,21 @@ async def delete_all_tasks(db: DbSession, user_id: CurrentUser, status: str | No
     await db.commit()
 
     from app.storage.file_manager import delete_result as _del_result, delete_file as _del_file
+    import shutil
     cleaned_files = 0
     cleaned_results = 0
+    cleaned_segments = 0
     deleted_fids: set[str] = set()
     for row in deleted_rows:
         if await _del_result(row.task_id):
             cleaned_results += 1
+        seg_dir = settings.temp_dir / "segments" / row.task_id
+        if seg_dir.exists():
+            try:
+                shutil.rmtree(seg_dir)
+                cleaned_segments += 1
+            except OSError:
+                pass
         if row.file_id and row.file_id in orphaned_file_ids and row.file_id not in deleted_fids:
             if await _del_file(row.file_id):
                 cleaned_files += 1
@@ -165,7 +258,8 @@ async def delete_all_tasks(db: DbSession, user_id: CurrentUser, status: str | No
     deleted_count = len(deleted_task_ids)
     logger.info("tasks_deleted", user_id=user_id, status_filter=status,
                 count=deleted_count, skipped_active=skipped,
-                cleaned_files=cleaned_files, cleaned_results=cleaned_results)
+                cleaned_files=cleaned_files, cleaned_results=cleaned_results,
+                cleaned_segments=cleaned_segments)
     return {"deleted": deleted_count, "skipped_active": skipped}
 
 

@@ -1,1 +1,0 @@
-../../_shared/references/project-context.md

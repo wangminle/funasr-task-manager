@@ -1,8 +1,14 @@
 """Pydantic schemas for task management."""
 
 from datetime import datetime
-
+from enum import StrEnum
 from pydantic import BaseModel, Field, model_validator
+
+
+class AutoSegmentMode(StrEnum):
+    AUTO = "auto"
+    ON = "on"
+    OFF = "off"
 
 
 class CallbackConfig(BaseModel):
@@ -19,6 +25,17 @@ class TaskItemCreate(BaseModel):
 class TaskCreateRequest(BaseModel):
     items: list[TaskItemCreate] = Field(..., min_length=1, max_length=100)
     callback: CallbackConfig | None = None
+    auto_segment: AutoSegmentMode = AutoSegmentMode.AUTO
+
+
+class SegmentSummary(BaseModel):
+    """Diagnostic info about VAD-based parallel segments for a task."""
+    total: int
+    succeeded: int = 0
+    failed: int = 0
+    pending: int = 0
+    active: int = 0
+    assigned_server_ids: list[str] = []
 
 
 class TaskResponse(BaseModel):
@@ -40,8 +57,9 @@ class TaskResponse(BaseModel):
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    segment_info: SegmentSummary | None = Field(None, serialization_alias="segments")
 
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "populate_by_name": True}
 
     @model_validator(mode="after")
     def _compute_is_terminal(self) -> "TaskResponse":
