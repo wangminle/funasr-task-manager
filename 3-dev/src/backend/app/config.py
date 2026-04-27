@@ -16,12 +16,13 @@ class SegmentLevelPreset:
     target_duration_sec: int
     max_duration_sec: int
     min_file_duration_sec: int
+    search_step_sec: int
 
 
 SEGMENT_LEVEL_PRESETS: dict[str, SegmentLevelPreset] = {
-    "10m": SegmentLevelPreset(target_duration_sec=600,  max_duration_sec=780,  min_file_duration_sec=600),
-    "20m": SegmentLevelPreset(target_duration_sec=1200, max_duration_sec=1380, min_file_duration_sec=1200),
-    "30m": SegmentLevelPreset(target_duration_sec=1800, max_duration_sec=1980, min_file_duration_sec=1800),
+    "10m": SegmentLevelPreset(target_duration_sec=600,  max_duration_sec=720,  min_file_duration_sec=720,  search_step_sec=60),
+    "20m": SegmentLevelPreset(target_duration_sec=1200, max_duration_sec=1440, min_file_duration_sec=1440, search_step_sec=120),
+    "30m": SegmentLevelPreset(target_duration_sec=1800, max_duration_sec=2160, min_file_duration_sec=2160, search_step_sec=180),
 }
 
 
@@ -112,10 +113,10 @@ class Settings(BaseSettings):
 
     # --- VAD segmentation for long audio parallel transcription ---
     segment_enabled: bool = True
-    segment_min_file_duration_sec: int = 600
+    segment_min_file_duration_sec: int = 720
     segment_target_duration_sec: int = 600
     segment_min_duration_sec: int = 120
-    segment_max_duration_sec: int = 780
+    segment_max_duration_sec: int = 720
     segment_overlap_ms: int = 400
     segment_silence_noise_db: int = -35
     segment_silence_min_duration: float = 0.8

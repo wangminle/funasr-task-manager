@@ -51,7 +51,7 @@
 
 ## VAD 分段与调度
 
-长音频在 PREPROCESSING 阶段根据 `auto_segment`（auto/on/off）和 `segment_level`（10m/20m/30m）自动 VAD 切分。切分后的 segment 作为内部 work item 参与调度，复用 LPT + EFT 算法。段级 RTF 校准使用段长而非父任务总时长。
+长音频在 PREPROCESSING 阶段根据 `segment_level`（off/10m/20m/30m）自动 VAD 切分，触发阈值为 target × 1.2（10m=720s, 20m=1440s, 30m=2160s）。`off` 关闭切分。切分采用双向交替搜索（后→前→后），步长按档位比例设定（60s/120s/180s）。切分后的 segment 作为内部 work item 参与调度，复用 LPT + EFT 算法。段级 RTF 校准使用段长而非父任务总时长。
 
 ## 调度器如何使用 Benchmark 结果
 

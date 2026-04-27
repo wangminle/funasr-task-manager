@@ -93,7 +93,7 @@ Layer C：决策（Decision）
   - 1 个文件 → 单文件流程
   - 多个文件 → 批量流程，自动生成 `task_group_id`
 - 特殊参数（如有）：语言、热词列表、回调 URL
-- 长音频切分：用户可选 `auto_segment`（auto/on/off）和 `segment_level`（10m/20m/30m）
+- 长音频切分：用户可选 `segment_level`（off/10m/20m/30m，默认 10m）
 - 如果用户说"默认就行" → 全部使用默认值
 
 ### Phase 4：任务提交
@@ -107,7 +107,6 @@ Layer C：决策（Decision）
       {"file_id": "...", "language": "zh", "options": {...}}
     ],
     "callback": {"url": "...", "secret": "..."},
-    "auto_segment": "auto",
     "segment_level": "10m"
   }
   ```
@@ -115,8 +114,7 @@ Layer C：决策（Decision）
   → 记录 `task_id(s)` 和 `task_group_id`
 
   **分段参数协商**：
-  - `auto_segment`（默认 `auto`）：长音频自动 VAD 切分。用户说"不要切分"时传 `off`；用户说"强制切分"时传 `on`
-  - `segment_level`（默认 `10m`）：切分力度。用户偏好较少切分时可选 `20m` 或 `30m`
+  - `segment_level`（默认 `10m`）：切分策略。`off` 关闭切分；`10m`/`20m`/`30m` 按时长阈值自动决定是否切分。用户说"不要切分"时传 `off`；用户偏好较少切分时可选 `20m` 或 `30m`
   - 如用户未提及，使用默认值即可
 - 向用户确认："已提交 N 个文件，任务编号 xxx"
 - 提交失败 → 报告错误原因
@@ -133,12 +131,7 @@ Layer C：决策（Decision）
 
 - 轮询任务状态（5-10 秒间隔）：`GET /api/v1/tasks/{task_id}`
 - 或通过 SSE 监听：`GET /api/v1/tasks/{task_id}/progress`
-- 关键状态变化时通知用户：
-  - `PREPROCESSING` → "文件预处理中..."
-  - `QUEUED` → "等待调度..."
-  - `TRANSCRIBING` → "正在转写..."
-  - `SUCCEEDED` → "转写完成！"
-  - `FAILED` → "转写失败：{原因}"
+- 状态变化时通知用户（仅变化时发送一次）：`⏳ {原始文件名} — {状态描述}`
 - 批量任务：汇报完成进度 "3/5 已完成"
 - 超时策略：
   - 单文件：5 分钟超时
@@ -154,10 +147,11 @@ Layer C：决策（Decision）
   - 空文本 → 标记异常，建议重试或检查音频质量
   - 明显乱码 → 标记异常
   - 正常 → 继续交付
-- 向用户返回
-  - 短文本（< 500 字）→ 直接在 channel 中发送
-  - 长文本 → 发送文件 + 摘要
-  - 批量 → 发送 zip + 汇总统计
+- 向用户返回（**严格按 `funasr-task-manager-result-delivery` 的输出模板**）
+  - 发送固定格式摘要消息（文件名、时长、格式、转写耗时、文本长度、结果文件名）
+  - 以 **txt 文件附件** 形式发回原渠道，文件名与用户发送的原始文件名一致（仅换扩展名为 `.txt`）
+  - **不在消息中引用/粘贴转写全文**，不管文本长短
+  - 批量 → 逐个发送 txt 文件 + 汇总统计
 
 ## 与其他 Skill 的协作
 

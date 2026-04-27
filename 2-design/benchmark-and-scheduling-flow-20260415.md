@@ -162,19 +162,17 @@ flowchart TD
 flowchart TD
     PROMO(["_promote_preprocessing_tasks()"]) --> LOAD["加载 PREPROCESSING 任务<br/>(created_at > 2s)"]
     LOAD --> EACH["遍历每个候选任务"]
-    EACH --> PARSE["解析 options_json:<br/>auto_segment = auto/on/off<br/>segment_level = 10m/20m/30m"]
-    PARSE --> OFF{"auto_segment == off?"}
+    EACH --> PARSE["解析 options_json:<br/>segment_level = off/10m/20m/30m"]
+    PARSE --> OFF{"segment_level == off?"}
     OFF -->|是| NO_SEG["不切分，直接 QUEUED"]
-    OFF -->|否| ON{"auto_segment == on?"}
-    ON -->|是| DO_SEG["强制切分（跳过时长阈值检查）"]
-    ON -->|否 auto| AUTO_CHECK{"duration >= min_file_duration?<br/>(10m: 600s / 20m: 1200s / 30m: 1800s)<br/>默认沿用 settings 配置"}
+    OFF -->|否 10m/20m/30m| AUTO_CHECK{"duration >= min_file_duration?<br/>(10m: 720s / 20m: 1440s / 30m: 2160s)<br/>阈值 = target × 1.2"}
     AUTO_CHECK -->|否| NO_SEG
-    AUTO_CHECK -->|是| DO_SEG
+    AUTO_CHECK -->|是| DO_SEG["按 segment_level 切分"]
 
     DO_SEG --> CREATE["_create_segments_for_task()"]
     CREATE --> CANON["ensure_canonical_wav()<br/>→ 16kHz / mono / s16 WAV"]
     CANON --> SILENCE["silence_detect()<br/>→ ffmpeg silencedetect"]
-    SILENCE --> PLAN["plan_segments()<br/>按 segment_level 预设传入<br/>target/max duration"]
+    SILENCE --> PLAN["plan_segments()<br/>按 segment_level 预设传入<br/>target/max/step，双向交替搜索"]
     PLAN --> SPLIT{"len(plans) > 1?"}
     SPLIT -->|否| NO_SEG
     SPLIT -->|是| WAV_SPLIT["split_wav_segments()<br/>物理切段"]

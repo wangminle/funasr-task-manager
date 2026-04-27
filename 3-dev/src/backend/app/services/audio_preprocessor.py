@@ -413,8 +413,16 @@ def _find_best_cut(
     primary_silence: int,
     fallback_silence: int,
     maximum: int,
+    minimum: int = 0,
 ) -> int:
-    """Find the best cut point using progressive search with fallback.
+    """Find the best cut point using bidirectional alternating search.
+
+    Search order alternates between forward and backward windows around
+    *target*:  forward(0) → backward(0) → forward(1) → …
+
+    Forward windows are clamped to ``pos + maximum``; backward windows
+    are clamped to ``pos + minimum``.  A round is skipped when its
+    clamped window is empty (lo >= hi).
 
     Returns the midpoint of the chosen silence range, or ``pos + maximum``
     as the hard-cut fallback.
@@ -425,9 +433,27 @@ def _find_best_cut(
     def _duration(sr: SilenceRange) -> int:
         return sr.end_ms - sr.start_ms
 
+    backward_floor = pos + minimum
+
+    fwd_offset = 0
+    bwd_offset = 0
+
+    forward_ceiling = pos + maximum
+
     for r in range(rounds):
-        lo = pos + target + r * step
-        hi = lo + step
+        if r % 2 == 0:
+            lo = pos + target + fwd_offset * step
+            hi = min(lo + step, forward_ceiling)
+            fwd_offset += 1
+        else:
+            hi = pos + target - bwd_offset * step
+            lo = hi - step
+            bwd_offset += 1
+            lo = max(lo, backward_floor)
+
+        if lo >= hi:
+            continue
+
         candidates = [
             sr for sr in silence_ranges
             if lo <= _midpoint(sr) <= hi and _duration(sr) >= primary_silence
@@ -436,7 +462,7 @@ def _find_best_cut(
             best = max(candidates, key=_duration)
             return _midpoint(best)
 
-    full_lo = pos + target
+    full_lo = max(pos + target - bwd_offset * step, backward_floor)
     full_hi = pos + maximum
     fallback_candidates = [
         sr for sr in silence_ranges
@@ -462,15 +488,17 @@ def plan_segments(
     fallback_silence_ms: int | None = None,
     min_silence_ms: int | None = None,
 ) -> list[SegmentPlan]:
-    """Generate a split plan for long audio using progressive search.
+    """Generate a split plan for long audio using bidirectional search.
 
-    Cut-point selection uses a multi-round progressive strategy:
+    Cut-point selection uses a bidirectional alternating strategy:
 
-    1. **Round 1..N**: Each round searches a ``search_step_ms``-wide window
-       starting from ``target_duration_ms`` onward.  Within each window only
-       silences ≥ ``min_silence_ms`` are considered; the longest wins.
-    2. **Fallback round**: If all rounds fail, the entire range
-       ``[target, max]`` is searched with a lowered threshold
+    1. **Rounds**: Odd rounds search forward from *target*, even rounds
+       search backward.  Forward windows are clamped to *max_duration_ms*;
+       backward windows are clamped to *min_duration_ms*.  Within each
+       window only silences ≥ ``min_silence_ms`` are considered; the
+       longest wins.
+    2. **Fallback round**: If all rounds fail, the full range
+       ``[target - step, max]`` is searched with a lowered threshold
        (``fallback_silence_ms``, e.g. 300 ms for sentence-gap pauses).
     3. **Hard cut**: As a last resort, cut at ``max_duration_ms``.
 
@@ -517,6 +545,7 @@ def plan_segments(
             primary_silence=primary_silence,
             fallback_silence=fallback_silence,
             maximum=maximum,
+            minimum=minimum,
         )
 
         if total_duration_ms - cut < minimum:

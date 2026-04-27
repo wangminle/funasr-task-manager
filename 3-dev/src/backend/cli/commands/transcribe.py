@@ -37,8 +37,7 @@ def transcribe(
     batch: bool = typer.Option(False, "--batch", help="强制批量模式（多文件时自动启用）"),
     download: bool = typer.Option(True, "--download/--no-download", help="完成后自动下载结果"),
     json_summary: bool = typer.Option(False, "--json-summary", help="输出批次 JSON 摘要"),
-    auto_segment: str = typer.Option("auto", "--auto-segment", help="VAD 切分策略: auto/on/off"),
-    segment_level: str = typer.Option("10m", "--segment-level", help="切分力度: 10m/20m/30m"),
+    segment_level: str = typer.Option("10m", "--segment-level", help="切分策略: off/10m/20m/30m"),
 ):
     """一键转写：上传 → 创建任务 → 等待完成 → 下载结果。
 
@@ -58,16 +57,16 @@ def transcribe(
     if use_batch:
         _run_batch(c, existing, language, hotwords, fmt, resolved_output_dir, callback,
                    no_wait, poll_interval, wait_timeout, download, json_summary,
-                   auto_segment, segment_level)
+                   segment_level)
     else:
         _run_single(c, existing[0], language, hotwords, fmt, resolved_output_dir, save,
                     callback, no_wait, poll_interval, wait_timeout,
-                    auto_segment, segment_level)
+                    segment_level)
 
 
 def _run_single(c, fp, language, hotwords, fmt, output_dir, save,
                 callback, no_wait, poll_interval, wait_timeout,
-                auto_segment="auto", segment_level="10m"):
+                segment_level="10m"):
     """Original single-file flow: upload → create → wait → download."""
     from cli.progress import wait_for_task
 
@@ -88,8 +87,7 @@ def _run_single(c, fp, language, hotwords, fmt, output_dir, save,
     items = [{"file_id": file_data["file_id"], "language": language, "options": options or None}]
     cb = {"url": callback} if callback else None
     try:
-        tasks = c.client.create_tasks(items, callback=cb, auto_segment=auto_segment,
-                                       segment_level=segment_level)
+        tasks = c.client.create_tasks(items, callback=cb, segment_level=segment_level)
     except APIError as e:
         out.error(f"创建任务失败: {e.detail}")
         raise typer.Exit(1)
@@ -143,7 +141,7 @@ def _run_single(c, fp, language, hotwords, fmt, output_dir, save,
 
 def _run_batch(c, files, language, hotwords, fmt, output_dir, callback,
                no_wait, poll_interval, wait_timeout, download_results, json_summary,
-               auto_segment="auto", segment_level="10m"):
+               segment_level="10m"):
     """Batch mode: upload all → batch create → poll batch → download all."""
     import json
 
@@ -182,8 +180,7 @@ def _run_batch(c, files, language, hotwords, fmt, output_dir, callback,
              for _, fid in upload_map]
     cb = {"url": callback} if callback else None
     try:
-        tasks = c.client.create_tasks(items, callback=cb, auto_segment=auto_segment,
-                                       segment_level=segment_level)
+        tasks = c.client.create_tasks(items, callback=cb, segment_level=segment_level)
     except APIError as e:
         out.error(f"批量创建任务失败: {e.detail}")
         raise typer.Exit(1)

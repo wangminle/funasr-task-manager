@@ -242,13 +242,10 @@ class BackgroundTaskRunner:
             return
 
         for task_id, duration_sec, audio_path, options_json in candidates:
-            auto_seg = self._parse_auto_segment(options_json)
             seg_level = self._parse_segment_level(options_json)
 
-            if auto_seg == "off":
+            if seg_level == "off":
                 needs_segmentation = False
-            elif auto_seg == "on":
-                needs_segmentation = bool(audio_path) and settings.segment_enabled
             else:
                 preset = SEGMENT_LEVEL_PRESETS.get(seg_level) if seg_level != "10m" else None
                 min_file_dur = preset.min_file_duration_sec if preset else settings.segment_min_file_duration_sec
@@ -262,26 +259,14 @@ class BackgroundTaskRunner:
                 try:
                     await self._create_segments_for_task(task_id, audio_path, seg_level=seg_level)
                 except Exception as e:
-                    if auto_seg == "on":
-                        logger.error(
-                            "segmentation_failed_explicit_on",
-                            task_id=task_id,
-                            error=str(e),
-                        )
-                        async with async_session_factory() as session:
-                            repo = TaskRepository(session)
-                            task = await repo.get_task(task_id)
-                            if task and task.can_transition_to(TaskStatus.FAILED):
-                                task.error_code = "SEGMENTATION_FAILED"
-                                task.error_message = f"User requested segmentation but it failed: {e}"
-                                await repo.update_task_status(task, TaskStatus.FAILED)
-                                await session.commit()
-                        continue
                     logger.warning(
                         "segmentation_failed_fallback_to_whole_file",
                         task_id=task_id,
+                        segment_level=seg_level,
+                        duration_sec=duration_sec,
                         error=str(e),
-                        hint="Will proceed as unsegmented task",
+                        hint="User requested segmentation but it failed; "
+                             "proceeding with unsegmented whole-file transcription",
                     )
 
             async with async_session_factory() as session:
@@ -323,10 +308,11 @@ class BackgroundTaskRunner:
             silence_ranges = await silence_detect(canonical_path)
 
             plan_kwargs: dict[str, int] = {}
-            preset = SEGMENT_LEVEL_PRESETS.get(seg_level)
-            if preset and seg_level != "10m":
+            preset = SEGMENT_LEVEL_PRESETS.get(seg_level) if seg_level != "10m" else None
+            if preset:
                 plan_kwargs["target_duration_ms"] = preset.target_duration_sec * 1000
                 plan_kwargs["max_duration_ms"] = preset.max_duration_sec * 1000
+                plan_kwargs["search_step_ms"] = preset.search_step_sec * 1000
             plans = plan_segments(duration_ms, silence_ranges, **plan_kwargs)
 
             if len(plans) <= 1:
@@ -1492,31 +1478,31 @@ class BackgroundTaskRunner:
         self._planned_available_server_ids = frozenset()
 
     @staticmethod
-    def _parse_auto_segment(options_json: str | None) -> str:
-        """Extract auto_segment preference from task options_json.
-
-        Returns ``"auto"`` (default), ``"on"``, or ``"off"``.
-        """
-        if not options_json:
-            return "auto"
-        try:
-            opts = json.loads(options_json)
-            value = opts.get("auto_segment", "auto")
-            return value if value in ("auto", "on", "off") else "auto"
-        except (json.JSONDecodeError, AttributeError):
-            return "auto"
-
-    @staticmethod
     def _parse_segment_level(options_json: str | None) -> str:
         """Extract segment_level preference from task options_json.
 
-        Returns ``"10m"`` (default), ``"20m"``, or ``"30m"``.
+        Returns ``"off"``, ``"10m"`` (default), ``"20m"``, or ``"30m"``.
+
+        Backward compatibility: tasks persisted before the parameter merge
+        may contain ``auto_segment`` instead of ``segment_level``.  The
+        legacy values are mapped as follows:
+
+        - ``auto_segment=off``  → ``"off"``
+        - ``auto_segment=on``   → ``segment_level`` value (or ``"10m"``)
+        - ``auto_segment=auto`` → ``segment_level`` value (or ``"10m"``)
         """
         if not options_json:
             return "10m"
         try:
             opts = json.loads(options_json)
+
+            legacy = opts.get("auto_segment")
+            if legacy == "off":
+                return "off"
+
             value = opts.get("segment_level", "10m")
+            if value == "off":
+                return "off"
             return value if value in SEGMENT_LEVEL_PRESETS else "10m"
         except (json.JSONDecodeError, AttributeError):
             return "10m"

@@ -102,15 +102,12 @@ async def create_tasks(body: TaskCreateRequest, db: DbSession, user_id: CurrentU
         if file_record is None:
             raise HTTPException(status_code=404, detail=f"File not found: {item.file_id}")
         merged_options = dict(item.options) if item.options else {}
-        if body.auto_segment != "auto":
-            merged_options["auto_segment"] = body.auto_segment
-        if body.segment_level != "10m":
-            merged_options["segment_level"] = body.segment_level
+        merged_options["segment_level"] = body.segment_level
         task = Task(
             task_id=str(ULID()), user_id=user_id, file_id=item.file_id,
             task_group_id=task_group_id, status=TaskStatus.PENDING,
             language=item.language,
-            options_json=json.dumps(merged_options) if merged_options else None,
+            options_json=json.dumps(merged_options),
             callback_url=body.callback.url if body.callback else None,
             callback_secret=body.callback.secret if body.callback else None,
         )

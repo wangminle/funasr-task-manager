@@ -5,13 +5,8 @@ from enum import StrEnum
 from pydantic import BaseModel, Field, model_validator
 
 
-class AutoSegmentMode(StrEnum):
-    AUTO = "auto"
-    ON = "on"
-    OFF = "off"
-
-
 class SegmentLevel(StrEnum):
+    OFF = "off"
     L10M = "10m"
     L20M = "20m"
     L30M = "30m"
@@ -31,7 +26,6 @@ class TaskItemCreate(BaseModel):
 class TaskCreateRequest(BaseModel):
     items: list[TaskItemCreate] = Field(..., min_length=1, max_length=100)
     callback: CallbackConfig | None = None
-    auto_segment: AutoSegmentMode = AutoSegmentMode.AUTO
     segment_level: SegmentLevel = SegmentLevel.L10M
 
 

@@ -6,8 +6,8 @@
 
 流程:
     1. 对每个长音频文件分别做两组转写：
-       - 基准组：auto_segment=off，整文件直接转写
-       - 实验组：auto_segment=on，VAD 切分后并行转写再合并
+       - 基准组：segment_level=off，整文件直接转写
+       - 实验组：segment_level=10m，VAD 切分后并行转写再合并
     2. 对比维度：
        - 文本完整性：字数差异比例
        - 切分边界质量：切分点附近重复/缺失检测
@@ -55,7 +55,7 @@ def _find_audio_files(audio_dir: Path) -> list[Path]:
 
 
 def _upload_and_transcribe(
-    client: ASRClient, audio_path: Path, auto_segment: str, poll_interval: float = 5.0,
+    client: ASRClient, audio_path: Path, segment_level: str, poll_interval: float = 5.0,
     timeout: float = 3600.0,
 ) -> dict:
     """Upload → create task → poll until done → return result JSON + task info."""
@@ -65,11 +65,11 @@ def _upload_and_transcribe(
 
     tasks = client.create_tasks(
         [{"file_id": file_id, "language": "auto"}],
-        auto_segment=auto_segment,
+        segment_level=segment_level,
     )
     task = tasks[0]
     task_id = task["task_id"]
-    print(f"  任务已创建 task_id={task_id}  auto_segment={auto_segment}")
+    print(f"  任务已创建 task_id={task_id}  segment_level={segment_level}")
 
     start = time.time()
     while time.time() - start < timeout:
@@ -238,14 +238,14 @@ def _evaluate_single(
     print(f"评估文件: {audio_path.name}")
     print(f"{'='*60}")
 
-    print("\n[基准组] auto_segment=off")
+    print("\n[基准组] segment_level=off")
     baseline = _upload_and_transcribe(client, audio_path, "off", poll_interval, timeout)
     if baseline.get("error"):
         print(f"  ❌ 基准组失败: {baseline['error']}")
         return {"file": audio_path.name, "error": f"baseline failed: {baseline['error']}"}
 
-    print("\n[实验组] auto_segment=on")
-    experiment = _upload_and_transcribe(client, audio_path, "on", poll_interval, timeout)
+    print("\n[实验组] segment_level=10m")
+    experiment = _upload_and_transcribe(client, audio_path, "10m", poll_interval, timeout)
     if experiment.get("error"):
         print(f"  ❌ 实验组失败: {experiment['error']}")
         return {"file": audio_path.name, "error": f"experiment failed: {experiment['error']}"}
@@ -321,8 +321,8 @@ def _generate_report(results: list[dict], output_path: Path) -> None:
         "",
         f"- 评估文件数: {len(results)}",
         f"- 评估时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"- 基准组: `auto_segment=off`（整文件直接转写）",
-        f"- 实验组: `auto_segment=on`（VAD 切分并行转写 + 合并）",
+        f"- 基准组: `segment_level=off`（整文件直接转写）",
+        f"- 实验组: `segment_level=10m`（VAD 切分并行转写 + 合并）",
         "",
         "## 评估结果",
         "",

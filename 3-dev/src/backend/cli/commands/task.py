@@ -26,8 +26,7 @@ def create(
     wait: bool = typer.Option(False, "--wait", "-w", help="等待所有任务完成"),
     poll_interval: float = typer.Option(5.0, "--poll-interval", help="轮询间隔(秒)"),
     wait_timeout: float = typer.Option(3600.0, "--timeout", help="等待超时(秒)"),
-    auto_segment: str = typer.Option("auto", "--auto-segment", help="VAD 切分策略: auto/on/off"),
-    segment_level: str = typer.Option("10m", "--segment-level", help="切分力度: 10m/20m/30m"),
+    segment_level: str = typer.Option("10m", "--segment-level", help="切分策略: off/10m/20m/30m"),
 ):
     """创建转写任务（支持批量）。"""
     from cli.main import get_ctx
@@ -40,8 +39,7 @@ def create(
     cb = {"url": callback, "secret": callback_secret} if callback else None
 
     try:
-        tasks = c.client.create_tasks(items, callback=cb, auto_segment=auto_segment,
-                                       segment_level=segment_level)
+        tasks = c.client.create_tasks(items, callback=cb, segment_level=segment_level)
     except APIError as e:
         out.error(e.detail)
         raise typer.Exit(1)

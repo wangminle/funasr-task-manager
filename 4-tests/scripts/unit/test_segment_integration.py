@@ -352,65 +352,102 @@ class TestSegmentStatusEnum:
 @pytest.mark.unit
 class TestAutoSegmentSchema:
     def test_enum_values(self):
-        from app.schemas.task import AutoSegmentMode
-        assert set(AutoSegmentMode) == {"auto", "on", "off"}
+        from app.schemas.task import SegmentLevel
+        assert set(SegmentLevel) == {"off", "10m", "20m", "30m"}
 
     def test_task_create_request_default(self):
         from app.schemas.task import TaskCreateRequest
         req = TaskCreateRequest(items=[{"file_id": "f1"}])
-        assert req.auto_segment == "auto"
-
-    def test_task_create_request_on(self):
-        from app.schemas.task import TaskCreateRequest
-        req = TaskCreateRequest(items=[{"file_id": "f1"}], auto_segment="on")
-        assert req.auto_segment == "on"
+        assert req.segment_level == "10m"
 
     def test_task_create_request_off(self):
         from app.schemas.task import TaskCreateRequest
-        req = TaskCreateRequest(items=[{"file_id": "f1"}], auto_segment="off")
-        assert req.auto_segment == "off"
+        req = TaskCreateRequest(items=[{"file_id": "f1"}], segment_level="off")
+        assert req.segment_level == "off"
+
+    def test_task_create_request_20m(self):
+        from app.schemas.task import TaskCreateRequest
+        req = TaskCreateRequest(items=[{"file_id": "f1"}], segment_level="20m")
+        assert req.segment_level == "20m"
 
     def test_task_create_request_invalid_rejected(self):
         from app.schemas.task import TaskCreateRequest
         from pydantic import ValidationError
         with pytest.raises(ValidationError):
-            TaskCreateRequest(items=[{"file_id": "f1"}], auto_segment="invalid")
+            TaskCreateRequest(items=[{"file_id": "f1"}], segment_level="invalid")
 
 
 # ---------------------------------------------------------------------------
-# _parse_auto_segment in task_runner
+# _parse_segment_level in task_runner
 # ---------------------------------------------------------------------------
 
 @pytest.mark.unit
-class TestParseAutoSegment:
-    def test_none_returns_auto(self):
+class TestParseSegmentLevel:
+    def test_none_returns_10m(self):
         from app.services.task_runner import BackgroundTaskRunner
-        assert BackgroundTaskRunner._parse_auto_segment(None) == "auto"
+        assert BackgroundTaskRunner._parse_segment_level(None) == "10m"
 
-    def test_empty_returns_auto(self):
+    def test_empty_returns_10m(self):
         from app.services.task_runner import BackgroundTaskRunner
-        assert BackgroundTaskRunner._parse_auto_segment("") == "auto"
-
-    def test_on(self):
-        from app.services.task_runner import BackgroundTaskRunner
-        assert BackgroundTaskRunner._parse_auto_segment('{"auto_segment": "on"}') == "on"
+        assert BackgroundTaskRunner._parse_segment_level("") == "10m"
 
     def test_off(self):
         from app.services.task_runner import BackgroundTaskRunner
-        assert BackgroundTaskRunner._parse_auto_segment('{"auto_segment": "off"}') == "off"
+        assert BackgroundTaskRunner._parse_segment_level('{"segment_level": "off"}') == "off"
 
-    def test_auto_explicit(self):
+    def test_10m_explicit(self):
         from app.services.task_runner import BackgroundTaskRunner
-        assert BackgroundTaskRunner._parse_auto_segment('{"auto_segment": "auto"}') == "auto"
+        assert BackgroundTaskRunner._parse_segment_level('{"segment_level": "10m"}') == "10m"
 
-    def test_missing_key_returns_auto(self):
+    def test_20m(self):
         from app.services.task_runner import BackgroundTaskRunner
-        assert BackgroundTaskRunner._parse_auto_segment('{"hotwords": "w"}') == "auto"
+        assert BackgroundTaskRunner._parse_segment_level('{"segment_level": "20m"}') == "20m"
 
-    def test_invalid_value_returns_auto(self):
+    def test_30m(self):
         from app.services.task_runner import BackgroundTaskRunner
-        assert BackgroundTaskRunner._parse_auto_segment('{"auto_segment": "maybe"}') == "auto"
+        assert BackgroundTaskRunner._parse_segment_level('{"segment_level": "30m"}') == "30m"
 
-    def test_malformed_json_returns_auto(self):
+    def test_missing_key_returns_10m(self):
         from app.services.task_runner import BackgroundTaskRunner
-        assert BackgroundTaskRunner._parse_auto_segment("{broken}") == "auto"
+        assert BackgroundTaskRunner._parse_segment_level('{"hotwords": "w"}') == "10m"
+
+    def test_invalid_value_returns_10m(self):
+        from app.services.task_runner import BackgroundTaskRunner
+        assert BackgroundTaskRunner._parse_segment_level('{"segment_level": "5m"}') == "10m"
+
+    def test_malformed_json_returns_10m(self):
+        from app.services.task_runner import BackgroundTaskRunner
+        assert BackgroundTaskRunner._parse_segment_level("{broken}") == "10m"
+
+    # --- backward compatibility with legacy auto_segment ---
+
+    def test_legacy_auto_segment_off(self):
+        from app.services.task_runner import BackgroundTaskRunner
+        assert BackgroundTaskRunner._parse_segment_level('{"auto_segment": "off"}') == "off"
+
+    def test_legacy_auto_segment_on_without_level(self):
+        from app.services.task_runner import BackgroundTaskRunner
+        assert BackgroundTaskRunner._parse_segment_level('{"auto_segment": "on"}') == "10m"
+
+    def test_legacy_auto_segment_auto_without_level(self):
+        from app.services.task_runner import BackgroundTaskRunner
+        assert BackgroundTaskRunner._parse_segment_level('{"auto_segment": "auto"}') == "10m"
+
+    def test_legacy_auto_segment_off_with_segment_level(self):
+        """auto_segment=off takes precedence over segment_level."""
+        from app.services.task_runner import BackgroundTaskRunner
+        assert BackgroundTaskRunner._parse_segment_level(
+            '{"auto_segment": "off", "segment_level": "20m"}'
+        ) == "off"
+
+    def test_legacy_auto_segment_on_with_segment_level(self):
+        """auto_segment=on defers to segment_level value."""
+        from app.services.task_runner import BackgroundTaskRunner
+        assert BackgroundTaskRunner._parse_segment_level(
+            '{"auto_segment": "on", "segment_level": "30m"}'
+        ) == "30m"
+
+    def test_new_segment_level_off_no_legacy(self):
+        """New-style segment_level=off without any legacy key."""
+        from app.services.task_runner import BackgroundTaskRunner
+        assert BackgroundTaskRunner._parse_segment_level('{"segment_level": "off"}') == "off"
