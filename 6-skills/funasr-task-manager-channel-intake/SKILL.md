@@ -70,9 +70,82 @@ Layer C：决策（Decision）
 ### Phase 1：意图确认
 
 - 识别文件和任务意图
-- 高置信度 → 跳过确认，直接到 Phase 2
+- 高置信度 → 跳过确认，直接到 Phase 1.5
 - 中/低置信度 → 主动询问用户
 - 超时无响应 → 不执行，记录日志
+
+### Phase 1.5：渠道文件获取
+
+> **为什么需要这一步**：当 Agent 运行在聊天平台（飞书、企业微信、Slack 等）中时，用户发送的文件存储在平台服务器上，Agent 必须先通过平台 API 下载到本地才能上传到 ASR 后端。这一步是耗时瓶颈——如果 Agent 不知道怎么鉴权和下载，会花几分钟探索各种路径。
+
+#### Step 1：判断文件来源
+
+- **本地文件**（CLI / 本地 Agent）→ 跳过本阶段，直接到 Phase 2
+- **渠道消息文件**（飞书 / 企业微信 / Slack / Discord 等）→ 继续
+
+#### Step 2：渠道鉴权
+
+**优先使用预配置凭据**，避免运行时探索。凭据应在 `funasr-task-manager-init` Phase 7 中配置好，存放在 Agent 平台的凭据存储中。
+
+| 渠道 | 鉴权方式 | 凭据来源 |
+|------|---------|---------|
+| **飞书/Lark** | `app_id` + `app_secret` → `POST /open-apis/auth/v3/tenant_access_token/internal` → `tenant_access_token` | Agent 配置文件或环境变量 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` |
+| **企业微信** | `corpid` + `corpsecret` → `GET /cgi-bin/gettoken` → `access_token` | 环境变量 `WECOM_CORP_ID` / `WECOM_CORP_SECRET` |
+| **Slack** | Bot OAuth Token（`xoxb-...`） | 环境变量 `SLACK_BOT_TOKEN` |
+| **Discord** | Bot Token | 环境变量 `DISCORD_BOT_TOKEN` |
+
+**关键规则**：
+- **不要在运行时搜索凭据**（如 grep JS 源码、find 配置文件），这是上次 8 分钟延迟的主因
+- 如果凭据不可用 → 立即告知用户："缺少飞书/微信凭据，请先配置"，引导进入 `init` Phase 7
+- Token 应缓存，避免每次任务都重新获取（飞书 `tenant_access_token` 有效期 2 小时）
+
+#### Step 3：下载文件到本地
+
+先确定临时目录（跨平台）：
+
+```bash
+# Linux / macOS
+TMPDIR="${TMPDIR:-/tmp}"
+
+# Windows PowerShell
+# $TMPDIR = $env:TEMP
+```
+
+**飞书**：
+
+```bash
+curl -s -o "$TMPDIR/{original_filename}" \
+  -H "Authorization: Bearer {tenant_access_token}" \
+  "https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{file_key}?type=file"
+```
+
+**企业微信**：
+
+```bash
+curl -s -o "$TMPDIR/{original_filename}" \
+  "https://qyapi.weixin.qq.com/cgi-bin/media/get?access_token={access_token}&media_id={media_id}"
+```
+
+**Slack**：
+
+```bash
+curl -s -o "$TMPDIR/{original_filename}" \
+  -H "Authorization: Bearer {bot_token}" \
+  "{url_private_download}"
+```
+
+**批量文件处理**：
+- 多个文件应**并行下载**（`asyncio.gather` 或后台子进程），不要串行等待
+- 下载进度通知用户："正在从飞书下载 3 个文件..."
+- 下载完成 → 记录本地路径列表，进入 Phase 2
+
+#### Step 4：下载验证
+
+- 验证文件大小 > 0
+- 验证文件扩展名匹配
+- 下载失败 → 报告具体文件和错误原因，不静默跳过
+
+详细的渠道 API 参考见 `references/channel-file-apis.md`。
 
 ### Phase 2：预检查
 
@@ -147,10 +220,11 @@ Layer C：决策（Decision）
   - 空文本 → 标记异常，建议重试或检查音频质量
   - 明显乱码 → 标记异常
   - 正常 → 继续交付
-- 向用户返回（**严格按 `funasr-task-manager-result-delivery` 的输出模板**）
-  - 发送固定格式摘要消息（文件名、时长、格式、转写耗时、文本长度、结果文件名）
+- 向用户返回（**严格按 `funasr-task-manager-result-delivery` 的强制模板**，禁止自由组织回复）
+  - 发送固定格式摘要消息（仅包含：文件名、时长、格式、转写耗时、文本长度、结果文件名）
   - 以 **txt 文件附件** 形式发回原渠道，文件名与用户发送的原始文件名一致（仅换扩展名为 `.txt`）
   - **不在消息中引用/粘贴转写全文**，不管文本长短
+  - **不添加模板外内容**（如性能对比表格、分段详情 JSON、加速比等）
   - 批量 → 逐个发送 txt 文件 + 汇总统计
 
 ## 与其他 Skill 的协作

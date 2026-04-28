@@ -115,21 +115,48 @@ pip install -r requirements.txt
 python -c "import fastapi; import sqlalchemy; import uvicorn; print('OK')"
 ```
 
-#### Step 4：初始化数据库
+#### Step 4：检查 ffmpeg / ffprobe
+
+VAD 分段并行转写（长音频自动切分）依赖 ffprobe 获取精确时长，ffmpeg 用于静音检测和物理切段。缺少时分段功能会静默 fallback 到整文件转写，性能大幅下降。
+
+```bash
+ffprobe -version
+ffmpeg -version
+```
+
+- 两者均可用 → 继续
+- 不可用 → 按平台安装：
+  - **Linux（有 sudo）**：`sudo apt-get install -y ffmpeg`
+  - **Linux（无 sudo / 容器内）**：下载静态二进制包：
+    ```bash
+    mkdir -p ~/.local/bin
+    cd /tmp
+    curl -LO https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+    tar xf ffmpeg-release-amd64-static.tar.xz
+    cp ffmpeg-*-static/ffmpeg ffmpeg-*-static/ffprobe ~/.local/bin/
+    chmod +x ~/.local/bin/ffmpeg ~/.local/bin/ffprobe
+    rm -rf ffmpeg-*
+    ```
+    确保 `~/.local/bin` 在 PATH 中：`export PATH="$HOME/.local/bin:$PATH"`
+  - **macOS**：`brew install ffmpeg`
+  - **Windows**：下载 https://www.gyan.dev/ffmpeg/builds/ 解压后加入 PATH
+- 安装后再次验证 `ffprobe -version`
+
+#### Step 5：初始化数据库
 
 ```bash
 cd 3-dev/src/backend
 python -m alembic upgrade head
 ```
 
-#### Step 5：安装前端依赖
+#### Step 6：安装前端依赖
 
 ```bash
 cd 3-dev/src/frontend
 npm install
 ```
 
-#### Step 6：启动后端
+#### Step 7：启动后端
 
 ```bash
 cd 3-dev/src/backend
@@ -138,7 +165,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 启动后等待 5 秒，验证 `GET http://localhost:8000/health` 返回 `{"status": "ok"}`。
 
-#### Step 7：启动前端
+#### Step 8：启动前端
 
 ```bash
 cd 3-dev/src/frontend
@@ -207,11 +234,209 @@ docker compose ps
   前端地址: http://localhost:5173
   健康检查: ✅ 通过
   数据库:   ✅ 已迁移到最新版本
+  ffprobe:  ✅ 可用（版本 x.x.x）
 
   下一步:
   - 注册 FunASR 服务器: python -m cli server register <ws://...>
   - 上传并转写: python -m cli transcribe <audio-file>
   - 打开前端: http://localhost:5173
+  - 安装 Skills 到 Agent 平台（见 Phase 6）
+```
+
+### Phase 6：安装 Skills 到 Agent 平台
+
+**目的**：将 `6-skills/` 下的所有 Skill 安装到 Agent 平台的自动加载目录，使 Agent 启动时即具备 ASR 转写能力，不需要用户手动指挥"去 repo 里学一下 skill"。
+
+**向用户询问**：
+
+> 是否需要将 ASR Skills 安装到 Agent 平台？安装后 Agent 启动时会自动加载这些技能，可以自主识别文件并完成转写。
+>
+> 请问你使用的是哪个 Agent 平台？
+> 1. **OpenClaw** — Skills 安装到 `~/.openclaw/workspace-{name}/skills/`
+> 2. **Hermes** — Skills 安装到 `~/.hermes/skills/`
+> 3. **Cursor** — Skills 安装到 `{project}/.cursor/skills/` 或 `~/.cursor/skills-cursor/`
+> 4. **其他 / 不安装** — 跳过此步骤
+
+用户选择后进入对应分支。
+
+#### 6A：OpenClaw
+
+先确定 workspace 名称（向用户询问或自动检测当前活跃 workspace）：
+
+```bash
+# 列出已有 workspace（选择其中一个）
+ls ~/.openclaw/workspace-*/
+
+# 向用户确认目标 workspace 名称，例如：asr、default、my-project 等
+WORKSPACE_NAME="<用户确认的 workspace 名>"
+WORKSPACE_SKILLS="$HOME/.openclaw/workspace-$WORKSPACE_NAME/skills"
+REPO_SKILLS="{repo_root}/6-skills"
+
+mkdir -p "$WORKSPACE_SKILLS"
+
+for skill_dir in "$REPO_SKILLS"/funasr-task-manager-*/; do
+  skill_name=$(basename "$skill_dir")
+  cp -r "$skill_dir" "$WORKSPACE_SKILLS/$skill_name"
+  echo "✅ $skill_name"
+done
+```
+
+验证：
+
+```bash
+ls "$WORKSPACE_SKILLS"/funasr-task-manager-*/SKILL.md | wc -l
+```
+
+#### 6B：Hermes
+
+```bash
+HERMES_SKILLS="$HOME/.hermes/skills"
+REPO_SKILLS="{repo_root}/6-skills"
+
+mkdir -p "$HERMES_SKILLS"
+
+for skill_dir in "$REPO_SKILLS"/funasr-task-manager-*/; do
+  skill_name=$(basename "$skill_dir")
+  cp -r "$skill_dir" "$HERMES_SKILLS/$skill_name"
+  echo "✅ $skill_name"
+done
+```
+
+#### 6C：Cursor
+
+Cursor 的 skill 目录分为用户级和项目级：
+
+- **用户级**（所有项目共享）：`~/.cursor/skills-cursor/`
+- **项目级**（仅当前项目）：`{project}/.cursor/skills/`
+
+推荐安装到项目级目录：
+
+**Linux / macOS**：
+
+```bash
+PROJECT_SKILLS="{repo_root}/.cursor/skills"
+REPO_SKILLS="{repo_root}/6-skills"
+
+mkdir -p "$PROJECT_SKILLS"
+
+for skill_dir in "$REPO_SKILLS"/funasr-task-manager-*/; do
+  skill_name=$(basename "$skill_dir")
+  ln -sf "$(cd "$skill_dir" && pwd)" "$PROJECT_SKILLS/$skill_name"
+  echo "✅ $skill_name"
+done
+```
+
+**Windows PowerShell**：
+
+```powershell
+$ProjectSkills = "{repo_root}\.cursor\skills"
+$RepoSkills = "{repo_root}\6-skills"
+
+New-Item -ItemType Directory -Force -Path $ProjectSkills | Out-Null
+
+Get-ChildItem -Directory "$RepoSkills\funasr-task-manager-*" | ForEach-Object {
+    $target = Join-Path $ProjectSkills $_.Name
+    if (Test-Path $target) { Remove-Item $target -Recurse -Force }
+    # 符号链接需要管理员权限，降级为目录拷贝
+    Copy-Item -Recurse $_.FullName $target
+    Write-Host "✅ $($_.Name)"
+}
+```
+
+#### 6D：跳过
+
+记录日志，提示用户可以稍后手动安装：
+
+```
+ℹ️ 已跳过 Skill 安装。如需后续安装，请将 6-skills/funasr-task-manager-*/ 目录
+   复制或链接到你的 Agent 平台的 skills 加载目录。
+```
+
+#### 安装后验证
+
+无论哪个平台，安装完成后输出清单：
+
+```
+📦 已安装 ASR Skills:
+
+  ✅ funasr-task-manager-init            — 环境初始化与启动
+  ✅ funasr-task-manager-channel-intake   — 音频入口与意图编排
+  ✅ funasr-task-manager-media-preflight  — 媒体文件预检查
+  ✅ funasr-task-manager-result-delivery  — 结果交付与质量初筛
+  ✅ funasr-task-manager-server-benchmark — 服务器性能测试
+  ✅ funasr-task-manager-reset-test-db    — 测试数据库重置
+  ✅ funasr-task-manager-web-e2e          — 浏览器端到端测试
+
+  安装目录: {skills_dir}
+
+  Agent 重启后将自动加载上述 Skills。
+  当 channel 中出现音视频文件或 ASR 关键词时，Agent 会自动触发转写流程。
+```
+
+### Phase 7：配置渠道凭据（可选）
+
+如果 Agent 需要通过聊天渠道（飞书、企业微信、Slack 等）接收用户文件，必须预配置渠道 API 凭据。否则 Agent 在收到文件时会花数分钟探索鉴权路径。
+
+**向用户询问**：
+
+> Agent 是否需要从聊天渠道接收文件？
+> 1. **飞书/Lark** — 需要 `app_id` + `app_secret`
+> 2. **企业微信** — 需要 `corpid` + `corpsecret`
+> 3. **Slack** — 需要 Bot OAuth Token
+> 4. **不需要 / 仅 CLI** — 跳过
+
+#### 飞书凭据配置
+
+1. 在[飞书开放平台](https://open.feishu.cn/)创建企业自建应用
+2. 开通权限：`im:message`、`im:message:send_as_bot`、`im:resource`、`im:file`
+3. 获取 `App ID` 和 `App Secret`
+4. 写入 Agent 配置：
+
+```bash
+# OpenClaw 平台
+cat >> ~/.openclaw/agents/{agent}/agent/.env << 'EOF'
+FEISHU_APP_ID=cli_xxxxxxxxxxxx
+FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxx
+EOF
+
+# 或通用环境变量
+export FEISHU_APP_ID=cli_xxxxxxxxxxxx
+export FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+5. 验证凭据有效：
+
+```bash
+curl -s -X POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal \
+  -H "Content-Type: application/json" \
+  -d '{"app_id": "'$FEISHU_APP_ID'", "app_secret": "'$FEISHU_APP_SECRET'"}'
+# 应返回 {"code": 0, "tenant_access_token": "t-xxx", ...}
+```
+
+#### 企业微信凭据配置
+
+```bash
+export WECOM_CORP_ID=wxxxxxxxxxxxxxxxxx
+export WECOM_CORP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+#### Slack 凭据配置
+
+```bash
+export SLACK_BOT_TOKEN=xoxb-xxxxxxxxxxxx-xxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+#### 配置验证输出
+
+```
+✅ 渠道凭据已配置
+
+  渠道:     飞书
+  App ID:   cli_xxx...xxx（已验证）
+  Token:    有效，2 小时后过期
+  权限:     im:message ✅ / im:resource ✅ / im:file ✅
+
+  Agent 现在可以自动从飞书下载用户发送的文件。
 ```
 
 ## 错误处理
@@ -220,9 +445,12 @@ docker compose ps
 |------|--------------|----------|
 | Unicorn 安装失败 | 回退到直接使用系统 Python，提示手动创建 venv | 放弃安装 |
 | pip install 报错 | 展示完整错误日志，建议检查网络或 Python 版本 | 静默跳过 |
+| ffprobe 安装失败 | 展示错误，提示手动安装方法；标记 warning 但不阻断后续步骤 | 跳过不报告（会导致分段功能静默失效） |
 | Docker build 失败 | 展示 build 日志最后 30 行，分析原因 | 反复重试 |
 | 端口被占用 | 提示杀掉占用进程或换端口 | 强制 kill |
 | 数据库迁移失败 | 展示错误，建议 `alembic downgrade base && alembic upgrade head` | 删除数据库文件 |
+| Skill 目录不存在 | 创建目录后重试 | 跳过 Skill 安装 |
+| Agent 平台无法识别 | 提供通用说明，让用户手动复制到对应目录 | 猜测平台路径 |
 
 ## 与其他 Skill 的关系
 
