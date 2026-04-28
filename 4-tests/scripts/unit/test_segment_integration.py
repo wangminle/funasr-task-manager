@@ -1,7 +1,7 @@
 """Integration tests for VAD segment transcription pipeline.
 
 Covers:
-- Configuration threshold (10-minute / 600s)
+- Configuration threshold (12-minute / 720s trigger, 10-minute / 600s target)
 - SegmentSummary diagnostic enrichment
 - Merge-and-finalize flow (end-to-end with in-memory data)
 - Cancel / delete segment handling
@@ -59,16 +59,16 @@ def _make_segment_input(
 
 @pytest.mark.unit
 class TestSegmentThreshold:
-    def test_threshold_is_600_seconds(self):
-        assert settings.segment_min_file_duration_sec == 600
+    def test_threshold_is_720_seconds(self):
+        assert settings.segment_min_file_duration_sec == 720
 
     def test_short_audio_below_threshold(self):
-        """Audio under 600s should not be considered for segmentation."""
-        assert 599 < settings.segment_min_file_duration_sec
+        """Audio under 720s should not be considered for segmentation."""
+        assert 719 < settings.segment_min_file_duration_sec
 
     def test_target_and_max_durations(self):
         assert settings.segment_target_duration_sec == 600
-        assert settings.segment_max_duration_sec == 780
+        assert settings.segment_max_duration_sec == 720
         assert settings.segment_overlap_ms == 400
 
     def test_progressive_search_config(self):

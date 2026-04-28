@@ -457,8 +457,8 @@ python -m cli doctor
 ├─────────────────────┬──────┬────────────────────────┤
 │ 检查项              │ 状态 │ 说明                    │
 ├─────────────────────┼──────┼────────────────────────┤
-│ database_schema     │  ✅  │ version 003            │
-│ alembic_version     │  ✅  │ 003_add_throughput_rtf │
+│ database_schema     │  ✅  │ version 004            │
+│ alembic_version     │  ✅  │ 004_task_segments      │
 │ ffprobe             │  ⚠️  │ not found              │
 │ upload_dir          │  ✅  │ runtime/storage/uploads writable │
 │ asr_servers         │  ✅  │ 2/2 online             │
@@ -542,7 +542,7 @@ python -m cli config set api_key dev-token-user1
 CLI 会在输出和 JSON 摘要中列出失败的文件（`upload_failures` 字段），并以非零退出码（exit 1）退出。已成功上传的文件仍会正常转写，不会因为部分失败而全部放弃。
 
 **Q: 从旧版本数据库升级需要注意什么？**
-运行 `alembic upgrade head`。迁移 `002_fix_callback_outbox_schema` 会自动为已有记录回填 `outbox_id`（ULID）；`003_add_throughput_rtf` 会为 `server_instances` 表新增 `throughput_rtf` 和 `benchmark_concurrency` 列（nullable），已有服务器首次 benchmark 后自动填充。
+运行 `alembic upgrade head`。迁移 `002_fix_callback_outbox_schema` 会自动为已有记录回填 `outbox_id`（ULID）；`003_add_throughput_rtf` 会为 `server_instances` 表新增 `throughput_rtf` 和 `benchmark_concurrency` 列（nullable），已有服务器首次 benchmark 后自动填充；`004_create_task_segments` 会创建 `task_segments` 表，用于 VAD 分段并行转写的段级调度和状态跟踪。
 
 ---
 
@@ -684,15 +684,22 @@ funasr-task-manager/
 │       ├── e2e/                       # 端到端测试（API/CLI 视角）
 │       └── load/                      # 压力测试
 ├── 6-skills/                          # Agent 可复用的自动化技能
+│   ├── funasr-task-manager-init/               # 环境初始化与启动（Python/Docker）
+│   ├── funasr-task-manager-channel-intake/     # 音频入口与意图编排（飞书/企微/Slack）
+│   ├── funasr-task-manager-media-preflight/    # 媒体文件预检查（格式/时长/转码评估）
+│   ├── funasr-task-manager-result-delivery/    # 结果交付与质量初筛
+│   ├── funasr-task-manager-server-benchmark/   # 服务器性能校准（RTF 基线/并发梯度）
 │   ├── funasr-task-manager-reset-test-db/      # 测试前数据库重置与 dry-run 评估
-│   └── funasr-task-manager-web-e2e/   # 浏览器 E2E 测试流程编排与素材管理
+│   └── funasr-task-manager-web-e2e/            # 浏览器 E2E 测试流程编排与素材管理
 ├── runtime/                           # 运行时目录（gitignore）
 │   ├── storage/                       # 数据库 / 上传 / 结果 / 临时文件
 │   └── logs/                          # 后端/前端日志、PID 与迁移日志
 └── README.md
 ```
 
-`6-skills/` 目录存放面向 AI Agent 和开发者的可复用自动化技能。每个技能包含一份 `SKILL.md`（触发条件、操作流程、参数规则）和配套脚本。Agent 在对话中根据 SKILL.md 的 `description` 字段自动匹配并触发对应技能。
+`6-skills/` 目录存放面向 AI Agent 和开发者的可复用自动化技能。每个技能包含一份 `SKILL.md`（触发条件、操作流程、参数规则）和配套脚本/参考文档。Agent 在对话中根据 SKILL.md 的 `description` 字段自动匹配并触发对应技能。
+
+**Skill 协作链路**：`init`（环境准备）→ `channel-intake`（识别意图 + 文件获取 + 任务提交）→ `media-preflight`（文件预检查）→ `result-delivery`（进度监控 + 结果交付）。`server-benchmark` 和 `reset-test-db` 在测试/校准场景独立触发，`web-e2e` 用于浏览器端到端验证。
 
 ## 许可证
 

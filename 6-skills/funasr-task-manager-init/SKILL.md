@@ -54,7 +54,12 @@ description: >
    - 连接失败 → 前端未启动
 
 3. 判断结果：
-   - 后端 + 前端均已运行 → 报告"环境就绪"，退出
+   - 后端 + 前端均已运行 → 报告"环境就绪"，**询问是否执行后续可选阶段**：
+     > 环境已就绪。是否还需要：
+     > 1. 安装/更新 Skills 到 Agent 平台（Phase 6）
+     > 2. 配置渠道凭据（Phase 7）
+     > 3. 注册后端为 systemd 服务（Phase 8，仅 Linux）
+     > 4. 不需要，退出
    - 有服务未启动 → 进入 Phase 3
 
 ### Phase 3：选择安装方式
@@ -240,8 +245,16 @@ docker compose ps
   - 注册 FunASR 服务器: python -m cli server register <ws://...>
   - 上传并转写: python -m cli transcribe <audio-file>
   - 打开前端: http://localhost:5173
-  - 安装 Skills 到 Agent 平台（见 Phase 6）
 ```
+
+输出报告后，**必须询问用户是否执行 Phase 6/7/8**（不可跳过此询问）：
+
+> 是否需要执行以下可选配置？
+> 1. 安装/更新 ASR Skills 到 Agent 平台（推荐）
+> 2. 配置飞书/企微/Slack 渠道凭据
+> 3. 注册后端为 systemd 服务（仅 Linux，实现开机自启 + 崩溃重启）
+> 4. 全部执行
+> 5. 跳过
 
 ### Phase 6：安装 Skills 到 Agent 平台
 
@@ -276,6 +289,8 @@ mkdir -p "$WORKSPACE_SKILLS"
 
 for skill_dir in "$REPO_SKILLS"/funasr-task-manager-*/; do
   skill_name=$(basename "$skill_dir")
+  # 先删除旧版本，避免 cp -r 创建嵌套子目录
+  rm -rf "$WORKSPACE_SKILLS/$skill_name"
   cp -r "$skill_dir" "$WORKSPACE_SKILLS/$skill_name"
   echo "✅ $skill_name"
 done
@@ -297,6 +312,7 @@ mkdir -p "$HERMES_SKILLS"
 
 for skill_dir in "$REPO_SKILLS"/funasr-task-manager-*/; do
   skill_name=$(basename "$skill_dir")
+  rm -rf "$HERMES_SKILLS/$skill_name"
   cp -r "$skill_dir" "$HERMES_SKILLS/$skill_name"
   echo "✅ $skill_name"
 done
@@ -321,7 +337,8 @@ mkdir -p "$PROJECT_SKILLS"
 
 for skill_dir in "$REPO_SKILLS"/funasr-task-manager-*/; do
   skill_name=$(basename "$skill_dir")
-  ln -sf "$(cd "$skill_dir" && pwd)" "$PROJECT_SKILLS/$skill_name"
+  rm -rf "$PROJECT_SKILLS/$skill_name"
+  ln -sfn "$(cd "$skill_dir" && pwd)" "$PROJECT_SKILLS/$skill_name"
   echo "✅ $skill_name"
 done
 ```
@@ -439,6 +456,24 @@ export SLACK_BOT_TOKEN=xoxb-xxxxxxxxxxxx-xxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx
   Agent 现在可以自动从飞书下载用户发送的文件。
 ```
 
+### Phase 8：systemd 后端服务守护（可选，仅 Unicorn 环境 + Linux）
+
+仅适用于通过 Unicorn（uv）环境安装的 Python 后端。Docker 安装应使用 `docker compose` 的 `restart: always`，不需要本流程。
+
+**前置检查**：`uname -s` 返回 `Linux` 且 `which systemctl` 成功且后端非 Docker 运行。非 Linux → 告知"仅适用于 Linux"，macOS 建议 `nohup` 或 launchd。
+
+**交互流程**：
+
+1. 按优先级检测 venv Python 路径（`.venv/bin/python` > 系统 python3），**验证 `import uvicorn` 成功**后向用户确认
+2. 生成 service 文件内容，**展示完整内容后请求用户确认再写入**
+3. 已有同名 service → 先展示 diff 让用户选择覆盖/跳过
+4. `sudo systemctl daemon-reload && enable --now`
+5. 等待 5 秒后验证 `is-active` + `curl /health`
+
+**安全规则**：所有 `sudo` 操作必须先展示完整命令，等用户确认后执行。不可静默写入 `/etc/systemd/system/`。
+
+详细的 unit 文件模板、参数收集流程、验证输出和故障排查见 [references/systemd-setup.md](references/systemd-setup.md)。
+
 ## 错误处理
 
 | 场景 | Agent 应做的事 | 不应做的事 |
@@ -451,6 +486,7 @@ export SLACK_BOT_TOKEN=xoxb-xxxxxxxxxxxx-xxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx
 | 数据库迁移失败 | 展示错误，建议 `alembic downgrade base && alembic upgrade head` | 删除数据库文件 |
 | Skill 目录不存在 | 创建目录后重试 | 跳过 Skill 安装 |
 | Agent 平台无法识别 | 提供通用说明，让用户手动复制到对应目录 | 猜测平台路径 |
+| systemctl 不可用 / sudo 权限不足 | 提示替代方案或展示命令让用户手动执行 | 强行写入或反复尝试 sudo |
 
 ## 与其他 Skill 的关系
 
@@ -462,5 +498,4 @@ export SLACK_BOT_TOKEN=xoxb-xxxxxxxxxxxx-xxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx
 
 - `3-dev/src/backend/pyproject.toml` 或 `requirements.txt`：后端依赖
 - `3-dev/src/frontend/package.json`：前端依赖
-- `docker-compose.yml`：Docker 编排配置（如存在）
-- `3-dev/src/backend/alembic/`：数据库迁移脚本
+- `docker-compose.yml`：Docker 编排 / `3-dev/src/backend/alembic/`：数据库迁移

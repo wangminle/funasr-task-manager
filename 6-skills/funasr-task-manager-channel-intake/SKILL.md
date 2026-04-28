@@ -15,6 +15,33 @@ description: >
 
 > MVP 阶段可把进度监控和结果交付临时写在此 Skill 中，但文档和实现都应保留 `funasr-task-manager-result-delivery` 的拆分边界，避免入口 Skill 演化成巨型 Skill。
 
+## 执行检查清单（强制）
+
+> **强制规则**：Agent 在执行本 Skill 流程时，**必须逐条确认以下通知已发送**。跳过任何一项需要明确理由（如用户明确说"不用通知"）。使用 `background: true` 执行异步操作时，**更需要主动回报状态**，不可静默等待结果。
+
+| # | 检查项 | 时机 | 通知模板 |
+|---|--------|------|---------|
+| 1 | 收到文件确认 | Phase 1 | "收到 N 个音频/视频文件：{文件列表}" |
+| 2 | 意图确认 | Phase 1 | "需要转写吗？" 或直接进入（高置信度） |
+| 3 | 开始下载通知 | Phase 1.5 | "⏳ 正在从{渠道}下载文件..." |
+| 4 | 下载完成通知 | Phase 1.5 | "✅ 下载完成：{N}/{total} 个文件" |
+| 5 | 预检查结果 | Phase 2 | 异常时通知，正常时可跳过 |
+| 6 | 开始上传通知 | Phase 4 | "⏳ 正在上传到转写引擎..." |
+| 7 | 任务提交确认 | Phase 4 | "✅ 已提交 N 个文件，任务编号 {task_id}" |
+| 8 | 移交结果交付 | Phase 5 | 无需用户可见通知，内部交接 |
+
+### 常见执行偏差（必读）
+
+| 偏差模式 | 典型表现 | 正确做法 |
+|---------|---------|---------|
+| **静默执行** | 全程不发送任何状态通知，直到最终结果 | 每个 Phase 至少一次状态通知 |
+| **效率优先跳过** | 觉得"快干快完"，中间通知打断节奏 | 通知是用户体验核心，不是可选项 |
+| **后台遗忘** | `background: true` 后忘记回报状态 | 异步操作完成后立即回报 |
+| **大文件焦虑** | 处理大文件时把精力放在技术问题上 | 大文件/长时间操作**更需要**频繁通知 |
+| **只发结果** | 只在最后发送汇总和文件 | 各阶段都要通知，用户需要知道进度 |
+
+> **2026-04-28 复盘教训**：OpenClaw 机器人实际执行中，9 个通知阶段全部跳过，只做了最终交付。根因是"效率优先心态"和"无执行检查机制"。本清单就是为了防止此类偏差再次发生。
+
 ## 触发条件
 
 ### 文件触发
@@ -114,10 +141,39 @@ TMPDIR="${TMPDIR:-/tmp}"
 **飞书**：
 
 ```bash
+# 尝试直接下载（适用于 < 50MB 的文件）
 curl -s -o "$TMPDIR/{original_filename}" \
   -H "Authorization: Bearer {tenant_access_token}" \
   "https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{file_key}?type=file"
 ```
+
+**飞书大文件回退**（>50MB 会返回错误码 `234037: Downloaded file size exceeds limit`）：
+
+```bash
+# 使用 HTTP Range 分块下载（10MB/块）
+CHUNK_SIZE=$((10 * 1024 * 1024))
+OFFSET=0
+OUTFILE="$TMPDIR/{original_filename}"
+
+# 第一次请求获取总大小
+TOTAL_SIZE=$(curl -sI -H "Authorization: Bearer {tenant_access_token}" \
+  -H "Range: bytes=0-0" \
+  "https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{file_key}?type=file" \
+  | grep -i content-range | sed 's|.*/||; s|[^0-9]||g')
+
+> "$OUTFILE"
+while [ $OFFSET -lt $TOTAL_SIZE ]; do
+  END=$(( OFFSET + CHUNK_SIZE - 1 ))
+  [ $END -ge $TOTAL_SIZE ] && END=$(( TOTAL_SIZE - 1 ))
+  curl -s -H "Authorization: Bearer {tenant_access_token}" \
+    -H "Range: bytes=${OFFSET}-${END}" \
+    "https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{file_key}?type=file" \
+    >> "$OUTFILE"
+  OFFSET=$(( END + 1 ))
+done
+```
+
+> **判断逻辑**：先尝试直接下载，若返回 `234037` 错误码则自动切换到 Range 分块下载。Agent 应在下载大文件时通知用户："⏳ 文件较大（{size}MB），使用分块下载..."
 
 **企业微信**：
 

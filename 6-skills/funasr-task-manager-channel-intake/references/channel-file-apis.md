@@ -35,6 +35,7 @@ Authorization: Bearer {tenant_access_token}
 - `message_id`：从消息事件 webhook 或消息列表 API 获取
 - `file_key`：消息体中的文件标识（`msg.content.file_key`）
 - `type`：`file`（普通文件）或 `image`（图片）
+- ⚠️ **大文件限制**：超过约 50MB 时返回错误码 `234037: Downloaded file size exceeds limit`，需改用 HTTP Range 分块下载（每块 10MB），详见 intake SKILL 的"飞书大文件回退"部分
 
 ### 发送文件到会话
 
@@ -51,7 +52,8 @@ file=@{local_path}
 → {"file_key": "file_v2_xxx"}
 
 # Step 2: 发送文件消息
-POST https://open.feishu.cn/open-apis/im/v1/messages
+# ⚠️ 必须在 URL 中指定 receive_id_type，否则飞书会以参数错误拒绝请求
+POST https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id
 Authorization: Bearer {tenant_access_token}
 Content-Type: application/json
 
@@ -60,6 +62,12 @@ Content-Type: application/json
   "msg_type": "file",
   "content": "{\"file_key\": \"file_v2_xxx\"}"
 }
+
+# receive_id_type 可选值：
+#   chat_id  — 群聊 ID（最常用）
+#   open_id  — 用户 open_id（私聊）
+#   user_id  — 用户 user_id（私聊）
+#   union_id — 用户 union_id（私聊）
 ```
 
 ### 所需权限（飞书应用配置）

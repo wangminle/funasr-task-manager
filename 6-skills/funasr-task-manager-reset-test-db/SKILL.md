@@ -1,6 +1,12 @@
 ---
 name: funasr-task-manager-reset-test-db
-description: Use when preparing a clean backend database state for local debugging, pytest, Playwright E2E, or repeated regression runs in the funasr-task-manager repository. Trigger when task data must be wiped, the SQLite backend must be rebuilt after a failed run, or server configuration should be preserved or reseeded before tests.
+description: >
+  Reset the funasr-task-manager local database and storage to a clean state.
+  Use when: preparing for tests (pytest, E2E, benchmark), user asks to clear
+  tasks/data/uploads, wipe the database, rebuild after corruption, free disk
+  space, or reset to initial state. Trigger on: "清空数据库", "重置数据",
+  "清空任务", "只保留服务器", "其他都清空", "彻底清理", "释放空间",
+  "reset db", "clean state", "wipe data".
 ---
 
 # Reset ASR DB Before Test
@@ -20,6 +26,20 @@ python 6-skills/funasr-task-manager-reset-test-db/scripts/reset_db.py
 ```bash
 python3 6-skills/funasr-task-manager-reset-test-db/scripts/reset_db.py
 ```
+
+## ⚠️ 意图判断规则（必须先读）
+
+> **核心原则**：用户表达中出现"**都**"、"**所有**"、"**全部**"、"**其他都清空**"、"**只保留 X**"等全量清理语义时，**必须**加 `--clear-uploads`。uploads 里的文件属于"数据"的一部分——用户说"清空数据"时期望 uploads 也被清理。
+
+| 用户说法（示例） | 命令 | 解释 |
+|----------------|------|------|
+| "重置测试数据库" / "清空任务" | 基础重置 | 仅清任务表和结果，保留 uploads |
+| "只保留服务器信息，其他都清空" | `--clear-uploads --force` | "其他**都**清空"＝含 uploads |
+| "清空所有数据" / "彻底清理" / "全部清空" | `--clear-uploads --force` | "所有/全部"＝含 uploads |
+| "释放磁盘空间" / "清理占用" | `--clear-uploads --force` | 释放空间必须含 uploads |
+| "回到初始状态" / "全部删掉重来" | `--clear-uploads --reset-servers --force` | 连服务器配置也不保留 |
+
+**判断口诀**：用户只提"任务"或"数据库" → 不清 uploads；用户说"数据/都/所有/全部/其他" → 清 uploads。
 
 ## 适用场景
 
@@ -41,7 +61,7 @@ python3 6-skills/funasr-task-manager-reset-test-db/scripts/reset_db.py
 5. 删除数据库及其附属文件（`-wal`、`-shm`、`-journal`）并重建
 6. 运行 Alembic 迁移到最新版本
 7. 默认恢复已有服务器配置
-8. 默认不删除 `uploads/` 中的音视频文件
+8. 默认不删除 `uploads/`——但如果用户意图是"全部清空/其他都清空/清空数据"，**必须加 `--clear-uploads`**（见上方意图判断规则）
 9. 默认不插入新的测试服务器，除非显式指定 `--reset-servers`
 10. 执行结束后自动做重置复核：检查 `results/`、`temp/`、以及启用 `--clear-uploads` 时的 `uploads/` 是否真正清空，同时检查任务相关业务表是否归零、服务器数量是否符合预期；任一项失败都会直接返回 `failed`
 
