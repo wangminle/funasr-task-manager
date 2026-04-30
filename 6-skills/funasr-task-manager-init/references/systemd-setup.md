@@ -15,25 +15,36 @@ which systemctl     # 必须存在
 
 ## Step 2：收集参数
 
-Agent 自动检测并向用户确认。**必须优先检测 Unicorn venv 的 Python 路径**，而非系统 Python：
+Agent 自动检测并向用户确认。**每个候选 Python 都必须通过 `import uvicorn` 验证才能选定**——路径存在 ≠ 可用。
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 RUN_USER="$(whoami)"
 PORT=8000
+PYTHON_PATH=""
 
-# 按优先级查找 Python 解释器（Unicorn venv > 项目 .venv > 系统 python3）
-if [ -x "$REPO_ROOT/3-dev/src/backend/.venv/bin/python" ]; then
-  PYTHON_PATH="$REPO_ROOT/3-dev/src/backend/.venv/bin/python"
-elif [ -x "$REPO_ROOT/.venv/bin/python" ]; then
-  PYTHON_PATH="$REPO_ROOT/.venv/bin/python"
-else
-  PYTHON_PATH="$(which python3)"
+# 按优先级逐个验证（路径存在 + import uvicorn 成功才选定）
+for candidate in \
+  "$REPO_ROOT/3-dev/src/backend/.venv/bin/python" \
+  "$REPO_ROOT/.venv/bin/python" \
+  "$(which python3 2>/dev/null)"; do
+  if [ -x "$candidate" ] && "$candidate" -c "import uvicorn" 2>/dev/null; then
+    PYTHON_PATH="$candidate"
+    break
+  fi
+done
+
+if [ -z "$PYTHON_PATH" ]; then
+  echo "❌ 所有候选 Python 均未安装 uvicorn，无法创建 systemd 服务"
+  echo "   请先安装: pip install uvicorn"
+  exit 1
 fi
 
-# 验证该解释器能 import uvicorn
-"$PYTHON_PATH" -c "import uvicorn" 2>/dev/null || echo "⚠️ 该 Python 未安装 uvicorn，请检查路径"
+echo "✅ 已选定 Python: $PYTHON_PATH"
+"$PYTHON_PATH" -c "import uvicorn; print(f'   uvicorn {uvicorn.__version__}')"
 ```
+
+> **⚠️ 关键规则：`import uvicorn` 验证失败的路径必须跳过，不得使用。所有候选均失败时必须中止，不可生成 service 文件。**
 
 **向用户询问**：
 
@@ -48,7 +59,20 @@ fi
 >
 > 按回车使用检测值，或输入新值覆盖。
 
-如果 uvicorn 验证失败，**必须中止并提示用户先确认正确的 venv 路径**。
+**如果用户覆盖了 Python 路径，必须对新路径重新验证**：
+
+```bash
+# 用户提供了自定义 Python 路径时
+if ! "$USER_PYTHON_PATH" -c "import uvicorn" 2>/dev/null; then
+  echo "❌ 该 Python ($USER_PYTHON_PATH) 未安装 uvicorn，无法使用"
+  echo "   请提供包含 uvicorn 的 Python 路径，或先安装: $USER_PYTHON_PATH -m pip install uvicorn"
+  # 必须中止，不得继续生成 service 文件
+  exit 1
+fi
+PYTHON_PATH="$USER_PYTHON_PATH"
+```
+
+> **覆盖路径与自动检测路径适用同一规则：`import uvicorn` 不通过 → 不得写入 service 文件。**
 
 ## Step 3：service 文件模板
 

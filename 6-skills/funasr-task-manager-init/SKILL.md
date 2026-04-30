@@ -289,17 +289,28 @@ mkdir -p "$WORKSPACE_SKILLS"
 
 for skill_dir in "$REPO_SKILLS"/funasr-task-manager-*/; do
   skill_name=$(basename "$skill_dir")
-  # 先删除旧版本，避免 cp -r 创建嵌套子目录
   rm -rf "$WORKSPACE_SKILLS/$skill_name"
   cp -r "$skill_dir" "$WORKSPACE_SKILLS/$skill_name"
   echo "✅ $skill_name"
 done
+
+# 安装 ASR 工作流知识文档到 workspace 根目录
+WORKSPACE_ROOT="$HOME/.openclaw/workspace-$WORKSPACE_NAME"
+cp "$REPO_SKILLS/_shared/ASR-WORKFLOW.md" "$WORKSPACE_ROOT/ASR-WORKFLOW.md"
+echo "✅ ASR-WORKFLOW.md"
+
+# 在 workspace AGENTS.md 中追加引用（幂等）
+if ! grep -q "ASR-WORKFLOW.md" "$WORKSPACE_ROOT/AGENTS.md" 2>/dev/null; then
+  printf '\n## ASR 转写工作流\n\n详见 [ASR-WORKFLOW.md](ASR-WORKFLOW.md)，包含转写流程、分段策略、调度算法、结果交付规范等操作知识。\n' >> "$WORKSPACE_ROOT/AGENTS.md"
+  echo "✅ AGENTS.md 已追加 ASR-WORKFLOW 引用"
+fi
 ```
 
 验证：
 
 ```bash
 ls "$WORKSPACE_SKILLS"/funasr-task-manager-*/SKILL.md | wc -l
+test -f "$WORKSPACE_ROOT/ASR-WORKFLOW.md" && echo "✅ ASR-WORKFLOW.md 已安装"
 ```
 
 #### 6B：Hermes
@@ -316,6 +327,16 @@ for skill_dir in "$REPO_SKILLS"/funasr-task-manager-*/; do
   cp -r "$skill_dir" "$HERMES_SKILLS/$skill_name"
   echo "✅ $skill_name"
 done
+
+# 安装 ASR 工作流知识文档
+HERMES_ROOT="$HOME/.hermes"
+cp "$REPO_SKILLS/_shared/ASR-WORKFLOW.md" "$HERMES_ROOT/ASR-WORKFLOW.md"
+echo "✅ ASR-WORKFLOW.md"
+
+if ! grep -q "ASR-WORKFLOW.md" "$HERMES_ROOT/AGENTS.md" 2>/dev/null; then
+  printf '\n## ASR 转写工作流\n\n详见 [ASR-WORKFLOW.md](ASR-WORKFLOW.md)。\n' >> "$HERMES_ROOT/AGENTS.md"
+  echo "✅ AGENTS.md 已追加引用"
+fi
 ```
 
 #### 6C：Cursor
@@ -371,24 +392,7 @@ Get-ChildItem -Directory "$RepoSkills\funasr-task-manager-*" | ForEach-Object {
 
 #### 安装后验证
 
-无论哪个平台，安装完成后输出清单：
-
-```
-📦 已安装 ASR Skills:
-
-  ✅ funasr-task-manager-init            — 环境初始化与启动
-  ✅ funasr-task-manager-channel-intake   — 音频入口与意图编排
-  ✅ funasr-task-manager-media-preflight  — 媒体文件预检查
-  ✅ funasr-task-manager-result-delivery  — 结果交付与质量初筛
-  ✅ funasr-task-manager-server-benchmark — 服务器性能测试
-  ✅ funasr-task-manager-reset-test-db    — 测试数据库重置
-  ✅ funasr-task-manager-web-e2e          — 浏览器端到端测试
-
-  安装目录: {skills_dir}
-
-  Agent 重启后将自动加载上述 Skills。
-  当 channel 中出现音视频文件或 ASR 关键词时，Agent 会自动触发转写流程。
-```
+输出已安装的 7 个 Skill 清单 + ASR-WORKFLOW.md 状态，确认安装目录和数量。
 
 ### Phase 7：配置渠道凭据（可选）
 
@@ -402,59 +406,7 @@ Get-ChildItem -Directory "$RepoSkills\funasr-task-manager-*" | ForEach-Object {
 > 3. **Slack** — 需要 Bot OAuth Token
 > 4. **不需要 / 仅 CLI** — 跳过
 
-#### 飞书凭据配置
-
-1. 在[飞书开放平台](https://open.feishu.cn/)创建企业自建应用
-2. 开通权限：`im:message`、`im:message:send_as_bot`、`im:resource`、`im:file`
-3. 获取 `App ID` 和 `App Secret`
-4. 写入 Agent 配置：
-
-```bash
-# OpenClaw 平台
-cat >> ~/.openclaw/agents/{agent}/agent/.env << 'EOF'
-FEISHU_APP_ID=cli_xxxxxxxxxxxx
-FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxx
-EOF
-
-# 或通用环境变量
-export FEISHU_APP_ID=cli_xxxxxxxxxxxx
-export FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-5. 验证凭据有效：
-
-```bash
-curl -s -X POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal \
-  -H "Content-Type: application/json" \
-  -d '{"app_id": "'$FEISHU_APP_ID'", "app_secret": "'$FEISHU_APP_SECRET'"}'
-# 应返回 {"code": 0, "tenant_access_token": "t-xxx", ...}
-```
-
-#### 企业微信凭据配置
-
-```bash
-export WECOM_CORP_ID=wxxxxxxxxxxxxxxxxx
-export WECOM_CORP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-#### Slack 凭据配置
-
-```bash
-export SLACK_BOT_TOKEN=xoxb-xxxxxxxxxxxx-xxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-#### 配置验证输出
-
-```
-✅ 渠道凭据已配置
-
-  渠道:     飞书
-  App ID:   cli_xxx...xxx（已验证）
-  Token:    有效，2 小时后过期
-  权限:     im:message ✅ / im:resource ✅ / im:file ✅
-
-  Agent 现在可以自动从飞书下载用户发送的文件。
-```
+各渠道的详细配置步骤、环境变量写入方式和验证命令见 [references/channel-credentials.md](references/channel-credentials.md)。
 
 ### Phase 8：systemd 后端服务守护（可选，仅 Unicorn 环境 + Linux）
 
@@ -464,7 +416,7 @@ export SLACK_BOT_TOKEN=xoxb-xxxxxxxxxxxx-xxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx
 
 **交互流程**：
 
-1. 按优先级检测 venv Python 路径（`.venv/bin/python` > 系统 python3），**验证 `import uvicorn` 成功**后向用户确认
+1. 逐个候选 Python 执行 `import uvicorn`，**仅验证通过的才可选定**（路径存在 ≠ 可用），全部失败则中止
 2. 生成 service 文件内容，**展示完整内容后请求用户确认再写入**
 3. 已有同名 service → 先展示 diff 让用户选择覆盖/跳过
 4. `sudo systemctl daemon-reload && enable --now`
