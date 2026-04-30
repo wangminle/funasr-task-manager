@@ -41,26 +41,23 @@ description: >
      ```
    - 存在 → 继续 Phase 2
 
-### Phase 2：检查服务运行状态
+### Phase 2：检查后端运行状态
 
-1. 检查后端是否已启动
+1. 检查后端是否已启动（**核心判断条件，Agent 工作流仅依赖后端 API**）
    - 请求 `GET http://localhost:8000/health`
    - 返回 `{"status": "ok"}` → 后端已运行
    - 连接失败或非 200 → 后端未启动
 
-2. 检查前端是否已启动
-   - 请求 `GET http://localhost:5173/`
-   - 返回 200 → 前端已运行
-   - 连接失败 → 前端未启动
-
-3. 判断结果：
-   - 后端 + 前端均已运行 → 报告"环境就绪"，**询问是否执行后续可选阶段**：
+2. 判断结果：
+   - 后端已运行 → 报告"环境就绪"，**询问是否执行后续可选阶段**：
      > 环境已就绪。是否还需要：
      > 1. 安装/更新 Skills 到 Agent 平台（Phase 6）
      > 2. 配置渠道凭据（Phase 7）
      > 3. 注册后端为 systemd 服务（Phase 8，仅 Linux）
      > 4. 不需要，退出
-   - 有服务未启动 → 进入 Phase 3
+   - 后端未启动 → 进入 Phase 3
+
+> **注意**：前端（`http://localhost:5173`）是 Web UI，供人类操作员使用，Agent 工作流不依赖前端。不检查、不启动前端。
 
 ### Phase 3：选择安装方式
 
@@ -76,32 +73,30 @@ description: >
 
 按顺序执行以下步骤：
 
-#### Step 1：检查 Unicorn 是否可用
+#### Step 1：检查现有 Python 环境是否已满足
+
+先检查系统 Python 是否已经具备运行后端的全部依赖：
 
 ```bash
-unicorn --version
+python3 -c "import fastapi; import sqlalchemy; import uvicorn; print('OK')" 2>/dev/null
 ```
 
-- 可用 → 继续
-- 不可用 → 提示安装：
+- 输出 `OK` → **跳过 Step 2-3**，直接进入 Step 4（现有环境已可用）
+- 失败 → 继续 Step 2
+
+#### Step 2：尝试 Unicorn 环境（优先但非必选）
+
+```bash
+which unicorn && unicorn --version
+```
+
+- 可用 → 用 Unicorn 创建隔离环境：
   ```bash
-  pip install unicorn-env
+  cd 3-dev/src/backend
+  unicorn env create python3.13 --name funasr-backend
+  unicorn env activate funasr-backend
   ```
-  安装后再次验证
-
-#### Step 2：创建 Python 3.13 环境
-
-```bash
-cd 3-dev/src/backend
-unicorn env create python3.13 --name funasr-backend
-unicorn env activate funasr-backend
-```
-
-验证 Python 版本：
-```bash
-python --version
-# 应输出 Python 3.13.x
-```
+- 不可用 → 回退到系统 Python + venv/pip，不要求安装 Unicorn
 
 #### Step 3：安装后端依赖
 
@@ -117,7 +112,7 @@ pip install -r requirements.txt
 
 验证核心依赖：
 ```bash
-python -c "import fastapi; import sqlalchemy; import uvicorn; print('OK')"
+python3 -c "import fastapi; import sqlalchemy; import uvicorn; print('OK')"
 ```
 
 #### Step 4：检查 ffmpeg / ffprobe
@@ -154,14 +149,7 @@ cd 3-dev/src/backend
 python -m alembic upgrade head
 ```
 
-#### Step 6：安装前端依赖
-
-```bash
-cd 3-dev/src/frontend
-npm install
-```
-
-#### Step 7：启动后端
+#### Step 6：启动后端
 
 ```bash
 cd 3-dev/src/backend
@@ -170,14 +158,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 启动后等待 5 秒，验证 `GET http://localhost:8000/health` 返回 `{"status": "ok"}`。
 
-#### Step 8：启动前端
-
-```bash
-cd 3-dev/src/frontend
-npm run dev
-```
-
-启动后等待 5 秒，验证 `GET http://localhost:5173/` 返回 200。
+**后端启动成功即可进入 Phase 5。** 前端（Vue Web UI）是可选的，Agent 工作流不依赖前端。
 
 ### Phase 4B：Docker 环境安装
 
@@ -232,11 +213,10 @@ docker compose ps
 所有步骤完成后，输出验证报告：
 
 ```
-✅ funasr-task-manager 环境已就绪
+✅ funasr-task-manager 后端已就绪
 
   安装方式: {python/docker}
   后端地址: http://localhost:8000
-  前端地址: http://localhost:5173
   健康检查: ✅ 通过
   数据库:   ✅ 已迁移到最新版本
   ffprobe:  ✅ 可用（版本 x.x.x）
@@ -244,7 +224,6 @@ docker compose ps
   下一步:
   - 注册 FunASR 服务器: python -m cli server register <ws://...>
   - 上传并转写: python -m cli transcribe <audio-file>
-  - 打开前端: http://localhost:5173
 ```
 
 输出报告后，**必须询问用户是否执行 Phase 6/7/8**（不可跳过此询问）：
@@ -294,16 +273,18 @@ for skill_dir in "$REPO_SKILLS"/funasr-task-manager-*/; do
   echo "✅ $skill_name"
 done
 
-# 安装 ASR 工作流知识文档到 workspace 根目录
+# 安装 ASR 工作流文档到 workspace
 WORKSPACE_ROOT="$HOME/.openclaw/workspace-$WORKSPACE_NAME"
 cp "$REPO_SKILLS/_shared/ASR-WORKFLOW.md" "$WORKSPACE_ROOT/ASR-WORKFLOW.md"
 echo "✅ ASR-WORKFLOW.md"
 
-# 在 workspace AGENTS.md 中追加引用（幂等）
-if ! grep -q "ASR-WORKFLOW.md" "$WORKSPACE_ROOT/AGENTS.md" 2>/dev/null; then
-  printf '\n## ASR 转写工作流\n\n详见 [ASR-WORKFLOW.md](ASR-WORKFLOW.md)，包含转写流程、分段策略、调度算法、结果交付规范等操作知识。\n' >> "$WORKSPACE_ROOT/AGENTS.md"
-  echo "✅ AGENTS.md 已追加 ASR-WORKFLOW 引用"
+# 向 AGENTS.md 追加 ASR 段落（幂等：已有则先删除旧版再追加新版）
+if grep -q "BEGIN:funasr-task-manager" "$WORKSPACE_ROOT/AGENTS.md" 2>/dev/null; then
+  sed '/<!-- BEGIN:funasr-task-manager/,/<!-- END:funasr-task-manager/d' "$WORKSPACE_ROOT/AGENTS.md" > "$WORKSPACE_ROOT/AGENTS.md.tmp"
+  mv "$WORKSPACE_ROOT/AGENTS.md.tmp" "$WORKSPACE_ROOT/AGENTS.md"
 fi
+cat "$REPO_SKILLS/_shared/AGENTS-asr-section.md" >> "$WORKSPACE_ROOT/AGENTS.md"
+echo "✅ AGENTS.md 已追加 ASR 转写段落"
 ```
 
 验证：
@@ -328,15 +309,17 @@ for skill_dir in "$REPO_SKILLS"/funasr-task-manager-*/; do
   echo "✅ $skill_name"
 done
 
-# 安装 ASR 工作流知识文档
+# 安装 ASR 工作流文档 + 追加 AGENTS.md ASR 段落
 HERMES_ROOT="$HOME/.hermes"
 cp "$REPO_SKILLS/_shared/ASR-WORKFLOW.md" "$HERMES_ROOT/ASR-WORKFLOW.md"
 echo "✅ ASR-WORKFLOW.md"
 
-if ! grep -q "ASR-WORKFLOW.md" "$HERMES_ROOT/AGENTS.md" 2>/dev/null; then
-  printf '\n## ASR 转写工作流\n\n详见 [ASR-WORKFLOW.md](ASR-WORKFLOW.md)。\n' >> "$HERMES_ROOT/AGENTS.md"
-  echo "✅ AGENTS.md 已追加引用"
+if grep -q "BEGIN:funasr-task-manager" "$HERMES_ROOT/AGENTS.md" 2>/dev/null; then
+  sed '/<!-- BEGIN:funasr-task-manager/,/<!-- END:funasr-task-manager/d' "$HERMES_ROOT/AGENTS.md" > "$HERMES_ROOT/AGENTS.md.tmp"
+  mv "$HERMES_ROOT/AGENTS.md.tmp" "$HERMES_ROOT/AGENTS.md"
 fi
+cat "$REPO_SKILLS/_shared/AGENTS-asr-section.md" >> "$HERMES_ROOT/AGENTS.md"
+echo "✅ AGENTS.md 已追加 ASR 转写段落"
 ```
 
 #### 6C：Cursor
@@ -408,9 +391,9 @@ Get-ChildItem -Directory "$RepoSkills\funasr-task-manager-*" | ForEach-Object {
 
 各渠道的详细配置步骤、环境变量写入方式和验证命令见 [references/channel-credentials.md](references/channel-credentials.md)。
 
-### Phase 8：systemd 后端服务守护（可选，仅 Unicorn 环境 + Linux）
+### Phase 8：systemd 后端服务守护（可选，仅 Python 环境 + Linux）
 
-仅适用于通过 Unicorn（uv）环境安装的 Python 后端。Docker 安装应使用 `docker compose` 的 `restart: always`，不需要本流程。
+仅适用于 Python 环境安装的后端（无论 Unicorn venv 还是系统 Python）。Docker 安装应使用 `docker compose` 的 `restart: always`，不需要本流程。
 
 **前置检查**：`uname -s` 返回 `Linux` 且 `which systemctl` 成功且后端非 Docker 运行。非 Linux → 告知"仅适用于 Linux"，macOS 建议 `nohup` 或 launchd。
 
