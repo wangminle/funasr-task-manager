@@ -69,8 +69,8 @@ if [[ -f "$PID_FILE" ]]; then
 fi
 
 # 无论 PID 文件是否存在，都做端口兜底清理
-_kill_by_port 8000 "后端"
-_kill_by_port 5173 "前端"
+_kill_by_port 15797 "后端"
+_kill_by_port 15798 "前端"
 
 echo ""
 echo "  所有服务已停止。"

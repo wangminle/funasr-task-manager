@@ -128,21 +128,27 @@ Layer C：决策（Decision）
 
 #### Step 3：下载文件到本地
 
-先确定临时目录（跨平台）：
+先确定 Skill 专属临时目录（跨平台）：
 
 ```bash
 # Linux / macOS
 TMPDIR="${TMPDIR:-/tmp}"
+WORK_DIR="$TMPDIR/funasr-task-manager"
+mkdir -p "$WORK_DIR"
 
 # Windows PowerShell
-# $TMPDIR = $env:TEMP
+# $WORK_DIR = Join-Path $env:TEMP "funasr-task-manager"
+# New-Item -ItemType Directory -Force -Path $WORK_DIR
 ```
+
+> **⚠️ 禁止将下载文件或转写结果直接存放在 workspace/项目根目录**。所有中间文件必须保存到 `$WORK_DIR`（即 `{TMPDIR}/funasr-task-manager/`）下。如果用户指定了输出目录，使用用户指定的路径。
 
 **飞书**：
 
+> **⚠️ 不要使用 drive API**：`/open-apis/drive/v1/files/{file_key}/download` 是云文档/网盘接口，需要 `drive:file:readonly` 权限，对**聊天中发送的文件附件无效**（返回 403 / 错误码 99991672）。对话文件必须用下方的 `im/v1/messages` 接口。
+
 ```bash
-# 尝试直接下载（适用于 < 50MB 的文件）
-curl -s -o "$TMPDIR/{original_filename}" \
+curl -s -o "$WORK_DIR/{original_filename}" \
   -H "Authorization: Bearer {tenant_access_token}" \
   "https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{file_key}?type=file"
 ```
@@ -153,7 +159,7 @@ curl -s -o "$TMPDIR/{original_filename}" \
 # 使用 HTTP Range 分块下载（10MB/块）
 CHUNK_SIZE=$((10 * 1024 * 1024))
 OFFSET=0
-OUTFILE="$TMPDIR/{original_filename}"
+OUTFILE="$WORK_DIR/{original_filename}"
 
 # 第一次请求获取总大小
 TOTAL_SIZE=$(curl -sI -H "Authorization: Bearer {tenant_access_token}" \
@@ -178,14 +184,14 @@ done
 **企业微信**：
 
 ```bash
-curl -s -o "$TMPDIR/{original_filename}" \
+curl -s -o "$WORK_DIR/{original_filename}" \
   "https://qyapi.weixin.qq.com/cgi-bin/media/get?access_token={access_token}&media_id={media_id}"
 ```
 
 **Slack**：
 
 ```bash
-curl -s -o "$TMPDIR/{original_filename}" \
+curl -s -o "$WORK_DIR/{original_filename}" \
   -H "Authorization: Bearer {bot_token}" \
   "{url_private_download}"
 ```

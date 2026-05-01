@@ -19,7 +19,7 @@ class TestConfigStore:
     def test_defaults(self):
         from cli.config_store import get_all
         cfg = get_all()
-        assert cfg["server"] == "http://localhost:8000"
+        assert cfg["server"] == "http://localhost:15797"
         assert cfg["output"] == "table"
         assert cfg["api_key"] == ""
 

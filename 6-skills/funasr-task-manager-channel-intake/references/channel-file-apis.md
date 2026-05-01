@@ -25,6 +25,8 @@ Content-Type: application/json
 
 ### 下载消息中的文件
 
+> **⚠️ 不要使用 drive API**（`/open-apis/drive/v1/files/{file_key}/download`）——那是云文档/网盘接口，需要 `drive:file:readonly` 权限，对聊天中发送的文件附件返回 403（错误码 99991672）。对话文件**必须**用以下 `im/v1/messages` 接口。
+
 ```
 GET https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{file_key}?type=file
 Authorization: Bearer {tenant_access_token}
@@ -171,7 +173,7 @@ Discord 消息附件直接包含 CDN URL，无需额外 API 调用：
 attachment.url = "https://cdn.discordapp.com/attachments/{channel_id}/{attachment_id}/{filename}"
 
 # 直接下载（无需鉴权）
-curl -o "$TMPDIR/{filename}" "{attachment.url}"
+curl -o "$WORK_DIR/{filename}" "{attachment.url}"
 ```
 
 ### 发送文件到 channel

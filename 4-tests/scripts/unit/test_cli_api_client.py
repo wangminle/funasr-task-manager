@@ -12,7 +12,7 @@ from cli.api_client import ASRClient, APIError
 @pytest.fixture
 def mock_client():
     """Create ASRClient with a mocked httpx.Client."""
-    client = ASRClient("http://test:8000")
+    client = ASRClient("http://test:15797")
     client._client = MagicMock(spec=httpx.Client)
     return client
 

@@ -50,7 +50,7 @@ runStep(pythonCommand, ['-m', 'alembic', 'upgrade', 'head'])
 
 const serverProcess = spawn(
   pythonCommand,
-  ['-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '8000'],
+  ['-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '15797'],
   {
     stdio: 'inherit',
     env: process.env,

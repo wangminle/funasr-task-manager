@@ -61,7 +61,7 @@ class TestBatchResultDownload:
         mock_client.get_result.return_value = "转写文本内容"
 
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "task", "result", "--group", "GRP01",
             "--format", "txt",
             "--output-dir", str(tmp_path),
@@ -95,7 +95,7 @@ class TestBatchResultDownload:
         mock_client.get_result.return_value = "转写文本内容"
 
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "task", "result", "--group", "GRP01",
             "--format", "txt",
         ])
@@ -122,7 +122,7 @@ class TestBatchResultDownload:
         mock_client.get_result.return_value = "content"
 
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "task", "result", "--group", "GRP02",
             "--format", "txt,json,srt",
             "--output-dir", str(tmp_path),
@@ -155,7 +155,7 @@ class TestBatchResultDownload:
         mock_client.get_result.return_value = "content"
 
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "task", "result", "--group", "GRP03",
             "--format", "txt",
             "--output-dir", str(tmp_path),
@@ -185,7 +185,7 @@ class TestBatchResultDownload:
             "total": 2, "page": 1, "page_size": 100,
         }
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "task", "result", "--group", "GRP04",
             "--format", "txt",
             "--output-dir", str(tmp_path),
@@ -210,7 +210,7 @@ class TestBatchSummaryFormat:
         mock_client.get_result.return_value = "text"
 
         runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "task", "result", "--group", "GRP05",
             "--format", "txt",
             "--output-dir", str(tmp_path),

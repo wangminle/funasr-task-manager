@@ -79,7 +79,7 @@ fi
 
 # ------ 后端 ------
 echo "[2/4] 启动后端 (uvicorn)..."
-UVICORN_CMD=(python -m uvicorn app.main:app --host "$BIND_HOST" --port 8000)
+UVICORN_CMD=(python -m uvicorn app.main:app --host "$BIND_HOST" --port 15797)
 if [[ "$NO_RELOAD" != "1" ]]; then
   UVICORN_CMD+=(--reload)
 fi
@@ -93,7 +93,7 @@ echo "      后端 PID: $BACKEND_PID"
 if [[ $NO_FRONTEND -eq 0 ]]; then
   echo "[3/4] 启动前端 (vite)..."
   cd "$FRONTEND_DIR"
-  nohup npx vite --host "$BIND_HOST" --port 5173 \
+  nohup npx vite --host "$BIND_HOST" --port 15798 \
     >"$FRONTEND_OUT" 2>"$FRONTEND_LOG" &
   FRONTEND_PID=$!
   echo "frontend=$FRONTEND_PID" >> "$PID_FILE"
@@ -108,7 +108,7 @@ sleep 4
 
 BACKEND_OK=0
 for i in $(seq 1 10); do
-  if curl -sf http://127.0.0.1:8000/health >/dev/null 2>&1; then
+  if curl -sf http://127.0.0.1:15797/health >/dev/null 2>&1; then
     BACKEND_OK=1
     break
   fi
@@ -117,9 +117,9 @@ done
 
 if [[ $BACKEND_OK -eq 1 ]]; then
   echo ""
-  echo "  ✓ 后端就绪: http://127.0.0.1:8000"
-  echo "    健康检查: $(curl -s http://127.0.0.1:8000/health)"
-  echo "    API 文档: http://127.0.0.1:8000/docs"
+  echo "  ✓ 后端就绪: http://127.0.0.1:15797"
+  echo "    健康检查: $(curl -s http://127.0.0.1:15797/health)"
+  echo "    API 文档: http://127.0.0.1:15797/docs"
 else
   echo ""
   echo "  ✗ 后端启动超时，请查看日志: $BACKEND_LOG"
@@ -128,8 +128,8 @@ fi
 
 if [[ $NO_FRONTEND -eq 0 ]]; then
   sleep 1
-  if curl -sf http://127.0.0.1:5173 >/dev/null 2>&1; then
-    echo "  ✓ 前端就绪: http://127.0.0.1:5173"
+  if curl -sf http://127.0.0.1:15798 >/dev/null 2>&1; then
+    echo "  ✓ 前端就绪: http://127.0.0.1:15798"
   else
     echo "  ✗ 前端启动超时，请查看日志: $FRONTEND_LOG"
     EXIT_CODE=1

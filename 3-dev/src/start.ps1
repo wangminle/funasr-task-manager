@@ -67,20 +67,20 @@ Write-Host "      依赖检查通过 √"
 
 # ------ 端口检查 ------
 $ErrorActionPreference = "SilentlyContinue"
-$port8000 = Get-NetTCPConnection -LocalPort 8000 -State Listen 2>$null
-$port5173 = Get-NetTCPConnection -LocalPort 5173 -State Listen 2>$null
+$port15797 = Get-NetTCPConnection -LocalPort 15797 -State Listen 2>$null
+$port15798 = Get-NetTCPConnection -LocalPort 15798 -State Listen 2>$null
 $ErrorActionPreference = "Stop"
 
-if ($port8000) {
+if ($port15797) {
     Write-Host ""
-    Write-Host "  X 端口 8000 已被占用 (PID: $($port8000[0].OwningProcess))"
+    Write-Host "  X 端口 15797 已被占用 (PID: $($port15797[0].OwningProcess))"
     Write-Host "    请先运行 .\stop.ps1 或手动结束占用进程"
     Write-Host "========================================="
     exit 1
 }
-if (-not $NoFrontend -and $port5173) {
+if (-not $NoFrontend -and $port15798) {
     Write-Host ""
-    Write-Host "  X 端口 5173 已被占用 (PID: $($port5173[0].OwningProcess))"
+    Write-Host "  X 端口 15798 已被占用 (PID: $($port15798[0].OwningProcess))"
     Write-Host "    请先运行 .\stop.ps1 或手动结束占用进程"
     Write-Host "========================================="
     exit 1
@@ -89,7 +89,7 @@ if (-not $NoFrontend -and $port5173) {
 # ------ 后端 ------
 Write-Host "[1/3] 启动后端 (uvicorn)..."
 
-$uvicornArgs = "-m uvicorn app.main:app --host $BindHost --port 8000"
+$uvicornArgs = "-m uvicorn app.main:app --host $BindHost --port 15797"
 if (-not $NoReload) { $uvicornArgs += " --reload" }
 
 $backendProc = Start-Process -FilePath python -ArgumentList $uvicornArgs `
@@ -106,7 +106,7 @@ if (-not $NoFrontend) {
     Write-Host "[2/3] 启动前端 (vite)..."
 
     $frontendProc = Start-Process -FilePath cmd.exe `
-        -ArgumentList "/c npx vite --host $BindHost --port 5173" `
+        -ArgumentList "/c npx vite --host $BindHost --port 15798" `
         -WorkingDirectory $FrontendDir `
         -RedirectStandardOutput $FrontendOut `
         -RedirectStandardError $FrontendErr `
@@ -126,7 +126,7 @@ Start-Sleep -Seconds 4
 $backendOk = $false
 for ($i = 1; $i -le 10; $i++) {
     try {
-        $resp = curl.exe -sf http://127.0.0.1:8000/health 2>$null
+        $resp = curl.exe -sf http://127.0.0.1:15797/health 2>$null
         if ($LASTEXITCODE -eq 0) { $backendOk = $true; break }
     } catch {}
     Start-Sleep -Seconds 1
@@ -134,10 +134,10 @@ for ($i = 1; $i -le 10; $i++) {
 
 if ($backendOk) {
     Write-Host ""
-    $health = curl.exe -s http://127.0.0.1:8000/health 2>$null
-    Write-Host "  √ 后端就绪: http://127.0.0.1:8000"
+    $health = curl.exe -s http://127.0.0.1:15797/health 2>$null
+    Write-Host "  √ 后端就绪: http://127.0.0.1:15797"
     Write-Host "    健康检查: $health"
-    Write-Host "    API 文档: http://127.0.0.1:8000/docs"
+    Write-Host "    API 文档: http://127.0.0.1:15797/docs"
 }
 else {
     Write-Host ""
@@ -148,9 +148,9 @@ else {
 if (-not $NoFrontend) {
     Start-Sleep -Seconds 1
     try {
-        curl.exe -sf http://127.0.0.1:5173 2>$null | Out-Null
+        curl.exe -sf http://127.0.0.1:15798 2>$null | Out-Null
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "  √ 前端就绪: http://127.0.0.1:5173"
+            Write-Host "  √ 前端就绪: http://127.0.0.1:15798"
         }
         else { throw "not ready" }
     }

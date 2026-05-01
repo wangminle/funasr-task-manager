@@ -31,7 +31,7 @@ receivers:
       #   send_resolved: true
 
       # === 通用 Webhook (可对接自定义告警服务) ===
-      - url: "http://web:8000/api/v1/internal/alert-webhook"
+      - url: "http://web:15797/api/v1/internal/alert-webhook"
         send_resolved: true
 
     # === 邮件通知 ===
@@ -45,7 +45,7 @@ receivers:
 
   - name: "critical-alerts"
     webhook_configs:
-      - url: "http://web:8000/api/v1/internal/alert-webhook"
+      - url: "http://web:15797/api/v1/internal/alert-webhook"
         send_resolved: true
 
     # 关键告警同时发邮件

@@ -2,7 +2,7 @@
 """VAD 切分前后输出质量对比评估脚本。
 
 使用方式:
-    python eval_segment_quality.py --base-url http://localhost:8000 [--audio-dir <path>]
+    python eval_segment_quality.py --base-url http://localhost:15797 [--audio-dir <path>]
 
 流程:
     1. 对每个长音频文件分别做两组转写：
@@ -411,7 +411,7 @@ def _generate_report(results: list[dict], output_path: Path) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="VAD 切分前后转写质量对比评估")
-    parser.add_argument("--base-url", default="http://localhost:8000", help="API 地址")
+    parser.add_argument("--base-url", default="http://localhost:15797", help="API 地址")
     parser.add_argument("--api-key", default=None, help="API Key")
     parser.add_argument(
         "--audio-dir",

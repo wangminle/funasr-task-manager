@@ -8,7 +8,7 @@ import yaml
 CONFIG_PATH = Path.home() / ".asr-cli.yaml"
 
 DEFAULTS: dict[str, Any] = {
-    "server": "http://localhost:8000",
+    "server": "http://localhost:15797",
     "api_key": "",
     "output": "table",
 }

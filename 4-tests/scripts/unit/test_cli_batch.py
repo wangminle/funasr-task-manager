@@ -73,7 +73,7 @@ class TestTranscribeBatchMode:
 
         file_args = [str(f) for f in audio_files]
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "transcribe", *file_args,
             "--language", "zh", "--format", "txt",
             "--output-dir", str(tmp_path / "output"),
@@ -95,7 +95,7 @@ class TestTranscribeBatchMode:
         mock_client.get_result.return_value = "transcribed text"
 
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "transcribe", str(audio_files[0]),
             "--language", "zh", "--format", "txt",
             "--output-dir", str(tmp_path / "output"),
@@ -115,7 +115,7 @@ class TestTranscribeBatchMode:
         mock_client.get_result.return_value = "transcribed text"
 
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "transcribe", str(audio_files[0]),
             "--language", "zh", "--format", "txt",
         ])
@@ -137,7 +137,7 @@ class TestTranscribeBatchMode:
 
         file_args = [str(f) for f in audio_files]
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "transcribe", *file_args,
             "--no-wait", "--json-summary",
         ])
@@ -149,7 +149,7 @@ class TestTranscribeBatchMode:
     def test_nonexistent_files(self, tmp_path):
         """All nonexistent files should fail."""
         result = runner.invoke(app, [
-            "--server", "http://test:8000",
+            "--server", "http://test:15797",
             "transcribe",
             str(tmp_path / "nonexistent.wav"),
         ])
@@ -166,7 +166,7 @@ class TestTaskGroupCLICommands:
             "total": 2, "page": 1, "page_size": 100,
         }
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "task", "list", "--group", "GRP01",
         ])
         assert result.exit_code == 0
@@ -180,7 +180,7 @@ class TestTaskGroupCLICommands:
             "in_progress": 0, "progress": 1.0, "is_complete": True,
         }
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "task", "wait", "--group", "GRP01",
         ])
         assert result.exit_code == 0
@@ -191,7 +191,7 @@ class TestTaskGroupCLICommands:
             "deleted": 3, "skipped_active": 0, "total": 3,
         }
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "task", "delete", "--group", "GRP01",
         ])
         assert result.exit_code == 0
@@ -211,7 +211,7 @@ class TestDoctorCLI:
             "has_blocking_errors": False,
         }
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "doctor",
         ])
         assert result.exit_code == 0
@@ -225,7 +225,7 @@ class TestDoctorCLI:
             "has_blocking_errors": True,
         }
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "doctor",
         ])
         assert result.exit_code == 1

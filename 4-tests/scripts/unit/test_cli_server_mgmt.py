@@ -46,7 +46,7 @@ class TestServerProbe:
             "error": None,
         }
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "probe", "asr-01",
         ])
         assert result.exit_code == 0
@@ -66,7 +66,7 @@ class TestServerProbe:
             "probe_duration_ms": 5002.1,
         }
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "probe", "asr-02",
         ])
         assert result.exit_code == 1
@@ -83,7 +83,7 @@ class TestServerProbe:
             "supports_online": False,
         }
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "probe", "asr-01", "--level", "twopass_full",
         ])
         assert result.exit_code == 0
@@ -93,7 +93,7 @@ class TestServerProbe:
         from cli.api_client import APIError
         mock_client.probe_server.side_effect = APIError(404, "Server not found")
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "probe", "nonexistent",
         ])
         assert result.exit_code == 1
@@ -114,7 +114,7 @@ class TestServerBenchmark:
         ]
         mock_client.benchmark_server_stream.return_value = iter(events)
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "benchmark", "asr-01",
         ])
         assert result.exit_code == 0
@@ -156,7 +156,7 @@ class TestServerBenchmark:
         ]
         mock_client.benchmark_servers_stream.return_value = iter(events)
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "benchmark",
         ])
         assert result.exit_code == 0
@@ -166,7 +166,7 @@ class TestServerBenchmark:
         from cli.api_client import APIError
         mock_client.benchmark_servers_stream.side_effect = APIError(422, "No online servers to benchmark")
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "benchmark",
         ])
         assert result.exit_code == 1
@@ -194,7 +194,7 @@ class TestServerBenchmark:
         ]
         mock_client.benchmark_servers_stream.return_value = iter(events)
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--output", "json", "--quiet",
+            "--server", "http://test:15797", "--output", "json", "--quiet",
             "server", "benchmark",
         ])
         assert result.exit_code == 0
@@ -212,7 +212,7 @@ class TestServerUpdate:
             "max_concurrency": 8, "status": "ONLINE",
         }
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "update", "asr-01", "--max-concurrency", "8",
         ])
         assert result.exit_code == 0
@@ -225,7 +225,7 @@ class TestServerUpdate:
             "max_concurrency": 6, "status": "ONLINE",
         }
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "update", "asr-01", "--name", "New Name", "--max-concurrency", "6",
         ])
         assert result.exit_code == 0
@@ -236,7 +236,7 @@ class TestServerUpdate:
     def test_update_no_fields(self, mock_client):
         """Should fail if no fields are specified."""
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "update", "asr-01",
         ])
         assert result.exit_code == 1
@@ -245,7 +245,7 @@ class TestServerUpdate:
         from cli.api_client import APIError
         mock_client.update_server.side_effect = APIError(404, "Server not found")
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "update", "nonexistent", "--name", "x",
         ])
         assert result.exit_code == 1
@@ -283,7 +283,7 @@ class TestRegisterBenchmarkStream:
         ]
         mock_client.register_server_stream.return_value = iter(events)
         result = runner.invoke(app, [
-            "--server", "http://test:8000",
+            "--server", "http://test:15797",
             "server", "register",
             "--id", "asr-01", "--host", "10.0.0.1", "--port", "10095",
             "--benchmark",
@@ -300,7 +300,7 @@ class TestRegisterBenchmarkStream:
         ]
         mock_client.register_server_stream.return_value = iter(events)
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "register",
             "--id", "asr-01", "--host", "10.0.0.1", "--port", "10095",
             "--benchmark",
@@ -326,7 +326,7 @@ class TestSingleBenchmarkStream:
         ]
         mock_client.benchmark_server_stream.return_value = iter(events)
         result = runner.invoke(app, [
-            "--server", "http://test:8000",
+            "--server", "http://test:15797",
             "server", "benchmark", "asr-01",
         ])
         assert result.exit_code == 0, result.output
@@ -339,7 +339,7 @@ class TestSingleBenchmarkStream:
         ]
         mock_client.benchmark_server_stream.return_value = iter(events)
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "benchmark", "asr-01",
         ])
         assert result.exit_code == 1
@@ -357,7 +357,7 @@ class TestBatchBenchmarkStream:
         ]
         mock_client.benchmark_servers_stream.return_value = iter(events)
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "benchmark",
         ])
         assert result.exit_code == 1
@@ -385,7 +385,7 @@ class TestBatchBenchmarkStream:
         ]
         mock_client.benchmark_servers_stream.return_value = iter(events)
         result = runner.invoke(app, [
-            "--server", "http://test:8000",
+            "--server", "http://test:15797",
             "server", "benchmark",
         ])
         assert result.exit_code == 0, result.output
@@ -400,7 +400,7 @@ class TestBenchmarkSafetyChecks:
         """slots_used > 0 should block benchmark."""
         mock_client.stats.return_value = {"slots_used": 2, "queue_depth": 0}
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "benchmark",
         ])
         assert result.exit_code == 1
@@ -412,7 +412,7 @@ class TestBenchmarkSafetyChecks:
         """queue_depth > 0 should block benchmark."""
         mock_client.stats.return_value = {"slots_used": 0, "queue_depth": 1}
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "benchmark",
         ])
         assert result.exit_code == 1
@@ -440,7 +440,7 @@ class TestBenchmarkSafetyChecks:
         ]
         mock_client.benchmark_servers_stream.return_value = iter(events)
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "benchmark", "--force",
         ])
         assert result.exit_code == 0
@@ -451,7 +451,7 @@ class TestBenchmarkSafetyChecks:
         """Benchmark within repeat window should be blocked."""
         with patch("cli.commands.server._last_benchmark_age_minutes", return_value=3.5):
             result = runner.invoke(app, [
-                "--server", "http://test:8000", "--quiet",
+                "--server", "http://test:15797", "--quiet",
                 "server", "benchmark",
             ])
         assert result.exit_code == 1
@@ -479,7 +479,7 @@ class TestBenchmarkSafetyChecks:
         mock_client.benchmark_servers_stream.return_value = iter(events)
         with patch("cli.commands.server._last_benchmark_age_minutes", return_value=2.0):
             result = runner.invoke(app, [
-                "--server", "http://test:8000", "--quiet",
+                "--server", "http://test:15797", "--quiet",
                 "server", "benchmark", "--force",
             ])
         assert result.exit_code == 0
@@ -491,7 +491,7 @@ class TestBenchmarkSafetyChecks:
             {"server_id": "asr-01", "status": "OFFLINE", "host": "10.0.0.1", "port": 10095},
         ]
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "benchmark", "asr-01",
         ])
         assert result.exit_code == 1
@@ -515,7 +515,7 @@ class TestBenchmarkSafetyChecks:
         ]
         mock_client.benchmark_server_stream.return_value = iter(events)
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "benchmark", "asr-01", "--force",
         ])
         assert result.exit_code == 0
@@ -536,7 +536,7 @@ class TestBenchmarkSafetyChecks:
         ]
         mock_client.benchmark_server_stream.return_value = iter(events)
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "server", "benchmark", "asr-01",
         ])
         assert result.exit_code == 0

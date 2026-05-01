@@ -24,7 +24,7 @@ server {
     }
 
     location /api/ {
-        proxy_pass http://web:8000;
+        proxy_pass http://web:15797;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }

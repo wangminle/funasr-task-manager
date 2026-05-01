@@ -30,7 +30,7 @@ export default defineConfig({
   reporter: [['list']],
   timeout: testTimeout,
   use: {
-    baseURL: process.env.ASR_E2E_BASE_URL || 'http://127.0.0.1:5173',
+    baseURL: process.env.ASR_E2E_BASE_URL || 'http://127.0.0.1:15798',
     headless: true,
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure',
@@ -40,14 +40,14 @@ export default defineConfig({
     {
       command: `${quoteShellArg(nodeExecutable)} ${quoteShellArg(backendStartScript)}`,
       cwd: backendRoot,
-      url: 'http://127.0.0.1:8000/health',
+      url: 'http://127.0.0.1:15797/health',
       reuseExistingServer: true,
       timeout: 180 * 1000,
     },
     {
-      command: 'npx vite --host 127.0.0.1 --port 5173',
+      command: 'npx vite --host 127.0.0.1 --port 15798',
       cwd: frontendRoot,
-      url: 'http://127.0.0.1:5173',
+      url: 'http://127.0.0.1:15798',
       reuseExistingServer: true,
       timeout: 120 * 1000,
     },

@@ -26,9 +26,9 @@
 - 运行 `ffprobe` 验证文件格式、时长、编码、采样率
 - 非音视频格式 → 拒绝并告知用户
 - 需要转码的格式 → ffmpeg 转为 16kHz 单声道 WAV
-- 检查后端是否可达（`curl -sf http://127.0.0.1:8000/health`），不可达时按优先级尝试：
-  1. `sudo systemctl start funasr-task-manager-backend`（如已配置 systemd）
-  2. `cd {ASR_PROJECT_ROOT}/3-dev/src/backend && nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 &`（降级方案）
+- 检查后端是否可达（`curl -sf http://127.0.0.1:15797/health`），不可达时按优先级尝试：
+  1. `systemctl --user start funasr-task-manager-backend`（如已配置用户级 systemd 服务，无需 sudo）
+  2. `cd {ASR_PROJECT_ROOT}/3-dev/src/backend && nohup uvicorn app.main:app --host 0.0.0.0 --port 15797 &`（降级方案）
 
 ### Phase 3：参数协商与任务提交
 

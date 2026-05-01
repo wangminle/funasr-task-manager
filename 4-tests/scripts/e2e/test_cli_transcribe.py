@@ -16,7 +16,7 @@ runner = CliRunner()
 
 pytestmark = [pytest.mark.e2e, pytest.mark.slow]
 
-E2E_SERVER = os.environ.get("ASR_E2E_SERVER", "http://localhost:8000")
+E2E_SERVER = os.environ.get("ASR_E2E_SERVER", "http://localhost:15797")
 E2E_API_KEY = os.environ.get("ASR_E2E_API_KEY", "")
 
 

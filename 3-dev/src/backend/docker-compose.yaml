@@ -4,7 +4,7 @@ services:
   web:
     build: .
     ports:
-      - "8000:8000"
+      - "15797:15797"
     environment:
       - ASR_PROJECT_ROOT=/app
       - ASR_STORAGE_ROOT=/app/runtime/storage
@@ -19,7 +19,7 @@ services:
       - redis
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; r=httpx.get('http://localhost:8000/health'); assert r.status_code==200"]
+      test: ["CMD", "python", "-c", "import httpx; r=httpx.get('http://localhost:15797/health'); assert r.status_code==200"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -10,18 +10,18 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
   server: {
-    port: 5173,
+    port: 15798,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:15797',
         changeOrigin: true,
       },
       '/health': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:15797',
         changeOrigin: true,
       },
       '/metrics': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:15797',
         changeOrigin: true,
       },
     },

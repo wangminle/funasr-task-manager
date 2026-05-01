@@ -87,8 +87,8 @@ python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --lis
 
 在运行任何浏览器测试前，验证所有依赖：
 
-1. 后端健康：`GET http://localhost:8000/health` → `status: "ok"`。
-2. 前端可达：`GET http://localhost:5173` → HTTP 200。
+1. 后端健康：`GET http://localhost:15797/health` → `status: "ok"`。
+2. 前端可达：`GET http://localhost:15798` → HTTP 200。
 3. 至少有一台在线 FunASR 服务器：有 admin token 时用 `GET /api/v1/servers` → `len(servers) > 0`；无 admin token 时用 `GET /api/v1/stats` → `server_online > 0`。
 4. 测试素材存在：`4-tests/batch-testing/assets/1-测试audioFiles/` 包含音视频文件。
 
@@ -96,7 +96,7 @@ python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --lis
 
 ### 4. 准备环境
 
-- 优先使用项目已有的本地开发流程：后端 `http://localhost:8000`，前端 `http://localhost:5173`。
+- 优先使用项目已有的本地开发流程：后端 `http://localhost:15797`，前端 `http://localhost:15798`。
 - 复用仓库中现有的命令，不要发明额外的包装器。
 - 如果浏览器自动化依赖缺失，优先在 `3-dev/src/frontend/` 中添加，保持浏览器测试代码靠近前端工具链。
 - 浏览器测试输出、截图、trace、结果快照和运行摘要保存在 `4-tests/batch-testing/outputs/e2e/`。

@@ -14,8 +14,8 @@
 - 路由：`/upload`、`/tasks`
 - 前端 API 基础路径：`/api/v1`
 - 默认本地地址：
-  - 前端：`http://localhost:5173`（Vite 开发服务器）
-  - 后端：`http://localhost:8000`（Uvicorn）
+  - 前端：`http://localhost:15798`（Vite 开发服务器）
+  - 后端：`http://localhost:15797`（Uvicorn）
 
 ### CLI 入口
 

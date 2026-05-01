@@ -7,7 +7,7 @@ Tests T-M3-40 ~ T-M3-42 from the project plan:
 
 Usage:
     locust -f 4-tests/scripts/load/locustfile.py --headless -u 50 -r 10 -t 5m \
-        --host http://localhost:8000 --html 4-tests/reports/load-report.html
+        --host http://localhost:15797 --html 4-tests/reports/load-report.html
 """
 
 import io
@@ -21,7 +21,7 @@ class ASRTaskUser(HttpUser):
     """Simulates a user uploading audio and creating transcription tasks."""
 
     wait_time = between(0.5, 2.0)
-    host = "http://localhost:8000"
+    host = "http://localhost:15797"
 
     def on_start(self):
         self.api_key = "dev-token-user1"
@@ -111,7 +111,7 @@ class ASRBatchUser(HttpUser):
     """Simulates batch operations: uploading multiple files and creating batch tasks."""
 
     wait_time = between(2.0, 5.0)
-    host = "http://localhost:8000"
+    host = "http://localhost:15797"
 
     def on_start(self):
         self.api_key = "dev-token-user2"

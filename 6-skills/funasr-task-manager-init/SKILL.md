@@ -44,7 +44,7 @@ description: >
 ### Phase 2：检查后端运行状态
 
 1. 检查后端是否已启动（**核心判断条件，Agent 工作流仅依赖后端 API**）
-   - 请求 `GET http://localhost:8000/health`
+   - 请求 `GET http://localhost:15797/health`
    - 返回 `{"status": "ok"}` → 后端已运行
    - 连接失败或非 200 → 后端未启动
 
@@ -57,7 +57,7 @@ description: >
      > 4. 不需要，退出
    - 后端未启动 → 进入 Phase 3
 
-> **注意**：前端（`http://localhost:5173`）是 Web UI，供人类操作员使用，Agent 工作流不依赖前端。不检查、不启动前端。
+> **注意**：前端（`http://localhost:15798`）是 Web UI，供人类操作员使用，Agent 工作流不依赖前端。不检查、不启动前端。
 
 ### Phase 3：选择安装方式
 
@@ -153,10 +153,10 @@ python -m alembic upgrade head
 
 ```bash
 cd 3-dev/src/backend
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.main:app --host 0.0.0.0 --port 15797 --reload
 ```
 
-启动后等待 5 秒，验证 `GET http://localhost:8000/health` 返回 `{"status": "ok"}`。
+启动后等待 5 秒，验证 `GET http://localhost:15797/health` 返回 `{"status": "ok"}`。
 
 **后端启动成功即可进入 Phase 5。** 前端（Vue Web UI）是可选的，Agent 工作流不依赖前端。
 
@@ -206,7 +206,7 @@ docker compose ps
 # 应显示 backend 和 frontend 容器为 running/healthy
 ```
 
-验证 `GET http://localhost:8000/health` 返回 `{"status": "ok"}`。
+验证 `GET http://localhost:15797/health` 返回 `{"status": "ok"}`。
 
 ### Phase 5：启动验证与报告
 
@@ -216,7 +216,7 @@ docker compose ps
 ✅ funasr-task-manager 后端已就绪
 
   安装方式: {python/docker}
-  后端地址: http://localhost:8000
+  后端地址: http://localhost:15797
   健康检查: ✅ 通过
   数据库:   ✅ 已迁移到最新版本
   ffprobe:  ✅ 可用（版本 x.x.x）
@@ -231,7 +231,7 @@ docker compose ps
 > 是否需要执行以下可选配置？
 > 1. 安装/更新 ASR Skills 到 Agent 平台（推荐）
 > 2. 配置飞书/企微/Slack 渠道凭据
-> 3. 注册后端为 systemd 服务（仅 Linux，实现开机自启 + 崩溃重启）
+> 3. 注册后端为 systemd 用户级服务（仅 Linux，无需 sudo，开机自启 + 崩溃重启）
 > 4. 全部执行
 > 5. 跳过
 
@@ -391,21 +391,45 @@ Get-ChildItem -Directory "$RepoSkills\funasr-task-manager-*" | ForEach-Object {
 
 各渠道的详细配置步骤、环境变量写入方式和验证命令见 [references/channel-credentials.md](references/channel-credentials.md)。
 
-### Phase 8：systemd 后端服务守护（可选，仅 Python 环境 + Linux）
+### Phase 8：systemd 用户级服务守护（可选，仅 Python 环境 + Linux）
 
 仅适用于 Python 环境安装的后端（无论 Unicorn venv 还是系统 Python）。Docker 安装应使用 `docker compose` 的 `restart: always`，不需要本流程。
 
+> **⚠️ 必须使用用户级服务（`systemctl --user`），不要使用系统级服务（`/etc/systemd/system/`）**。
+> 理由：后端以普通用户身份运行，所有文件在用户目录下，监听 15797 非特权端口，不需要 root 权限。使用用户级服务可以：
+> - 无需 `sudo`，Agent 可直接管理服务生命周期
+> - 与 OpenClaw、Hermes、Cursor 等同样运行在用户空间的 Agent 工具统一管理
+> - 避免系统级权限纠缠（之前系统级服务导致需要 sudo 的问题就此消除）
+
 **前置检查**：`uname -s` 返回 `Linux` 且 `which systemctl` 成功且后端非 Docker 运行。非 Linux → 告知"仅适用于 Linux"，macOS 建议 `nohup` 或 launchd。
+
+**如果检测到旧的系统级服务**：
+
+```bash
+# 检查是否存在系统级服务
+if systemctl list-unit-files funasr-task-manager-backend.service | grep -q funasr; then
+  echo "⚠️ 检测到旧的系统级服务，需要先迁移"
+  # 展示以下命令让用户确认执行：
+  # sudo systemctl disable --now funasr-task-manager-backend
+  # sudo rm /etc/systemd/system/funasr-task-manager-backend.service
+  # sudo systemctl daemon-reload
+fi
+```
 
 **交互流程**：
 
 1. 逐个候选 Python 执行 `import uvicorn`，**仅验证通过的才可选定**（路径存在 ≠ 可用），全部失败则中止
 2. 生成 service 文件内容，**展示完整内容后请求用户确认再写入**
-3. 已有同名 service → 先展示 diff 让用户选择覆盖/跳过
-4. `sudo systemctl daemon-reload && enable --now`
-5. 等待 5 秒后验证 `is-active` + `curl /health`
+3. service 文件写入位置：`~/.config/systemd/user/funasr-task-manager-backend.service`
+4. unit 文件关键差异（与系统级对比）：
+   - **不要**包含 `User=` 行（用户级服务自动以当前用户运行）
+   - `WantedBy=default.target`（而非 `multi-user.target`）
+5. 已有同名 service → 先展示 diff 让用户选择覆盖/跳过
+6. `systemctl --user daemon-reload && systemctl --user enable --now funasr-task-manager-backend`
+7. 等待 5 秒后验证 `systemctl --user is-active funasr-task-manager-backend` + `curl /health`
+8. 确保 `loginctl enable-linger $USER`（使服务在用户未登录时也能运行）
 
-**安全规则**：所有 `sudo` 操作必须先展示完整命令，等用户确认后执行。不可静默写入 `/etc/systemd/system/`。
+**安全规则**：写入 `~/.config/systemd/user/` 不需要 `sudo`。唯一可能需要 `sudo` 的操作是清理旧的系统级服务，此时必须展示完整命令让用户确认。
 
 详细的 unit 文件模板、参数收集流程、验证输出和故障排查见 [references/systemd-setup.md](references/systemd-setup.md)。
 
@@ -421,7 +445,8 @@ Get-ChildItem -Directory "$RepoSkills\funasr-task-manager-*" | ForEach-Object {
 | 数据库迁移失败 | 展示错误，建议 `alembic downgrade base && alembic upgrade head` | 删除数据库文件 |
 | Skill 目录不存在 | 创建目录后重试 | 跳过 Skill 安装 |
 | Agent 平台无法识别 | 提供通用说明，让用户手动复制到对应目录 | 猜测平台路径 |
-| systemctl 不可用 / sudo 权限不足 | 提示替代方案或展示命令让用户手动执行 | 强行写入或反复尝试 sudo |
+| systemctl 不可用 | 提示替代方案（nohup、screen、tmux）或展示命令让用户手动执行 | 强行写入 |
+| 已有系统级服务 | 引导用户先 `sudo systemctl disable --now` 旧服务再创建用户级服务 | 直接覆盖或同时运行两个实例 |
 
 ## 与其他 Skill 的关系
 

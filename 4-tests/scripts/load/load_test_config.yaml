@@ -2,7 +2,7 @@
 # Usage: locust -f locustfile.py --config load_test_config.yaml
 
 # Target settings
-host: http://localhost:8000
+host: http://localhost:15797
 
 # User simulation
 users: 50

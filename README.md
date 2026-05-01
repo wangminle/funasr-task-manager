@@ -1,18 +1,33 @@
-# ASR 任务管理器
+# FunASR Task Manager
 
-集中式离线语音识别（ASR）任务管理系统，对接 FunASR 服务器集群，提供统一的文件上传、智能任务调度、实时进度追踪和多格式结果下载。支持 CLI / REST API / Web UI 三种使用方式。内置 VAD 分段并行转写能力，长音频自动切分后分发到多台服务器并行处理，结果按时间戳合并输出。
+集中式离线语音识别（ASR）任务管理系统。对接 FunASR 服务器集群，提供文件上传、智能调度、实时进度追踪和多格式结果下载。
+
+**三种使用方式**：CLI 命令行 · REST API · Web UI
+
+**核心能力**：
+
+- **多服务器智能调度** — LPT + 最早完工时间预规划，空闲节点自动工作窃取
+- **长音频 VAD 分段并行** — 超过阈值的音频自动切分，分发到多台服务器并行转写，结果按时间戳合并
+- **AI Agent 原生支持** — 7 个配套 Skills，让 AI Agent（OpenClaw / Hermes / Cursor 等）开箱即用地完成语音转写全流程
 
 ## 你想做什么？
 
 ```
-├── 转写 1 个文件            → python -m cli transcribe audio.mp4
-├── 转写多个文件（自动并行）  → python -m cli transcribe *.wav --format txt
-├── 只提交不等待              → python -m cli transcribe files --no-wait
-├── 查看批次进度              → python -m cli task list --group <group_id>
-├── 下载批次结果              → python -m cli task result --group <group_id> --format txt,srt
-├── 管理 ASR 服务器           → python -m cli server list / probe / benchmark
-├── 排查系统问题              → python -m cli doctor
-└── API 集成开发              → 阅读下方 API 参考
+├── 人类用户
+│   ├── 转写 1 个文件            → python -m cli transcribe audio.mp4
+│   ├── 转写多个文件（自动并行）  → python -m cli transcribe *.wav --format txt
+│   ├── 只提交不等待              → python -m cli transcribe files --no-wait
+│   ├── 查看批次进度              → python -m cli task list --group <group_id>
+│   ├── 下载批次结果              → python -m cli task result --group <group_id> --format txt,srt
+│   ├── 管理 ASR 服务器           → python -m cli server list / probe / benchmark
+│   ├── 排查系统问题              → python -m cli doctor
+│   └── API 集成开发              → 阅读下方 API 参考
+│
+└── AI Agent
+    ├── 环境初始化               → init Skill（自动检测、安装、配置）
+    ├── 用户发送音视频 → 自动转写  → channel-intake + result-delivery Skills
+    ├── 安装 Skills 到 Agent 平台  → init Phase 6
+    └── 详见下方「Agent Skills 体系」
 ```
 
 > **注**: `pip install -e .` 后可使用 `asr-cli` 替代 `python -m cli`（二者等价）。开发环境推荐 `python -m cli`，生产环境推荐 `asr-cli`。
@@ -39,7 +54,7 @@ pip install -e ".[dev]"
 alembic upgrade head
 
 # 启动后端
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.main:app --host 0.0.0.0 --port 15797 --reload
 ```
 
 > **工作目录说明**
@@ -76,6 +91,60 @@ python -m cli transcribe recording.mp4 --language zh --format txt
 # 指定输出目录
 python -m cli transcribe meeting.wav --format srt --output-dir ./runtime/storage/downloads/manual/
 ```
+
+---
+
+## Agent Skills 体系
+
+本项目为 AI Agent 提供了 **7 个配套 Skills**，安装到 Agent 平台（OpenClaw / Hermes / Cursor 等）后，Agent 可自主完成从环境检测到转写交付的全流程——用户只需在聊天中发送音视频文件，Agent 自动识别意图、下载文件、调用后端转写、格式化结果并以文件附件回复。
+
+### Skill 一览
+
+| Skill | 职责 | 触发时机 |
+|-------|------|---------|
+| **init** | 环境检测、依赖安装、后端启动、Skill 安装、渠道凭据配置、systemd 服务注册 | 首次部署或环境异常时 |
+| **channel-intake** | 意图识别、渠道文件下载（飞书/企微/Slack）、预检查、任务提交 | 用户发送音视频文件时 |
+| **media-preflight** | ffprobe 格式验证、时长检测、转码评估 | 文件上传到后端前 |
+| **result-delivery** | 任务状态轮询、结果拉取、质量初筛、格式化通知、文件附件发送 | 转写完成时 |
+| **server-benchmark** | ASR 节点性能校准（单线程 RTF + 梯度并发吞吐量） | 节点注册或定期校准时 |
+| **reset-test-db** | 测试环境数据库重置与 dry-run 评估 | 测试前 |
+| **web-e2e** | 浏览器 E2E 测试流程编排与素材管理 | 发版验证时 |
+
+### 协作链路
+
+```
+用户发送音视频
+      ↓
+  channel-intake          ← 意图识别 + 渠道文件下载
+      ↓
+  media-preflight         ← ffprobe 预检 + 转码决策
+      ↓
+  [后端自动调度转写]       ← VAD 分段 + 多服务器并行
+      ↓
+  result-delivery         ← 轮询 + 格式化 + 文件附件回复
+```
+
+辅助链路：`init`（环境准备，前置所有其他 Skill）、`server-benchmark`（性能校准）、`reset-test-db`（测试环境）、`web-e2e`（浏览器验证）。
+
+### 安装 Skills 到 Agent 平台
+
+运行 `init` Skill 的 Phase 6 即可一键安装所有 Skills 到目标平台：
+
+- **OpenClaw**：`~/.openclaw/workspace-{name}/skills/`
+- **Hermes**：`~/.hermes/skills/`
+- **Cursor**：`{project}/.cursor/skills/` 或 `~/.cursor/skills-cursor/`
+
+安装后 Agent 启动时自动加载 ASR 转写能力，无需用户手动指挥。详见 [init Skill](6-skills/funasr-task-manager-init/SKILL.md)。
+
+### 端口与服务
+
+| 服务 | 默认端口 | 说明 |
+|------|---------|------|
+| 后端 API | **15797** | Agent 和 CLI 通过此端口调用转写 API |
+| 前端 Web UI | **15798** | 人类操作员使用，Agent 不依赖 |
+| 预留 | **15799** | 未来扩展 |
+
+后端推荐注册为 **systemd 用户级服务**（`systemctl --user`），无需 sudo，Agent 可直接管理服务生命周期。详见 [init Skill Phase 8](6-skills/funasr-task-manager-init/references/systemd-setup.md)。
 
 ---
 
@@ -124,14 +193,14 @@ runtime/storage/downloads/
 
 ```bash
 # 1. 上传多个文件
-curl -X POST http://localhost:8000/api/v1/files/upload -F "file=@ep01.wav"
+curl -X POST http://localhost:15797/api/v1/files/upload -F "file=@ep01.wav"
 # → {"file_id": "01JQXXX1..."}
 
-curl -X POST http://localhost:8000/api/v1/files/upload -F "file=@ep02.wav"
+curl -X POST http://localhost:15797/api/v1/files/upload -F "file=@ep02.wav"
 # → {"file_id": "01JQXXX2..."}
 
 # 2. 批量创建任务
-curl -X POST http://localhost:8000/api/v1/tasks \
+curl -X POST http://localhost:15797/api/v1/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "items": [
@@ -141,15 +210,15 @@ curl -X POST http://localhost:8000/api/v1/tasks \
   }'
 
 # 3. 查看批次进度
-curl http://localhost:8000/api/v1/task-groups/<group_id>
+curl http://localhost:15797/api/v1/task-groups/<group_id>
 
 # 4. 下载结果（zip 打包）
-curl -o results.zip http://localhost:8000/api/v1/task-groups/<group_id>/results?format=zip
+curl -o results.zip http://localhost:15797/api/v1/task-groups/<group_id>/results?format=zip
 ```
 
 ### 前端批量上传
 
-Web UI 支持拖拽多文件上传和批量任务管理。访问 `http://localhost:5173` 打开前端界面。
+Web UI 支持拖拽多文件上传和批量任务管理。访问 `http://localhost:15798` 打开前端界面。
 
 ---
 
@@ -161,7 +230,7 @@ Web UI 支持拖拽多文件上传和批量任务管理。访问 `http://localho
 
 | 选项 | 简写 | 环境变量 | 说明 | 默认值 |
 |------|------|---------|------|--------|
-| `--server` | `-s` | `ASR_API_SERVER` | API 服务地址 | `http://localhost:8000` |
+| `--server` | `-s` | `ASR_API_SERVER` | API 服务地址 | `http://localhost:15797` |
 | `--api-key` | `-k` | `ASR_API_KEY` | API 认证 Token | 无 |
 | `--output` | `-o` | `ASR_OUTPUT_FORMAT` | 输出格式: `table`/`json`/`text` | `table` |
 | `--quiet` | `-q` | — | 静默模式 | `false` |
@@ -296,7 +365,7 @@ python -m cli metrics
 
 ```bash
 # 设置默认服务器地址
-python -m cli config set server http://asr-server:8000
+python -m cli config set server http://asr-server:15797
 
 # 设置 API Key
 python -m cli config set api_key my-token
@@ -346,16 +415,16 @@ python -m cli config list
 
 ```bash
 # 上传文件
-curl -X POST http://localhost:8000/api/v1/files/upload \
+curl -X POST http://localhost:15797/api/v1/files/upload \
   -F "file=@recording.wav"
 
 # 创建单个任务
-curl -X POST http://localhost:8000/api/v1/tasks \
+curl -X POST http://localhost:15797/api/v1/tasks \
   -H "Content-Type: application/json" \
   -d '{"items": [{"file_id": "01JQXXX...", "language": "zh"}]}'
 
 # 创建批量任务（含回调）
-curl -X POST http://localhost:8000/api/v1/tasks \
+curl -X POST http://localhost:15797/api/v1/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "items": [
@@ -366,7 +435,7 @@ curl -X POST http://localhost:8000/api/v1/tasks \
   }'
 
 # 创建任务（控制 VAD 切分行为）
-curl -X POST http://localhost:8000/api/v1/tasks \
+curl -X POST http://localhost:15797/api/v1/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "items": [{"file_id": "FILE_ID", "language": "zh"}],
@@ -374,23 +443,23 @@ curl -X POST http://localhost:8000/api/v1/tasks \
   }'
 
 # 查看批次状态
-curl http://localhost:8000/api/v1/task-groups/<group_id>
+curl http://localhost:15797/api/v1/task-groups/<group_id>
 # → {"task_group_id": "...", "total": 5, "succeeded": 3, "failed": 0, ...}
 
 # 下载转写结果（txt 格式）
-curl http://localhost:8000/api/v1/tasks/<task_id>/result?format=txt
+curl http://localhost:15797/api/v1/tasks/<task_id>/result?format=txt
 
 # 下载批次 zip
-curl -o results.zip http://localhost:8000/api/v1/task-groups/<group_id>/results?format=zip
+curl -o results.zip http://localhost:15797/api/v1/task-groups/<group_id>/results?format=zip
 
 # 探测节点
-curl -X POST http://localhost:8000/api/v1/servers/asr-01/probe?level=offline_light
+curl -X POST http://localhost:15797/api/v1/servers/asr-01/probe?level=offline_light
 
 # 对单节点执行真实 benchmark（仅使用公开样本 test.mp4 + tv-report-1.wav）
-curl -X POST http://localhost:8000/api/v1/servers/asr-01/benchmark
+curl -X POST http://localhost:15797/api/v1/servers/asr-01/benchmark
 
 # 系统诊断
-curl http://localhost:8000/api/v1/diagnostics
+curl http://localhost:15797/api/v1/diagnostics
 ```
 
 ---
@@ -514,7 +583,7 @@ python -m cli config set api_key dev-token-user1
 当前统一使用 `3-dev/benchmark/samples/` 下的 `test.mp4` 和 `tv-report-1.wav`（已纳入版本控制，克隆即可用）。`probe` 仅做 WebSocket 连通性探测，不发送真实音频、不计算 RTF；`benchmark` 使用上述两个真实样本执行端到端转写来测量 RTF。
 
 **Q: 如何查看某个批次的所有任务？**
-`python -m cli task list --group <group_id>` 或 `curl http://localhost:8000/api/v1/task-groups/<group_id>/tasks`
+`python -m cli task list --group <group_id>` 或 `curl http://localhost:15797/api/v1/task-groups/<group_id>/tasks`
 
 **Q: 如何一次性下载所有结果？**
 `python -m cli task result --group <group_id> --format txt,srt` 会把所有格式下载到 `runtime/storage/downloads/` 并生成 `batch-summary.json` 摘要文件；如果你只想导出副本到别处，再显式指定 `--output-dir`。
@@ -579,8 +648,8 @@ docker compose exec web alembic upgrade head
 
 | 服务 | 地址 |
 |------|------|
-| API 文档 | <http://localhost:8000/docs> |
-| 前端 | <http://localhost:5173> |
+| API 文档 | <http://localhost:15797/docs> |
+| 前端 | <http://localhost:15798> |
 | Prometheus | <http://localhost:9090> |
 | Grafana | <http://localhost:3001>（admin/admin） |
 
@@ -697,9 +766,7 @@ funasr-task-manager/
 └── README.md
 ```
 
-`6-skills/` 目录存放面向 AI Agent 和开发者的可复用自动化技能。每个技能包含一份 `SKILL.md`（触发条件、操作流程、参数规则）和配套脚本/参考文档。Agent 在对话中根据 SKILL.md 的 `description` 字段自动匹配并触发对应技能。
-
-**Skill 协作链路**：`init`（环境准备）→ `channel-intake`（识别意图 + 文件获取 + 任务提交）→ `media-preflight`（文件预检查）→ `result-delivery`（进度监控 + 结果交付）。`server-benchmark` 和 `reset-test-db` 在测试/校准场景独立触发，`web-e2e` 用于浏览器端到端验证。
+每个 Skill 包含 `SKILL.md`（触发条件、执行流程、参数规则）和配套脚本/参考文档。完整介绍见上方 [Agent Skills 体系](#agent-skills-体系)。
 
 ## 许可证
 

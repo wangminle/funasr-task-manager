@@ -86,8 +86,8 @@ if (Test-Path $PidFile) {
 }
 
 # ------ 端口兜底清理 ------
-Stop-ByPort -Port 8000 -Label "后端"
-Stop-ByPort -Port 5173 -Label "前端"
+Stop-ByPort -Port 15797 -Label "后端"
+Stop-ByPort -Port 15798 -Label "前端"
 
 Write-Host ""
 Write-Host "  所有服务已停止。"

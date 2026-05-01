@@ -93,7 +93,7 @@ class TestPartialUploadFailure:
         f3 = tmp_path / "c.wav"; f3.write_bytes(b"RIFF" + b"\x00" * 100)
 
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "transcribe", str(f1), str(f2), str(f3),
             "--no-wait", "--json-summary",
         ])
@@ -112,7 +112,7 @@ class TestPartialUploadFailure:
         f1 = tmp_path / "a.wav"; f1.write_bytes(b"RIFF" + b"\x00" * 100)
 
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "transcribe", str(f1),
             "--batch", "--no-wait", "--json-summary",
         ])
@@ -141,7 +141,7 @@ class TestPartialUploadFailure:
         f2 = tmp_path / "ok.wav"; f2.write_bytes(b"x" * 50)
 
         result = runner.invoke(app, [
-            "--server", "http://test:8000", "--quiet",
+            "--server", "http://test:15797", "--quiet",
             "transcribe", str(f1), str(f2),
             "--no-wait", "--json-summary",
         ])

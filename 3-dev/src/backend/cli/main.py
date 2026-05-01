@@ -59,7 +59,7 @@ def main(
         typer.echo(ctx.get_help())
         raise typer.Exit()
 
-    resolved_server = _resolve(server, "ASR_API_SERVER", "server", "http://localhost:8000")
+    resolved_server = _resolve(server, "ASR_API_SERVER", "server", "http://localhost:15797")
     resolved_key = _resolve(api_key, "ASR_API_KEY", "api_key", "")
     resolved_output = _resolve(output, "ASR_OUTPUT_FORMAT", "output", "table")
 

@@ -25,11 +25,11 @@ environment:
   ASR_E2E_SERVER_HOST: "FunASR 服务器地址，仅在未注册节点时需要"
   ASR_E2E_SERVER_PORT: "FunASR 服务器端口，仅在未注册节点时需要"
   ASR_E2E_PROFILE: "测试配置名称，由 npm run test:e2e:* 自动设置"
-  ASR_E2E_BASE_URL: "前端基础地址，默认 http://127.0.0.1:5173"
+  ASR_E2E_BASE_URL: "前端基础地址，默认 http://127.0.0.1:15798"
 
 prerequisites:
-  - "后端健康: GET http://localhost:8000/health → status: ok"
-  - "前端可达: GET http://localhost:5173 → HTTP 200"
+  - "后端健康: GET http://localhost:15797/health → status: ok"
+  - "前端可达: GET http://localhost:15798 → HTTP 200"
   - "至少一台 FunASR 服务器在线: GET /api/v1/servers"
   - "测试素材存在: 4-tests/batch-testing/assets/1-测试audioFiles/"
 

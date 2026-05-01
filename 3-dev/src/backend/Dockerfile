@@ -15,6 +15,6 @@ RUN mkdir -p /app/runtime/storage/uploads /app/runtime/storage/results /app/runt
 
 ENV ASR_PROJECT_ROOT=/app
 
-EXPOSE 8000
+EXPOSE 15797
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "15797"]
