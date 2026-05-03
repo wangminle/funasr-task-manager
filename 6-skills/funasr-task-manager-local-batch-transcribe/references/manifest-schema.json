@@ -1,0 +1,380 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://funasr-task-manager.local/schemas/batch-manifest-v1.json",
+  "title": "本地批量转写清单（Manifest）",
+  "description": "funasr-task-manager-local-batch-transcribe 技能使用的批量转写作业状态文件结构。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "batch_id",
+    "source",
+    "created_at",
+    "agent_platform",
+    "status",
+    "config",
+    "progress",
+    "chunks",
+    "timing",
+    "resume_from",
+    "items"
+  ],
+  "properties": {
+    "batch_id": {
+      "type": "string",
+      "description": "批次唯一标识。格式为 local-YYYYMMDD-HHMMSS，或重试批次以 retry-of- 为前缀。",
+      "pattern": "^(local-\\d{8}-\\d{6}|retry-of-.+)$"
+    },
+    "source": {
+      "type": "string",
+      "description": "源音频/媒体文件所在目录路径。"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "清单创建时间，ISO 8601 带时区偏移的日期时间字符串。"
+    },
+    "agent_platform": {
+      "type": "string",
+      "description": "发起或维护该批量任务的智能体/IDE 平台标识。",
+      "enum": ["codex", "claudecode", "openclaw", "hermes", "cursor", "unknown"]
+    },
+    "status": {
+      "type": "string",
+      "description": "整个批量作业在编排层面的当前状态。",
+      "enum": [
+        "SCANNED",
+        "SUBMITTING",
+        "MONITORING",
+        "COMPLETED",
+        "INTERRUPTED",
+        "FAILED"
+      ]
+    },
+    "config": {
+      "type": "object",
+      "description": "批量转写运行参数（语言、输出格式、分片与轮询等）。",
+      "additionalProperties": false,
+      "required": [
+        "language",
+        "format",
+        "segment_level",
+        "chunk_size",
+        "poll_interval_sec",
+        "max_retries"
+      ],
+      "properties": {
+        "language": {
+          "type": "string",
+          "description": "转写语言代码；auto 表示由服务自动检测。",
+          "default": "auto"
+        },
+        "format": {
+          "type": "string",
+          "description": "输出文本格式。",
+          "enum": ["txt", "json", "srt"],
+          "default": "txt"
+        },
+        "segment_level": {
+          "type": "string",
+          "description": "按时长分段策略：关闭或每段分钟数。",
+          "enum": ["off", "10m", "20m", "30m"],
+          "default": "10m"
+        },
+        "chunk_size": {
+          "type": "integer",
+          "description": "每个提交块包含的文件数量上限。",
+          "minimum": 1,
+          "default": 50
+        },
+        "poll_interval_sec": {
+          "type": "integer",
+          "description": "轮询后端任务状态的间隔（秒）。",
+          "minimum": 1,
+          "default": 15
+        },
+        "max_retries": {
+          "type": "integer",
+          "description": "单文件或单步失败时的最大重试次数。",
+          "minimum": 0,
+          "default": 1
+        }
+      }
+    },
+    "progress": {
+      "type": "object",
+      "description": "批量任务在文件粒度的汇总计数。",
+      "additionalProperties": false,
+      "required": [
+        "total",
+        "submitted",
+        "succeeded",
+        "failed",
+        "in_progress",
+        "skipped"
+      ],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "description": "参与批次的文件总数（含将跳过的项）。",
+          "minimum": 0
+        },
+        "submitted": {
+          "type": "integer",
+          "description": "已成功提交到后端的文件数。",
+          "minimum": 0
+        },
+        "succeeded": {
+          "type": "integer",
+          "description": "转写成功并落盘完成的文件数。",
+          "minimum": 0
+        },
+        "failed": {
+          "type": "integer",
+          "description": "最终失败（不可恢复或超过重试）的文件数。",
+          "minimum": 0
+        },
+        "in_progress": {
+          "type": "integer",
+          "description": "正在上传、排队或转写中的文件数。",
+          "minimum": 0
+        },
+        "skipped": {
+          "type": "integer",
+          "description": "因规则或用户选择而跳过的文件数。",
+          "minimum": 0
+        }
+      }
+    },
+    "chunks": {
+      "type": "array",
+      "description": "按块组织的提交与监控单元；每块对应一批文件及可选任务组 ID。",
+      "items": { "$ref": "#/definitions/chunkEntry" }
+    },
+    "timing": {
+      "type": "object",
+      "description": "各阶段起止时间与总耗时统计。",
+      "additionalProperties": false,
+      "required": [
+        "scan_started_at",
+        "submit_started_at",
+        "submit_completed_at",
+        "monitor_completed_at",
+        "total_elapsed_sec"
+      ],
+      "properties": {
+        "scan_started_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "本地扫描源目录开始时间；尚未开始时为 null。"
+        },
+        "submit_started_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "开始向批量 API 提交任务的时间；未开始为 null。"
+        },
+        "submit_completed_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "所有提交请求完成的时间；未完成则为 null。"
+        },
+        "monitor_completed_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "监控与收尾（如下载结果）结束时间；未完成则为 null。"
+        },
+        "total_elapsed_sec": {
+          "type": ["number", "null"],
+          "description": "从提交开始到当前/结束的总经过秒数。SCANNED 状态下为 null（提交尚未开始）。",
+          "minimum": 0
+        }
+      }
+    },
+    "resume_from": {
+      "description": "中断后可恢复的检查点；无中断或全新任务时为 null。",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "last_submitted_index",
+            "last_monitored_groups",
+            "interrupted_at",
+            "reason"
+          ],
+          "properties": {
+            "last_submitted_index": {
+              "type": "integer",
+              "description": "已提交的最大文件序号或块边界索引，用于续跑时跳过。"
+            },
+            "last_monitored_groups": {
+              "type": "array",
+              "description": "中断前正在监控的后端 task_group_id 列表。",
+              "items": { "type": "string" }
+            },
+            "interrupted_at": {
+              "type": "string",
+              "format": "date-time",
+              "description": "中断发生的 ISO 8601 时间。"
+            },
+            "reason": {
+              "type": "string",
+              "description": "中断原因简述（用户取消、进程退出、错误码等）。"
+            }
+          }
+        }
+      ]
+    },
+    "items": {
+      "type": "array",
+      "description": "清单内每个待处理或已处理文件的完整状态。",
+      "items": { "$ref": "#/definitions/manifestItem" }
+    }
+  },
+  "definitions": {
+    "chunkEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chunk_index",
+        "task_group_id",
+        "file_count",
+        "status"
+      ],
+      "properties": {
+        "chunk_index": {
+          "type": "integer",
+          "description": "块序号，从 0 或与 items.chunk_index 对齐。",
+          "minimum": 0
+        },
+        "task_group_id": {
+          "type": ["string", "null"],
+          "description": "后端返回的任务组 ID；提交前或失败未创建时为 null。"
+        },
+        "file_count": {
+          "type": "integer",
+          "description": "该块内包含的文件数量。",
+          "minimum": 0
+        },
+        "status": {
+          "type": "string",
+          "description": "该块在编排中的状态。",
+          "enum": [
+            "PENDING",
+            "SUBMITTED",
+            "MONITORING",
+            "COMPLETED",
+            "FAILED"
+          ]
+        }
+      }
+    },
+    "manifestItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "path",
+        "name",
+        "size_bytes",
+        "duration_sec",
+        "mtime",
+        "fingerprint",
+        "status",
+        "backend_status",
+        "chunk_index",
+        "file_id",
+        "task_id",
+        "task_group_id",
+        "output_path",
+        "error",
+        "retry_count"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "description": "在批次内的从 0 或 1 递增的文件序号。",
+          "minimum": 0
+        },
+        "path": {
+          "type": "string",
+          "description": "文件的绝对路径。"
+        },
+        "name": {
+          "type": "string",
+          "description": "文件名（含扩展名）。"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "description": "文件大小（字节）。",
+          "minimum": 0
+        },
+        "duration_sec": {
+          "type": ["number", "null"],
+          "description": "媒体时长（秒）；预检/读元数据前可为 null。"
+        },
+        "mtime": {
+          "type": "string",
+          "format": "date-time",
+          "description": "文件最后修改时间，ISO 8601。"
+        },
+        "fingerprint": {
+          "type": "string",
+          "description": "用于去重或变更检测：path-size-mtime 拼接或 SHA-256 等。"
+        },
+        "status": {
+          "type": "string",
+          "description": "该文件在本地流水线中的状态。",
+          "enum": [
+            "LOCAL_PENDING",
+            "SKIPPED",
+            "FAILED_PRECHECK",
+            "UPLOADING",
+            "FAILED_UPLOAD",
+            "SUBMITTED",
+            "BACKEND_PROCESSING",
+            "SUCCEEDED",
+            "FAILED_TRANSCRIBE",
+            "FAILED_DOWNLOAD",
+            "TIMEOUT"
+          ]
+        },
+        "backend_status": {
+          "type": ["string", "null"],
+          "description": "后端返回的原始状态，如 PREPROCESSING、QUEUED、DISPATCHED、TRANSCRIBING；未就绪为 null。"
+        },
+        "chunk_index": {
+          "type": ["integer", "null"],
+          "description": "所属块索引；未分块或待定可为 null。",
+          "minimum": 0
+        },
+        "file_id": {
+          "type": ["string", "null"],
+          "description": "上传或注册后得到的文件标识；未上传为 null。"
+        },
+        "task_id": {
+          "type": ["string", "null"],
+          "description": "单文件转写任务 ID；无独立任务时为 null。"
+        },
+        "task_group_id": {
+          "type": ["string", "null"],
+          "description": "所属任务组 ID；与 chunks 中对应项一致，可为 null。"
+        },
+        "output_path": {
+          "type": ["string", "null"],
+          "description": "本地写入的转写结果路径；未完成时为 null。"
+        },
+        "error": {
+          "type": ["string", "null"],
+          "description": "失败时的错误信息摘要；成功或无错误为 null。"
+        },
+        "retry_count": {
+          "type": "integer",
+          "description": "该条目已执行的重试次数。",
+          "minimum": 0,
+          "default": 0
+        }
+      }
+    }
+  }
+}

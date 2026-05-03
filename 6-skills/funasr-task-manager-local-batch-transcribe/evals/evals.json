@@ -1,0 +1,306 @@
+{
+  "$schema": "https://funasr-task-manager.local/schemas/evals-v1.json",
+  "skill": "funasr-task-manager-local-batch-transcribe",
+  "version": "1.0.0",
+  "description": "本地批量转写 Skill 的验证用例集，覆盖正常流程、边界条件和异常恢复场景。",
+  "test_cases": [
+    {
+      "id": "TC-001",
+      "name": "空目录扫描",
+      "category": "boundary",
+      "priority": "P0",
+      "description": "inbox 为空时应友好提示，不报错不崩溃",
+      "preconditions": [
+        "后端健康检查通过",
+        "runtime/agent-local-batch/inbox/ 目录存在且为空"
+      ],
+      "trigger": "用户说：帮我转写 inbox 里的文件",
+      "expected_phases": ["Phase 0", "Phase 1"],
+      "expected_behavior": [
+        "Phase 0 通过健康检查",
+        "Phase 1 扫描 inbox 发现 0 个文件",
+        "向用户输出：未发现待转写文件。请把音视频文件放入 runtime/agent-local-batch/inbox/，或告诉我具体目录。",
+        "不进入 Phase 2-7",
+        "不创建 manifest 文件"
+      ],
+      "expected_output_pattern": "未发现待转写文件",
+      "failure_criteria": [
+        "报错退出",
+        "创建空 manifest",
+        "进入 Phase 2 及后续流程"
+      ]
+    },
+    {
+      "id": "TC-002",
+      "name": "3 文件正常全流程",
+      "category": "happy_path",
+      "priority": "P0",
+      "description": "3 个有效音频文件走完 Phase 0-7 全流程",
+      "preconditions": [
+        "后端健康检查通过",
+        "至少 1 台 FunASR 服务器在线",
+        "runtime/agent-local-batch/inbox/ 中有 3 个 WAV 文件（各约 30s）"
+      ],
+      "trigger": "用户说：批量转写本地文件",
+      "expected_phases": ["Phase 0", "Phase 1", "Phase 2", "Phase 3", "Phase 4", "Phase 5", "Phase 6"],
+      "expected_behavior": [
+        "Phase 0：健康检查通过",
+        "Phase 1：确定扫描 inbox/",
+        "Phase 2：扫描发现 3 个文件，创建 manifest（status=SCANNED）",
+        "Phase 2 反馈：扫描完成通知（3 个待转写）",
+        "Phase 3：ffprobe 验证通过，计算总时长和预估耗时",
+        "Phase 3 反馈：预估耗时通知",
+        "Phase 4：单批提交（≤50，CLI 阻塞模式），反馈提交确认",
+        "Phase 5：等待转写完成，至少 1 次进度反馈",
+        "Phase 6：下载 3 个结果文件，生成 summary.md",
+        "Phase 6 反馈：完成汇总通知（成功 3 个，失败 0 个）",
+        "manifest 最终状态：COMPLETED，3 items 均为 SUCCEEDED"
+      ],
+      "expected_artifacts": [
+        "runtime/agent-local-batch/manifests/local-*.json（status=COMPLETED）",
+        "runtime/agent-local-batch/outputs/<batch_id>/txt/*.txt（3 个结果文件）",
+        "runtime/agent-local-batch/outputs/<batch_id>/summary-*-YYYYMMDD.md"
+      ],
+      "failure_criteria": [
+        "任何 Phase 没有向用户反馈",
+        "manifest 未持久化",
+        "结果文件数量与输入不一致"
+      ]
+    },
+    {
+      "id": "TC-003",
+      "name": "已完成文件跳过",
+      "category": "deduplication",
+      "priority": "P0",
+      "description": "已成功转写的文件（指纹未变）再次扫描时应跳过",
+      "preconditions": [
+        "后端健康检查通过",
+        "inbox/ 中有 3 个文件",
+        "最近 manifest 中 3 个文件均为 SUCCEEDED 状态且指纹匹配"
+      ],
+      "trigger": "用户说：再扫描一下 inbox",
+      "expected_phases": ["Phase 0", "Phase 1", "Phase 2"],
+      "expected_behavior": [
+        "Phase 2 扫描后识别 3 个文件指纹已存在于历史 manifest",
+        "标记为 SKIPPED（3 个已完成跳过）",
+        "向用户反馈：共发现 3 个音视频文件，其中 0 个待转写，3 个已完成跳过",
+        "不进入 Phase 3-7"
+      ],
+      "expected_output_pattern": "已完成跳过",
+      "failure_criteria": [
+        "重复提交已成功的文件",
+        "创建新的转写任务"
+      ]
+    },
+    {
+      "id": "TC-004",
+      "name": "失败重试",
+      "category": "error_recovery",
+      "priority": "P0",
+      "description": "用户要求重试失败项，应只提交失败的文件",
+      "preconditions": [
+        "后端健康检查通过",
+        "manifests/ 中有一个 manifest，其中 2 个 SUCCEEDED + 1 个 FAILED_TRANSCRIBE"
+      ],
+      "trigger": "用户说：重试失败项",
+      "expected_phases": ["Phase 0", "Phase 4", "Phase 5", "Phase 6"],
+      "expected_behavior": [
+        "读取最近 manifest，筛选出 1 个 FAILED_TRANSCRIBE 文件",
+        "创建新批次（ID: retry-of-<原batch_id>-YYYYMMDD-HHMMSS）",
+        "仅提交 1 个失败文件",
+        "监控并等待完成",
+        "更新新 manifest，不覆盖原 manifest",
+        "向用户反馈重试结果"
+      ],
+      "expected_artifacts": [
+        "新的 manifest 文件（retry-of-*）",
+        "原 manifest 保持不变"
+      ],
+      "failure_criteria": [
+        "重新提交已成功的文件",
+        "覆盖原 manifest",
+        "batch_id 格式不含 retry-of-"
+      ]
+    },
+    {
+      "id": "TC-005",
+      "name": "100+ 文件大批量分 chunk",
+      "category": "scale",
+      "priority": "P1",
+      "description": "超过 50 个文件时应自动分 chunk 提交并聚合监控",
+      "preconditions": [
+        "后端健康检查通过",
+        "至少 1 台 FunASR 服务器在线",
+        "指定目录中有 120 个有效音频文件"
+      ],
+      "trigger": "用户说：批量转写 /data/audio-120/",
+      "expected_phases": ["Phase 0", "Phase 1", "Phase 2", "Phase 3", "Phase 4", "Phase 5", "Phase 6"],
+      "expected_behavior": [
+        "Phase 2：扫描发现 120 个文件",
+        "Phase 4：分 3 个 chunk（50+50+20）提交",
+        "每 chunk 用 --no-wait --json-summary 模式",
+        "每 chunk 提交后反馈进度（已提交 50/120、100/120、120/120）",
+        "manifest.chunks 数组包含 3 个 chunk entry",
+        "Phase 5：聚合 3 个 task_group_id 的进度",
+        "每 30s 或每完成 5 个文件向用户汇报",
+        "Phase 6：批量下载 120 个结果"
+      ],
+      "expected_artifacts": [
+        "manifest 中 chunks 数组长度为 3",
+        "每个 chunk 有独立的 task_group_id",
+        "outputs/<batch_id>/txt/ 下有 120 个 .txt 文件"
+      ],
+      "failure_criteria": [
+        "一次性提交 120 个文件（未分 chunk）",
+        "chunk 之间无进度反馈",
+        "任何 chunk 失败导致整批中止"
+      ]
+    },
+    {
+      "id": "TC-006",
+      "name": "session 中断后恢复",
+      "category": "resilience",
+      "priority": "P1",
+      "description": "Agent session 中断后新 session 能检测并恢复未完成批次",
+      "preconditions": [
+        "后端健康检查通过",
+        "manifests/ 中有一个 status=INTERRUPTED 的 manifest",
+        "manifest 中 resume_from 字段记录了中断点"
+      ],
+      "trigger": "用户说：继续上次的批量转写",
+      "expected_phases": ["Phase 0", "Phase 4/5/6（从断点继续）"],
+      "expected_behavior": [
+        "Phase 0 检测到 INTERRUPTED manifest",
+        "向用户展示断点续传通知（batch_id、已提交/总数、已完成数）",
+        "用户确认后从 resume_from 记录的位置继续",
+        "如果中断在提交阶段：继续提交未提交的 chunks",
+        "如果中断在监控阶段：查询已提交 groups 的最新状态后继续监控",
+        "如果中断在下载阶段：补下载 output_path 为空的 SUCCEEDED 任务"
+      ],
+      "expected_artifacts": [
+        "manifest 状态从 INTERRUPTED 更新为 COMPLETED 或 MONITORING"
+      ],
+      "failure_criteria": [
+        "从头开始重新提交所有文件",
+        "无视 INTERRUPTED manifest 创建新批次",
+        "不询问用户直接恢复"
+      ]
+    },
+    {
+      "id": "TC-007",
+      "name": "混合格式目录",
+      "category": "boundary",
+      "priority": "P1",
+      "description": "目录中混合了音视频文件和非音视频文件时，正确过滤",
+      "preconditions": [
+        "后端健康检查通过",
+        "目标目录包含：2 个 .wav、1 个 .mp4、1 个 .txt、1 个 .pdf、1 个 .jpg"
+      ],
+      "trigger": "用户说：帮我转写 /data/mixed/",
+      "expected_phases": ["Phase 0", "Phase 1", "Phase 2", "Phase 3"],
+      "expected_behavior": [
+        "Phase 2：扫描发现 3 个音视频文件（2 wav + 1 mp4），忽略 txt/pdf/jpg",
+        "反馈：共发现 3 个音视频文件",
+        "Phase 3：对 3 个文件执行预检查",
+        "非支持格式的文件不出现在 manifest 的 items 中"
+      ],
+      "failure_criteria": [
+        "尝试转写 .txt/.pdf/.jpg 文件",
+        "将非音视频文件标记为 FAILED_PRECHECK（应直接不收录）"
+      ]
+    },
+    {
+      "id": "TC-008",
+      "name": "后端不可达",
+      "category": "error_handling",
+      "priority": "P1",
+      "description": "后端 health check 失败时触发 init Skill",
+      "preconditions": [
+        "后端未启动（GET /health 连接失败）"
+      ],
+      "trigger": "用户说：批量转写本地文件",
+      "expected_phases": ["Phase 0"],
+      "expected_behavior": [
+        "Phase 0 健康检查失败",
+        "告知用户后端不可达",
+        "尝试触发 funasr-task-manager-init 启动后端",
+        "不在后端不可达时创建 manifest 或进入后续 Phase"
+      ],
+      "failure_criteria": [
+        "静默跳过健康检查",
+        "在后端不可达时提交任务",
+        "不通知用户"
+      ]
+    },
+    {
+      "id": "TC-009",
+      "name": "300+ 文件需用户确认",
+      "category": "scale",
+      "priority": "P2",
+      "description": "超过 300 文件时必须向用户确认后才能提交",
+      "preconditions": [
+        "后端健康检查通过",
+        "目标目录包含 350 个音频文件"
+      ],
+      "trigger": "用户说：批量转写 /data/large-set/",
+      "expected_phases": ["Phase 0", "Phase 1", "Phase 2", "Phase 3"],
+      "expected_behavior": [
+        "Phase 2-3 完成后，在进入 Phase 4 前向用户确认",
+        "展示文件数量（350）、预估耗时、分 chunk 数（7 chunks）",
+        "等待用户明确确认后才开始提交",
+        "用户拒绝则保存 manifest（status=SCANNED）并退出"
+      ],
+      "failure_criteria": [
+        "未经确认直接提交 350 个文件",
+        "不展示预估信息"
+      ]
+    },
+    {
+      "id": "TC-010",
+      "name": "让步机制（channel-intake 优先）",
+      "category": "collaboration",
+      "priority": "P2",
+      "description": "batch 运行期间 intake 任务进入时暂停新 chunk 提交",
+      "preconditions": [
+        "正在执行 batch 转写（Phase 5 监控中）",
+        "用户通过 channel-intake 发送了 1 个新音频文件"
+      ],
+      "trigger": "系统检测到 queue_depth 中出现非本 batch 任务",
+      "expected_phases": ["Phase 5（暂停模式）"],
+      "expected_behavior": [
+        "暂停新 chunk 的提交（已运行任务继续）",
+        "向用户发送让步通知（progress-templates §7 暂停模板）",
+        "等待 intake 任务完成",
+        "intake 完成后发送恢复通知",
+        "继续 batch 剩余任务"
+      ],
+      "failure_criteria": [
+        "中断已运行的 batch 任务",
+        "不通知用户暂停/恢复",
+        "intake 完成后不恢复"
+      ]
+    }
+  ],
+  "coverage_matrix": {
+    "phases_covered": {
+      "Phase 0": ["TC-001", "TC-002", "TC-006", "TC-008"],
+      "Phase 1": ["TC-001", "TC-002", "TC-007"],
+      "Phase 2": ["TC-001", "TC-002", "TC-003", "TC-005", "TC-007"],
+      "Phase 3": ["TC-002", "TC-005", "TC-007", "TC-009"],
+      "Phase 4": ["TC-002", "TC-004", "TC-005", "TC-006"],
+      "Phase 5": ["TC-002", "TC-004", "TC-005", "TC-006", "TC-010"],
+      "Phase 6": ["TC-002", "TC-004", "TC-005", "TC-006"],
+      "Phase 7": ["TC-004"]
+    },
+    "categories": {
+      "happy_path": ["TC-002"],
+      "boundary": ["TC-001", "TC-007"],
+      "deduplication": ["TC-003"],
+      "error_recovery": ["TC-004"],
+      "error_handling": ["TC-008"],
+      "scale": ["TC-005", "TC-009"],
+      "resilience": ["TC-006"],
+      "collaboration": ["TC-010"]
+    }
+  }
+}

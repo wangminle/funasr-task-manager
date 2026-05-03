@@ -190,7 +190,11 @@ cython_debug/
 
 # ASR runtime data (local only, never commit)
 /.runtime
-/runtime/
+/runtime/*
+!/runtime/agent-local-batch/
+/runtime/agent-local-batch/**
+!/runtime/agent-local-batch/*/
+!/runtime/agent-local-batch/**/.gitkeep
 /3-dev/src/backend/data/
 /3-dev/src/backend/data/asr_tasks.db
 /3-dev/src/backend/data/results/

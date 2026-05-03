@@ -64,8 +64,10 @@
 |------|-----------|---------|
 | 意图识别 | channel-intake | 识别用户消息中的音视频文件或 ASR 关键词 |
 | 文件获取 | channel-intake | 从渠道 API 下载文件（飞书 >50MB 需分块下载） |
+| 本地批量扫描 | local-batch-transcribe | 扫描本地目录，建 manifest 清单，分 chunk 提交 |
 | 媒体预检 | media-preflight | ffprobe 验证格式/时长/编码，决定是否转码 |
 | 转写执行 | 后端自动 | 调用 FunASR 服务器集群，长音频自动 VAD 分段并行 |
+| 进度监控 | local-batch-transcribe | 循环轮询 task-group 状态，主动向用户反馈进度 |
 | 结果交付 | result-delivery | 轮询任务状态，完成后格式化结果通知用户 |
 
 ### 音频分段策略
@@ -121,11 +123,44 @@ PENDING → PREPROCESSING → QUEUED → DISPATCHED → TRANSCRIBING → SUCCEED
 
 ### Skill 协作链
 
+本项目有两条主要转写入口，共享同一后端和结果交付能力：
+
+**入口 A：渠道实时转写（channel-intake）**
+
+用户在聊天中发送音视频文件，逐个处理：
+
 ```
 init → channel-intake → media-preflight → [后端转写] → result-delivery
          ↑                                                    ↓
       用户发起                                           通知用户结果
 ```
+
+**入口 B：服务器本地批量转写（local-batch-transcribe）**
+
+用户指令扫描服务器本地目录，批量处理：
+
+```
+init → local-batch-transcribe
+         │
+         ├─ Phase 1-2：扫描目录、建清单
+         ├─ Phase 3：media-preflight（批量预检）
+         ├─ Phase 4：CLI --batch 批量提交
+         ├─ Phase 5：进度监控 + 主动反馈
+         ├─ Phase 6：结果归档（复用 result-delivery 格式）
+         └─ Phase 7：失败处理与重试
+```
+
+**协作规则**：当两个入口同时有任务时，channel-intake 优先——local-batch-transcribe 暂停新提交、等待 intake 完成后恢复（让步机制）。
+
+**触发条件对比**：
+
+| 场景 | 触发的 Skill |
+|------|-------------|
+| 用户在聊天发送 1 个音频文件 | `channel-intake` |
+| 用户说"帮我转写 inbox 里的文件" | `local-batch-transcribe` |
+| 用户说"批量转写 /data/audio/" | `local-batch-transcribe` |
+| 用户说"重试失败项" | `local-batch-transcribe` |
+| 用户说"继续上次的批量转写" | `local-batch-transcribe` |
 
 辅助 Skills：
 - `server-benchmark` — 性能测试与 RTF 校准

@@ -235,6 +235,49 @@ docker compose ps
 > 4. 全部执行
 > 5. 跳过
 
+### Phase 5.5：创建批量转写运行时目录
+
+**目的**：为 `funasr-task-manager-local-batch-transcribe` Skill 幂等创建运行时目录结构。后端健康检查通过后自动执行，无需用户确认。
+
+**幂等创建逻辑**（Linux/macOS）：
+
+```bash
+BATCH_ROOT="{repo_root}/runtime/agent-local-batch"
+for dir in inbox processing outputs manifests logs archive; do
+  mkdir -p "$BATCH_ROOT/$dir"
+  touch "$BATCH_ROOT/$dir/.gitkeep"
+done
+echo "✅ 批量转写运行时目录已就绪: $BATCH_ROOT"
+```
+
+**Windows PowerShell**：
+
+```powershell
+$BatchRoot = "{repo_root}\runtime\agent-local-batch"
+@("inbox","processing","outputs","manifests","logs","archive") | ForEach-Object {
+    $dir = Join-Path $BatchRoot $_
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $gitkeep = Join-Path $dir ".gitkeep"
+    if (-not (Test-Path $gitkeep)) { New-Item -ItemType File -Path $gitkeep | Out-Null }
+}
+Write-Host "✅ 批量转写运行时目录已就绪: $BatchRoot"
+```
+
+**验证**：确认 6 个子目录存在且各含 `.gitkeep`。
+
+**目录用途说明**：
+
+| 子目录 | 用途 |
+|--------|------|
+| `inbox/` | 待处理的源音视频文件（默认扫描入口） |
+| `processing/` | 正在处理中的文件暂存（防止重复提交） |
+| `outputs/` | 转写结果归档（按 batch_id 分目录） |
+| `manifests/` | 批次清单 JSON 文件（状态持久化） |
+| `logs/` | 批次执行日志 |
+| `archive/` | 历史已完成批次的归档 |
+
+> **注意**：此步骤为自动执行，无需用户选择。如果目录已存在则幂等跳过。
+
 ### Phase 6：安装 Skills 到 Agent 平台
 
 **目的**：将 `6-skills/` 下的所有 Skill 安装到 Agent 平台的自动加载目录，使 Agent 启动时即具备 ASR 转写能力，不需要用户手动指挥"去 repo 里学一下 skill"。
@@ -452,6 +495,7 @@ fi
 
 - **前置 Skill**：本 Skill 是所有其他 Skill 的前置条件——后端不可达时，其他 Skill 均无法运行
 - **被 `funasr-task-manager-channel-intake` 引用**：intake 在 Phase 2 检查后端健康时，如果失败可引导用户进入本 Skill
+- **被 `funasr-task-manager-local-batch-transcribe` 引用**：batch-transcribe 在 Phase 0 检查后端时，如不可达则触发本 Skill；Phase 5.5 为其创建运行时目录
 - **被 `funasr-task-manager-server-benchmark` 引用**：benchmark 需要后端运行
 
 ## 相关文件
