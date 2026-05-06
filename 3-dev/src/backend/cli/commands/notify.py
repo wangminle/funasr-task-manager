@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import sys
 import time
 from contextlib import suppress
@@ -36,6 +37,7 @@ FAILURE_LOG_PATH = Path.home() / ".asr-cli-notify-failures.log"
 
 TOKEN_CACHE_DURATION_SEC = 110 * 60  # 110 minutes (Feishu token valid for 2h)
 MAX_FAILURE_LOG_LINES = 100
+REDACTED = "[REDACTED]"
 
 
 def _get_credentials() -> tuple[str, str] | None:
@@ -74,14 +76,22 @@ def _load_cached_token(app_id: str) -> str | None:
 
 
 def _save_cached_token(app_id: str, token: str) -> None:
-    """Save token to cache file."""
+    """Save token to cache file with restricted permissions (0600)."""
     data = {
         "tenant_access_token": token,
         "expires_at": time.time() + TOKEN_CACHE_DURATION_SEC,
         "app_id": app_id,
     }
-    with suppress(OSError):
-        TOKEN_CACHE_PATH.write_text(json.dumps(data), encoding="utf-8")
+    try:
+        content = json.dumps(data)
+        # Write with 0600 permissions to prevent other users from reading the token
+        fd = os.open(str(TOKEN_CACHE_PATH), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, content.encode("utf-8"))
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
 
 
 def _fetch_token(app_id: str, app_secret: str) -> str | None:
@@ -216,9 +226,27 @@ def _send_file_message(
         return {"code": -1, "msg": f"Send failed: {e}"}
 
 
+def _redact_sensitive(value: str) -> str:
+    """Remove tokens and configured secrets before writing diagnostic logs."""
+    redacted = re.sub(r"Bearer\s+[A-Za-z0-9._-]+", f"Bearer {REDACTED}", value)
+    redacted = re.sub(r"(tenant_access_token[=:]\s*)[A-Za-z0-9._-]+", rf"\1{REDACTED}", redacted)
+    redacted = re.sub(r"\bt-[A-Za-z0-9._-]+", REDACTED, redacted)
+
+    known_secrets = {
+        os.environ.get("FEISHU_APP_SECRET"),
+        config_store.get("notify.feishu_app_secret"),
+    }
+    for secret in known_secrets:
+        if secret:
+            redacted = redacted.replace(str(secret), REDACTED)
+    return redacted
+
+
 def _log_failure(text_preview: str, error: str) -> None:
     """Append failure to log file (keep last MAX_FAILURE_LOG_LINES)."""
-    entry = f"[{datetime.datetime.now().isoformat()}] {error} | text={text_preview[:80]}\n"
+    safe_error = _redact_sensitive(error)
+    safe_preview = _redact_sensitive(text_preview)[:80]
+    entry = f"[{datetime.datetime.now().isoformat()}] {safe_error} | text={safe_preview}\n"
     try:
         lines: list[str] = []
         if FAILURE_LOG_PATH.exists():
@@ -326,8 +354,9 @@ def send(
         sys.stderr.write(f"[WARN] {msg}\n")
         return
 
-    # Resolve reply_to first — reply API doesn't require chat_id
-    resolved_reply_to = reply_to or _get_default_reply_to()
+    # Resolve reply_to: only fall back to default when no explicit --chat-id
+    # (explicit chat_id means user wants to target a specific chat, not a thread)
+    resolved_reply_to = reply_to or (None if chat_id else _get_default_reply_to())
 
     # Resolve chat_id (not required when reply_to is present)
     resolved_chat_id = chat_id or _get_default_chat_id()
@@ -372,7 +401,8 @@ def send_file(
         sys.stderr.write(f"[WARN] {msg}\n")
         return
 
-    resolved_reply_to = reply_to or _get_default_reply_to()
+    # Only fall back to default reply_to when no explicit --chat-id
+    resolved_reply_to = reply_to or (None if chat_id else _get_default_reply_to())
 
     resolved_chat_id = chat_id or _get_default_chat_id()
     if not resolved_chat_id and not resolved_reply_to:
@@ -421,9 +451,20 @@ def send_file(
 
     # Send accompanying text first if provided
     if text:
-        text_result = _send_text_message(token, resolved_chat_id, text, resolved_reply_to)
-        if text_result.get("code", -1) != 0:
-            sys.stderr.write(f"[WARN] 伴随文本发送失败: {text_result.get('msg', '')}\n")
+        text_result = _send_text_message(token, resolved_chat_id or "", text, resolved_reply_to)
+        text_code = text_result.get("code", -1)
+        if text_code != 0:
+            # Token expired — refresh and retry once
+            if text_code == 99991668:
+                token = _fetch_token(app_id, app_secret) or token
+                text_result = _send_text_message(token, resolved_chat_id or "", text, resolved_reply_to)
+                text_code = text_result.get("code", -1)
+            if text_code != 0:
+                error_msg = text_result.get("msg", "unknown error")
+                if strict:
+                    out.error(f"伴随文本发送失败: code={text_code}, msg={error_msg}")
+                    raise typer.Exit(1)
+                sys.stderr.write(f"[WARN] 伴随文本发送失败: {error_msg}\n")
 
     # Upload file with retry on token expiry
     for attempt in range(2):

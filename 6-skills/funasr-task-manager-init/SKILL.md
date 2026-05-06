@@ -418,7 +418,7 @@ Get-ChildItem -Directory "$RepoSkills\funasr-task-manager-*" | ForEach-Object {
 
 #### 安装后验证
 
-输出已安装的 7 个 Skill 清单 + ASR-WORKFLOW.md 状态，确认安装目录和数量。
+输出已安装的 8 个 Skill 清单 + ASR-WORKFLOW.md 状态，确认安装目录和数量。
 
 ### Phase 7：配置渠道凭据与实时通知（可选）
 

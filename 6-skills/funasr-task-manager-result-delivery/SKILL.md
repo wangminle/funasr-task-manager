@@ -175,6 +175,13 @@ Agent 在完成每一批任务交付后，必须进行以下自检：
    ```bash
    python -m cli notify send-file --file "/tmp/funasr-task-manager/01KQ8QER.../会议录音-20260415.txt" --text "✅ 转写完成 — 会议录音-20260415.txt"
    ```
+   上述命令依赖 `FEISHU_CHAT_ID` 或 `notify.default_chat_id` 已配置；如果没有默认会话 ID，必须显式传入 `--chat-id "oc_xxx"`。
+
+   显式指定会话：
+   ```bash
+   python -m cli notify send-file --file "result.txt" --text "✅ 转写完成" --chat-id "oc_xxx"
+   ```
+
    带回复线程：
    ```bash
    python -m cli notify send-file --file "result.txt" --text "✅ 转写完成" --reply-to "om_xxx"

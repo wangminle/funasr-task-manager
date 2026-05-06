@@ -272,6 +272,26 @@ class TestFailureLog:
         assert "A" * 80 in content
         assert "A" * 81 not in content
 
+    def test_log_failure_redacts_tokens_and_secret(self, _patch_paths):
+        from cli.config_store import set_value
+        from cli.commands.notify import _log_failure, FAILURE_LOG_PATH
+
+        set_value("notify.feishu_app_secret", "secret-value-123")
+        _log_failure(
+            "body with Bearer t-text-token and secret-value-123",
+            (
+                "Send failed: Authorization: Bearer t-access-token; "
+                "tenant_access_token=t-tenant-token app_secret=secret-value-123"
+            ),
+        )
+
+        content = FAILURE_LOG_PATH.read_text(encoding="utf-8")
+        assert "t-access-token" not in content
+        assert "t-tenant-token" not in content
+        assert "t-text-token" not in content
+        assert "secret-value-123" not in content
+        assert "Bearer [REDACTED]" in content
+
 
 class TestConfigStoreNested:
     def test_set_and_get_nested(self, _patch_paths):
