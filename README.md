@@ -8,7 +8,7 @@
 
 - **多服务器智能调度** — LPT + 最早完工时间预规划，空闲节点自动工作窃取
 - **长音频 VAD 分段并行** — 超过阈值的音频自动切分，分发到多台服务器并行转写，结果按时间戳合并
-- **AI Agent 原生支持** — 7 个配套 Skills，让 AI Agent（OpenClaw / Hermes / Cursor 等）开箱即用地完成语音转写全流程
+- **AI Agent 原生支持** — 8 个配套 Skills，让 AI Agent（OpenClaw / Hermes / Cursor 等）开箱即用地完成聊天渠道转写和服务器本地批量转写全流程
 
 ## 你想做什么？
 
@@ -20,6 +20,7 @@
 │   ├── 查看批次进度              → python -m cli task list --group <group_id>
 │   ├── 下载批次结果              → python -m cli task result --group <group_id> --format txt,srt
 │   ├── 管理 ASR 服务器           → python -m cli server list / probe / benchmark
+│   ├── 发送渠道实时通知          → python -m cli notify send --text "..."
 │   ├── 排查系统问题              → python -m cli doctor
 │   └── API 集成开发              → 阅读下方 API 参考
 │
@@ -96,7 +97,14 @@ python -m cli transcribe meeting.wav --format srt --output-dir ./runtime/storage
 
 ## Agent Skills 体系
 
-本项目为 AI Agent 提供了 **7 个配套 Skills**，安装到 Agent 平台（OpenClaw / Hermes / Cursor 等）后，Agent 可自主完成从环境检测到转写交付的全流程——用户只需在聊天中发送音视频文件，Agent 自动识别意图、下载文件、调用后端转写、格式化结果并以文件附件回复。
+本项目为 AI Agent 提供了 **8 个配套 Skills**，安装到 Agent 平台（OpenClaw / Hermes / Cursor 等）后，Agent 可自主完成从环境检测到转写交付的全流程。
+
+Agent 体系有两条主要入口：
+
+- **聊天渠道实时转写**：用户在飞书/企微/Slack 等渠道发送音视频文件，Agent 自动识别意图、下载文件、预检查、提交后端转写、监控状态，并以文件附件回复结果。
+- **服务器本地批量转写**：用户要求扫描服务器本地目录或 inbox，Agent 自动建清单、批量提交、持续播报进度、归档结果并处理失败重试。
+
+所有用户可见的阶段进度都必须走统一实时通知原语 `send_user_notice()`：OpenClaw/Hermes 环境优先调用平台 `message` tool；没有可用 `message` tool 时才 fallback 到 CLI `python -m cli notify ...`。普通 assistant 文本只用于最终总结或纯本地终端场景，不能当作聊天渠道实时进度通知。
 
 ### Skill 一览
 
@@ -104,6 +112,7 @@ python -m cli transcribe meeting.wav --format srt --output-dir ./runtime/storage
 |-------|------|---------|
 | **init** | 环境检测、依赖安装、后端启动、Skill 安装、渠道凭据配置、systemd 服务注册 | 首次部署或环境异常时 |
 | **channel-intake** | 意图识别、渠道文件下载（飞书/企微/Slack）、预检查、任务提交 | 用户发送音视频文件时 |
+| **local-batch-transcribe** | 扫描服务器本地目录、生成批量清单、分 chunk 提交、进度监控、结果归档、失败重试 | 用户要求批量转写本地目录/inbox 时 |
 | **media-preflight** | ffprobe 格式验证、时长检测、转码评估 | 文件上传到后端前 |
 | **result-delivery** | 任务状态轮询、结果拉取、质量初筛、格式化通知、文件附件发送 | 转写完成时 |
 | **server-benchmark** | ASR 节点性能校准（单线程 RTF + 梯度并发吞吐量） | 节点注册或定期校准时 |
@@ -112,29 +121,57 @@ python -m cli transcribe meeting.wav --format srt --output-dir ./runtime/storage
 
 ### 协作链路
 
+入口 A：聊天渠道实时转写
+
 ```
 用户发送音视频
       ↓
-  channel-intake          ← 意图识别 + 渠道文件下载
+  channel-intake          ← 意图识别 + 渠道文件下载 + 任务提交
       ↓
   media-preflight         ← ffprobe 预检 + 转码决策
       ↓
   [后端自动调度转写]       ← VAD 分段 + 多服务器并行
       ↓
-  result-delivery         ← 轮询 + 格式化 + 文件附件回复
+  result-delivery         ← 状态轮询 + 质量初筛 + 文件附件回复
 ```
 
-辅助链路：`init`（环境准备，前置所有其他 Skill）、`server-benchmark`（性能校准）、`reset-test-db`（测试环境）、`web-e2e`（浏览器验证）。
+入口 B：服务器本地批量转写
+
+```
+用户要求扫描目录/inbox
+      ↓
+  local-batch-transcribe  ← 扫描目录 + manifest + 批量预检
+      ↓
+  CLI --batch 批量提交
+      ↓
+  local-batch-transcribe  ← 进度监控 + 主动通知 + 结果归档 + 失败重试
+      ↓
+  result-delivery 格式规范 ← 复用结果摘要和附件交付模板
+```
+
+协作规则：`init` 是所有入口的前置环境准备；`media-preflight` 可被两条入口复用；`result-delivery` 是任务创建后的结果出口；`server-benchmark`、`reset-test-db`、`web-e2e` 分别服务性能校准、测试环境和浏览器验证。聊天渠道任务与本地批量任务并发时，聊天渠道入口优先，本地批量入口暂停新提交并等待恢复。
+
+### 实时通知原语
+
+所有 Skill 中出现“通知用户 / 汇报 / 反馈 / 进度更新”的位置，都必须遵循 [渠道实时通知规范](6-skills/_shared/CHANNEL-NOTIFICATION.md)。
+
+适配优先级：
+
+1. 平台原生 `message` tool（OpenClaw / Hermes）：`{"action": "send", "message": "...", "filePath": "..."}`
+2. CLI fallback：`python -m cli notify send --text "..."` 或 `python -m cli notify send-file --file result.txt`
+3. 普通 assistant 文本：仅限用户能直接看到实时输出的纯本地终端场景
+
+`notify` CLI 当前支持飞书/Lark 文本通知、话题回复、文件附件、token 缓存、soft-fail / `--strict` 模式。详见下方 [notify — 渠道实时通知（飞书）](#notify--渠道实时通知飞书)。
 
 ### 安装 Skills 到 Agent 平台
 
-运行 `init` Skill 的 Phase 6 即可一键安装所有 Skills 到目标平台：
+运行 `init` Skill 的 Phase 6 即可一键安装所有 8 个 Skills 和共享工作流文件到目标平台：
 
 - **OpenClaw**：`~/.openclaw/workspace-{name}/skills/`
 - **Hermes**：`~/.hermes/skills/`
 - **Cursor**：`{project}/.cursor/skills/` 或 `~/.cursor/skills-cursor/`
 
-安装后 Agent 启动时自动加载 ASR 转写能力，无需用户手动指挥。详见 [init Skill](6-skills/funasr-task-manager-init/SKILL.md)。
+安装后 Agent 启动时自动加载 ASR 转写能力，无需用户手动指挥。若需要聊天渠道实时进度，还应按 `init` Phase 7 配置渠道凭据与 `notify` fallback。详见 [init Skill](6-skills/funasr-task-manager-init/SKILL.md) 和 [渠道凭据配置](6-skills/funasr-task-manager-init/references/channel-credentials.md)。
 
 ### 端口与服务
 
@@ -344,6 +381,37 @@ python -m cli server delete asr-01
 | `twopass_full` | 完整双通道探测 |
 
 `probe` 只做连通性与能力探测，不参与 benchmark，也不会更新任何 RTF 基线。
+
+### notify — 渠道实时通知（飞书）
+
+`notify` 用于 Agent 在没有平台原生 `message` tool 时，通过飞书 API 发送实时进度通知和结果附件。默认 soft-fail：通知失败只输出 warning，不中断主流程；加 `--strict` 后失败返回 exit 1。
+
+```bash
+# 检查飞书凭据
+python -m cli notify auth-check
+
+# 发送文本
+python -m cli notify send --text "⏳ 正在从飞书下载文件..."
+
+# 从文件或 stdin 发送多行文本
+python -m cli notify send --text-file /tmp/notice.txt
+echo "批量转写进度：35/50 已完成" | python -m cli notify send --stdin
+
+# 发送结果附件
+python -m cli notify send-file --file /tmp/result.txt --filename "会议记录.txt"
+
+# 回复到指定飞书消息线程
+python -m cli notify send --text "处理中..." --reply-to om_xxxxxxxx
+```
+
+配置来源优先级：环境变量 > CLI 配置文件。
+
+| 配置 | 环境变量 | CLI 配置键 |
+|------|----------|------------|
+| 飞书 App ID | `FEISHU_APP_ID` | `notify.feishu_app_id` |
+| 飞书 App Secret | `FEISHU_APP_SECRET` | `notify.feishu_app_secret` |
+| 默认群聊 ID | `FEISHU_CHAT_ID` | `notify.default_chat_id` |
+| 默认回复消息 ID | `FEISHU_REPLY_TO` | `notify.default_reply_to` |
 
 ### 系统命令
 
@@ -738,7 +806,7 @@ funasr-task-manager/
 │   │   │   ├── services/              # 业务逻辑（scheduler, task_runner, diagnostics）
 │   │   │   └── storage/               # 仓储层 + 文件管理
 │   │   ├── cli/                       # CLI 工具
-│   │   │   ├── commands/              # 子命令（transcribe, task, server, system）
+│   │   │   ├── commands/              # 子命令（transcribe, task, server, notify, system）
 │   │   │   ├── api_client.py          # HTTP API 客户端
 │   │   │   └── main.py                # 入口 + 全局选项
 │   │   └── alembic/                   # 数据库迁移
@@ -753,8 +821,10 @@ funasr-task-manager/
 │       ├── e2e/                       # 端到端测试（API/CLI 视角）
 │       └── load/                      # 压力测试
 ├── 6-skills/                          # Agent 可复用的自动化技能
+│   ├── _shared/                                # 共享 ASR 工作流与实时通知规范
 │   ├── funasr-task-manager-init/               # 环境初始化与启动（Python/Docker）
 │   ├── funasr-task-manager-channel-intake/     # 音频入口与意图编排（飞书/企微/Slack）
+│   ├── funasr-task-manager-local-batch-transcribe/ # 服务器本地文件批量转写
 │   ├── funasr-task-manager-media-preflight/    # 媒体文件预检查（格式/时长/转码评估）
 │   ├── funasr-task-manager-result-delivery/    # 结果交付与质量初筛
 │   ├── funasr-task-manager-server-benchmark/   # 服务器性能校准（RTF 基线/并发梯度）

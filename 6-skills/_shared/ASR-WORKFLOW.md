@@ -5,9 +5,19 @@
 
 ---
 
+> **实时通知规范（强制）**：所有阶段通知必须通过 `send_user_notice()` 实时推送，禁止仅输出普通 assistant 文本。详见 `6-skills/_shared/CHANNEL-NOTIFICATION.md`。
+>
+> - **OpenClaw/飞书环境**：优先调用 runtime 暴露的 `message` tool（`{"name": "message", "arguments": {"action": "send", "message": "..."}}`）
+> - **无 message tool 时**：调用 `python -m cli notify send --text "..."`
+> - **普通文本**：仅当运行在纯本地终端且用户直接看到实时输出时可用
+>
+> 背景：普通 assistant 文本在 OpenClaw/Hermes 等平台中被 turn 级缓冲，turn 结束后才推送到飞书，导致用户在处理期间看不到进度。`send_user_notice()` 通过工具调用副作用绕过缓冲，实现即时送达。
+
+---
+
 ## 执行流程（5 阶段）
 
-收到用户消息后，按以下阶段顺序执行。**每个阶段至少发一条状态通知，禁止静默执行。**
+收到用户消息后，按以下阶段顺序执行。**每个阶段至少通过 `send_user_notice()` 发一条状态通知，禁止静默执行。**
 
 ### Phase 1：意图确认
 

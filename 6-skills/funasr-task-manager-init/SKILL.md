@@ -420,19 +420,54 @@ Get-ChildItem -Directory "$RepoSkills\funasr-task-manager-*" | ForEach-Object {
 
 输出已安装的 7 个 Skill 清单 + ASR-WORKFLOW.md 状态，确认安装目录和数量。
 
-### Phase 7：配置渠道凭据（可选）
+### Phase 7：配置渠道凭据与实时通知（可选）
 
-如果 Agent 需要通过聊天渠道（飞书、企业微信、Slack 等）接收用户文件，必须预配置渠道 API 凭据。否则 Agent 在收到文件时会花数分钟探索鉴权路径。
+如果 Agent 需要通过聊天渠道（飞书、企业微信、Slack 等）接收用户文件**或发送实时进度通知**，必须预配置渠道 API 凭据。否则 Agent 在收到文件时会花数分钟探索鉴权路径，通知功能也无法正常工作。
 
 **向用户询问**：
 
-> Agent 是否需要从聊天渠道接收文件？
+> Agent 是否需要从聊天渠道接收文件 / 发送实时通知？
 > 1. **飞书/Lark** — 需要 `app_id` + `app_secret`
 > 2. **企业微信** — 需要 `corpid` + `corpsecret`
 > 3. **Slack** — 需要 Bot OAuth Token
 > 4. **不需要 / 仅 CLI** — 跳过
 
 各渠道的详细配置步骤、环境变量写入方式和验证命令见 [references/channel-credentials.md](references/channel-credentials.md)。
+
+#### 7.1 配置实时通知凭据（飞书选项额外步骤）
+
+当用户选择飞书时，除了配置文件下载凭据外，还需配置 `notify` 子系统以支持 `send_user_notice()` 的 CLI fallback：
+
+```bash
+cd 3-dev/src/backend
+
+python -m cli config set notify.feishu_app_id "cli_xxxxxxxxxxxx"
+python -m cli config set notify.feishu_app_secret "xxxxxxxxxxxxxxxxxxxxxxxx"
+python -m cli config set notify.default_chat_id "oc_xxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+> **说明**：
+> - `notify.feishu_app_id` / `notify.feishu_app_secret`：与文件下载使用相同的飞书应用凭据即可
+> - `notify.default_chat_id`：Agent 发送通知的默认群聊 ID（从飞书群设置中获取）
+> - 这些值存储在 `~/.asr-cli.yaml` 的 `notify:` 段落中
+
+验证配置是否正确：
+
+```bash
+python -m cli notify auth-check
+# 应输出：飞书凭据有效 (app_id: cli_xxx, token 已缓存...)
+```
+
+发送测试消息：
+
+```bash
+python -m cli notify send --text "🔔 通知系统测试：如果你看到这条消息，说明 notify 配置成功"
+```
+
+> **注意**：
+> - 如果 Agent 运行在 OpenClaw 环境中，`send_user_notice()` 会优先使用平台自带的 `message` tool，CLI notify 仅作为 fallback
+> - 即使在 OpenClaw 环境中，也建议配置 CLI notify 凭据作为降级保障
+> - 环境变量 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_CHAT_ID` 可覆盖配置文件中的值
 
 ### Phase 8：systemd 用户级服务守护（可选，仅 Python 环境 + Linux）
 

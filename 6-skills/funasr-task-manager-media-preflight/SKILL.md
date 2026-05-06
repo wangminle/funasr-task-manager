@@ -11,6 +11,8 @@ description: >
 
 在提交转写任务前，对音视频文件做格式、元数据、转码需求和耗时预估的检查。
 
+> **实时通知规范**：当本 Skill 在聊天渠道或 `channel-intake` 链路中产生用户可见汇报时，必须遵循 `6-skills/_shared/CHANNEL-NOTIFICATION.md`，通过 `send_user_notice()` 发送，不要只写普通 assistant 文本。
+
 本 Skill 可被 `funasr-task-manager-channel-intake` 在 Phase 2 自动进入，也可独立用于排查文件问题（如"为什么时长不准""这个文件能转写吗"）。
 
 ## 触发条件
@@ -111,6 +113,8 @@ description: >
 ```
 
 ## 用户友好汇报模板
+
+在聊天渠道中，以下模板应作为 `send_user_notice()` 内容发送；纯本地终端交互可直接输出。
 
 ```
 📋 文件预检查: 会议录音-20260415.mp4

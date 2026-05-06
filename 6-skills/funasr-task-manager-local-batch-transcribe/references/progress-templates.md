@@ -3,6 +3,22 @@
 > 本文件定义 `funasr-task-manager-local-batch-transcribe` Skill 在各阶段向用户发送的通知模板。
 > Agent 必须严格按模板拼接输出，不可自由组织回复内容。
 
+> **发送方式（强制）**：以下所有模板内容必须通过 `send_user_notice()` 实时发送，禁止仅作为普通 assistant 文本输出。详见 `6-skills/_shared/CHANNEL-NOTIFICATION.md`。
+>
+> **调用示例**：
+>
+> OpenClaw（首选 — 使用 `message` tool）：
+> ```json
+> {"name": "message", "arguments": {"action": "send", "message": "<模板渲染后的文本>"}}
+> ```
+>
+> CLI fallback（无 message tool 时）：
+> ```bash
+> python -m cli notify send --text "<模板渲染后的文本>"
+> ```
+>
+> **时序规则**：每条通知必须在下一个耗时操作（curl/上传/转写/轮询）**之前**发出并等待返回。
+
 ## 1. 启动通知
 
 扫描开始时：
@@ -129,3 +145,6 @@
 2. 不在模板外添加额外内容（如性能表格、分段 JSON 等）。
 3. 时间格式：秒数 < 120 用 "Xs"，120-3600 用 "Xm Ys"，>3600 用 "Xh Ym"。
 4. 文件名超过 30 字符时截断为前 27 字符 + "..."。
+5. **每条模板消息必须通过 `send_user_notice()` 发送**，不可依赖普通文本回复。
+6. **先 notify，后操作**：通知发出并收到成功确认后，再执行后续耗时工具调用。
+7. 发送失败时记录 warning，但不阻塞主流程（soft-fail）。

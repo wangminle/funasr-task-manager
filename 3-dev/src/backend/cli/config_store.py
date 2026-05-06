@@ -27,13 +27,27 @@ def _save(data: dict[str, Any]) -> None:
 
 
 def get(key: str) -> Any:
+    """Get config value. Supports dot-notation for nested keys (e.g. 'notify.feishu_app_id')."""
     data = _load()
+    if "." in key:
+        parts = key.split(".", 1)
+        section = data.get(parts[0])
+        if isinstance(section, dict):
+            return section.get(parts[1])
+        return None
     return data.get(key, DEFAULTS.get(key))
 
 
 def set_value(key: str, value: str) -> None:
+    """Set config value. Supports dot-notation for nested keys (e.g. 'notify.feishu_app_id')."""
     data = _load()
-    data[key] = value
+    if "." in key:
+        parts = key.split(".", 1)
+        if parts[0] not in data or not isinstance(data[parts[0]], dict):
+            data[parts[0]] = {}
+        data[parts[0]][parts[1]] = value
+    else:
+        data[key] = value
     _save(data)
 
 

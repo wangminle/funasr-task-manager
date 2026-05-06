@@ -13,17 +13,37 @@ description: >
 
 ## 执行检查清单（强制）
 
-> **强制规则**：Agent 在执行本 Skill 流程时，**必须逐条确认以下通知已发送**。禁止静默执行整个批量流程。
+> **实时通知规范**：本 Skill 的所有用户通知必须遵循 `6-skills/_shared/CHANNEL-NOTIFICATION.md`。禁止用普通文本替代 `send_user_notice()`。
 
-| # | 检查项 | 时机 | 模板引用 |
-|---|--------|------|---------|
-| 1 | 启动通知 | Phase 1 开始 | `progress-templates.md` §1 |
-| 2 | 扫描结果通知 | Phase 2 完成 | `progress-templates.md` §2 |
-| 3 | 预估耗时通知 | Phase 3 完成 | `progress-templates.md` §2 |
-| 4 | 提交确认 | Phase 4 每 chunk 完成 | `progress-templates.md` §3 |
-| 5 | 定期进度更新 | Phase 5 每 30s 或每 5 个完成 | `progress-templates.md` §4 |
-| 6 | 异常即时通知 | 任何阶段出错 | `progress-templates.md` §5 |
-| 7 | 完成汇总通知 | Phase 6 完成 | `progress-templates.md` §6 |
+> **强制规则**：Agent 在执行本 Skill 流程时，**必须逐条通过 `send_user_notice()` 确认以下通知已送达**。禁止静默执行整个批量流程。禁止把阶段通知仅写入普通 assistant 文本回复。
+
+| # | 检查项 | 时机 | 模板引用 | `send_user_notice()` 后再执行 |
+|---|--------|------|---------|------------------------------|
+| 1 | 启动通知 | Phase 1 开始 | `progress-templates.md` §1 | 目录扫描 |
+| 2 | 扫描结果通知 | Phase 2 完成 | `progress-templates.md` §2 | 预检查 |
+| 3 | 预估耗时通知 | Phase 3 完成 | `progress-templates.md` §2 | 批量提交 |
+| 4 | 提交确认 | Phase 4 每 chunk 完成 | `progress-templates.md` §3 | 下一 chunk / 监控 |
+| 5 | 定期进度更新 | Phase 5 每 30s 或每 5 个完成 | `progress-templates.md` §4 | 继续轮询 |
+| 6 | 异常即时通知 | 任何阶段出错 | `progress-templates.md` §5 | 错误处理 |
+| 7 | 完成汇总通知 | Phase 6 完成 | `progress-templates.md` §6 | 归档/退出 |
+
+#### `send_user_notice()` 调用方式
+
+**OpenClaw 环境（首选）：**
+
+```json
+{"name": "message", "arguments": {"action": "send", "message": "我将扫描 runtime/agent-local-batch/inbox/ 中的待转写文件..."}}
+```
+
+**CLI fallback（无 message tool 时）：**
+
+```bash
+python -m cli notify send --text "我将扫描 runtime/agent-local-batch/inbox/ 中的待转写文件..."
+```
+
+**时序要求**：每条通知必须在对应耗时操作**之前**发送并等待返回成功，然后再执行扫描/提交/轮询等操作。
+
+> **2026-05-05 排查结论**：批量转写 session `c6105436` 中 Agent 有 `message` tool 可用但未调用，14:14 发出的指令到 14:25 才集中收到所有中间通知。根因是 Agent 只输出普通文本，被 OpenClaw 飞书 bridge 在 turn 结束后统一推送。修复方案：**每个通知点必须显式调用 `send_user_notice()`**。
 
 ## 触发条件
 

@@ -81,21 +81,41 @@
 - 后台命令结束后须主动向用户报告状态
 - 通过工作区目录访问文件系统
 
+### `send_user_notice()` 实现（首选）
+
+OpenClaw runtime 暴露 `message` tool，**必须优先使用它发送所有阶段通知**：
+
+```json
+{"name": "message", "arguments": {"action": "send", "message": "⏳ Phase 4：正在提交第 1/3 批..."}}
+```
+
+发送文件附件时附带 `filePath`：
+
+```json
+{"name": "message", "arguments": {"action": "send", "message": "✅ 结果已生成", "filePath": "/tmp/funasr-task-manager/results/file.txt"}}
+```
+
+成功判断：toolResult 中 `ok == true`。失败时记录但不阻塞主流程。
+
+**禁止**把阶段通知仅写入普通 assistant 文本——普通文本会被 turn 缓冲，直到整个工具调用链结束后才推送到飞书。
+
 ### 进度监控实现
 
 ```
-1. 提交分块（上传/创建步骤可放后台）
-2. 监控：直接发 HTTP GET
+1. send_user_notice("Phase 4：开始提交...")       ← 先通知
+2. 提交分块（上传/创建步骤可放后台）
+3. 监控：直接发 HTTP GET
    curl -s http://127.0.0.1:15797/api/v1/task-groups/{gid} | python -m json.tool
-3. 在 shell 中解析 JSON 响应
-4. 每轮轮询后向用户汇报
-5. 重复直至全部进入终态
+4. 在 shell 中解析 JSON 响应
+5. send_user_notice("进度：35/50 已完成...")      ← 每轮通知
+6. 重复直至全部进入终态
 ```
 
 ### 特殊注意
 
-- **关键**：每次后台操作后必须发送进度通知
+- **关键**：每次后台操作后必须通过 `send_user_notice()` 发送进度通知（调用 `message` tool）
 - 2026-04-28 经验：OpenClaw 智能体容易「静默执行」——Skill 明确要求每个阶段都要通知用户
+- 2026-05-05 排查：批量转写 session 中 Agent 有 `message` tool 但未调用，所有通知被 turn 缓冲后统一送达
 - 主目录使用 `$HOME`，不要写死用户名
 - Skill 安装路径：`~/.openclaw/workspace-{name}/skills/`
 
@@ -107,15 +127,25 @@
 - Linux/macOS 上支持 bash/zsh
 - Skill 位于 `~/.hermes/skills/`
 
+### `send_user_notice()` 实现
+
+Hermes 若暴露 `message` tool（类似 OpenClaw），优先使用。否则 fallback 到 CLI：
+
+```bash
+python -m cli notify send --text "⏳ Phase 4：正在提交..."
+```
+
 ### 进度监控实现
 
 - 与 OpenClaw 类似，但可直接用终端
 
 ```
-1. 小批量可用 Layer 1（CLI 阻塞模式）
-2. 大批量：Layer 2 + curl 轮询
-3. 若已安装 jq，可解析进度，例如：
+1. send_user_notice("Phase 4：开始扫描...")       ← 先通知
+2. 小批量可用 Layer 1（CLI 阻塞模式）
+3. 大批量：Layer 2 + curl 轮询
+4. 若已安装 jq，可解析进度，例如：
    curl -s .../task-groups/{gid} | jq '.progress'
+5. send_user_notice("进度更新...")                ← 每轮通知
 ```
 
 ### 特殊注意
@@ -141,4 +171,7 @@
 | 循环轮询 | ✅（Await + 读终端） | ⚠️（有限） | ✅（需主动回报） | ✅ |
 | 文件系统写入 | ✅ | ✅ | ✅ | ✅ |
 | Windows 支持 | ✅ | ❌ | ❌ | ❌ |
+| `send_user_notice()` | CLI fallback | CLI fallback | **message tool**（首选） | message tool / CLI |
 | 推荐监控层 | 小批量 Layer 1 / 大批量 Layer 2 | Layer 2 | Layer 2 | Layer 1/2 |
+
+> **通知规范**：详见 `6-skills/_shared/CHANNEL-NOTIFICATION.md`。所有平台都必须通过 `send_user_notice()` 发送阶段通知，禁止依赖普通 assistant 文本作为实时通知手段。

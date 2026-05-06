@@ -13,10 +13,12 @@ description: >
 
 ## 执行检查清单（强制）
 
-> **强制规则**：Agent 在执行结果交付流程时，**必须逐条确认以下通知已发送**。即使使用 `background: true` 异步轮询，每次状态变化都必须回报用户。
+> **实时通知规范**：本 Skill 的所有用户通知必须遵循 `6-skills/_shared/CHANNEL-NOTIFICATION.md`。禁止用普通文本替代 `send_user_notice()`。
 
-| # | 检查项 | 时机 | 通知模板 |
-|---|--------|------|---------|
+> **强制规则**：Agent 在执行结果交付流程时，**必须逐条通过 `send_user_notice()` 确认以下通知已送达**。即使使用 `background: true` 异步轮询，每次状态变化都必须调用 `send_user_notice()` 回报用户。
+
+| # | 检查项 | 时机 | `send_user_notice()` 内容 |
+|---|--------|------|--------------------------|
 | 1 | 预处理状态 | Phase 2 | "⏳ {filename} — 文件预处理中..." |
 | 2 | 排队状态 | Phase 2 | "⏳ {filename} — 等待调度..." |
 | 3 | 转写状态 | Phase 2 | "⏳ {filename} — 正在转写..." |
@@ -24,17 +26,41 @@ description: >
 | 5 | 批量进度 | Phase 2 | "{completed}/{total} 已完成" |
 | 6 | 完成/失败 | Phase 2 | "✅ 转写完成！" 或 "❌ 转写失败：{原因}" |
 | 7 | 质量初筛 | Phase 4 | 异常时通知用户，正常时可跳过 |
-| 8 | 结果交付 | Phase 5 | 固定模板（见下方输出格式规范） |
+| 8 | 结果交付 | Phase 5 | 固定模板 + 文件附件（见下方输出格式规范） |
+
+#### `send_user_notice()` 调用方式
+
+**OpenClaw 环境（首选）— 状态通知：**
+
+```json
+{"name": "message", "arguments": {"action": "send", "message": "⏳ tv-report-1.wav — 正在转写..."}}
+```
+
+**OpenClaw 环境 — 结果文件发送：**
+
+```json
+{"name": "message", "arguments": {"action": "send", "message": "✅ 转写完成\n\n  文件名: tv-report-1.wav\n  ...", "filePath": "/tmp/funasr-task-manager/results/tv-report-1.txt"}}
+```
+
+**CLI fallback（无 message tool 时）：**
+
+```bash
+python -m cli notify send --text "⏳ tv-report-1.wav — 正在转写..."
+```
+
+**时序要求**：轮询检测到状态变化后，**立即** `send_user_notice()` 发送通知，然后再继续下一轮轮询。不要累积多个状态变化再一起发送。
 
 ### 常见执行偏差（必读）
 
 | 偏差模式 | 典型表现 | 正确做法 |
 |---------|---------|---------|
-| **只发结果不发进度** | 等任务完成后才发第一条消息 | 每次状态变化发一条通知 |
-| **轮询不回报** | 后台轮询 API 但不通知用户 | 每次检测到状态变化立即通知 |
-| **批量沉默** | 批量任务全部完成才汇报 | 每完成一个文件就更新进度 |
+| **只发结果不发进度** | 等任务完成后才发第一条消息 | 每次状态变化调用 `send_user_notice()` |
+| **用普通文本代替** | 输出 assistant 文本但未调用 message tool | 必须调用 `send_user_notice()` 而非普通文本 |
+| **轮询不回报** | 后台轮询 API 但不通知用户 | 每次检测到状态变化立即 `send_user_notice()` |
+| **批量沉默** | 批量任务全部完成才汇报 | 每完成一个文件就 `send_user_notice()` 更新进度 |
 | **分段细节过多** | 在最终结果里展示段级 JSON | 进度中简报"3/5 段已完成"，最终结果不含段级细节 |
 | **模板外内容** | 添加性能表格、加速比等 | 严格按模板输出，不增不减 |
+| **重复发送** | message tool 和 CLI 都调用了 | 只使用第一个可用方式，成功后不 fallback |
 
 ### 任务完成后自检（强制）
 
@@ -42,14 +68,15 @@ Agent 在完成每一批任务交付后，必须进行以下自检：
 
 ```
 自检清单：
-- [ ] 我是否在每个状态变化时都发送了通知？
-- [ ] 用户是否始终知道当前进度？
+- [ ] 我是否在每个状态变化时都通过 send_user_notice() 发送了通知？
+- [ ] 用户是否始终知道当前进度（而非 turn 结束后才收到）？
 - [ ] 大文件/长时间操作是否有额外的进度通知？
 - [ ] 结果是否严格按模板发送（无额外内容）？
-- [ ] txt 文件是否以附件形式发送（未粘贴全文）？
+- [ ] txt 文件是否以附件形式通过 send_user_notice(filePath=...) 发送？
 ```
 
-> **2026-04-28 复盘教训**：OpenClaw 机器人在 6 个文件的转写流程中，全程未发送任何阶段通知，用户长时间等待无反馈。根因包括"效率优先心态"、"background 执行后遗忘回报"、"未逐条对照 Skill 执行"。
+> **2026-04-28 复盘教训**：OpenClaw 机器人在 6 个文件的转写流程中，全程未发送任何阶段通知，用户长时间等待无反馈。
+> **2026-05-05 排查结论**：Agent 有 `message` tool 但只在发结果文件时调用了一次，中间进度全部靠普通文本被 turn 缓冲。修复：**每次状态变化必须显式调用 `send_user_notice()`**。
 
 ## 触发条件
 
@@ -131,12 +158,29 @@ Agent 在完成每一批任务交付后，必须进行以下自检：
 
 2. **发送结构化摘要消息**（固定格式，见下方模板）
 
-3. **通过渠道 API 发送结果文件**（不是贴文本到消息框）
-   - 以**文件附件**形式发送到原渠道，具体 API 见下方渠道发送指引
+3. **通过 `send_user_notice()` 发送结果文件**（不是贴文本到消息框）
+   - 以**文件附件**形式发送到原渠道
    - 批量任务：逐个发送或打包为 zip
    - **如果渠道不支持文件附件**：将 txt 内容保存到服务器，发送下载链接
 
-   **渠道文件发送方法**：
+   **`send_user_notice()` 文件发送方式（按优先级选择）**：
+
+   **优先级 1：OpenClaw `message` tool（首选）**
+   ```json
+   {"name": "message", "arguments": {"action": "send", "message": "✅ 转写完成\n\n  文件: 会议录音-20260415.txt", "filePath": "/tmp/funasr-task-manager/01KQ8QER.../会议录音-20260415.txt"}}
+   ```
+   成功判断：toolResult 中 `ok == true`。
+
+   **优先级 2：CLI `notify send-file`（无 message tool 时）**
+   ```bash
+   python -m cli notify send-file --file "/tmp/funasr-task-manager/01KQ8QER.../会议录音-20260415.txt" --text "✅ 转写完成 — 会议录音-20260415.txt"
+   ```
+   带回复线程：
+   ```bash
+   python -m cli notify send-file --file "result.txt" --text "✅ 转写完成" --reply-to "om_xxx"
+   ```
+
+   **各渠道底层 API 参考**：
 
    | 渠道 | 发送方式 | 关键 API |
    |------|---------|---------|
@@ -147,6 +191,8 @@ Agent 在完成每一批任务交付后，必须进行以下自检：
    | **CLI / 本地** | 写入本地文件路径 | 直接 `cp` 到用户指定目录 |
 
    详细 API 参考见 `funasr-task-manager-channel-intake` Skill 中的 `references/channel-file-apis.md`（与本 Skill 同级目录下的兄弟 Skill）。
+
+   > **注意**：使用 `message` tool 成功后禁止再 fallback 到 CLI `notify send-file`（避免重复发送）。
 
 4. **不做的事**
    - **不在消息中引用/粘贴转写全文**（无论长短，这是最常被违反的规则）
