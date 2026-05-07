@@ -151,6 +151,33 @@ python -m cli notify send-file --file /tmp/funasr-task-manager/results/会议录
 
 ---
 
+## 子 Agent 通知规则
+
+当主 Agent 委托子 Agent 进行进度监控时（如批量转写的 `batch-monitor` Skill），子 Agent **同样必须遵循本规范**的所有规则。
+
+### 子 Agent 特殊规则
+
+1. **子 Agent 必须通过 `send_user_notice()` 发送所有通知**，与主 Agent 使用相同的适配器选择逻辑。
+2. **子 Agent 不输出对话内容**——所有输出仅限于固定模板通知，不做闲聊或自由文本生成。
+3. **子 Agent 的通知必须包含批次标识**（如 `batch_id`），以便用户区分不同批次的通知。
+4. **多个子 Agent 并发时**，各自独立发送通知，通知内容通过 batch_id / group_id 区分。
+5. **子 Agent 退出前必须发送一条完成或异常汇总通知**，不可静默退出。
+
+### 主 Agent 与子 Agent 的通知分工
+
+| 通知类型 | 负责方 | 说明 |
+|---------|--------|------|
+| 扫描开始/完成 | 主 Agent | Phase 1-2 |
+| 提交确认 | 主 Agent | Phase 4 |
+| 监控启动确认 | 子 Agent | 收到委托后立即发送 |
+| 定期进度更新 | 子 Agent | 每 30s 或有变化时 |
+| 心跳通知 | 子 Agent | 长时间无变化时 |
+| 异常通知 | 子 Agent | 任务失败/后端异常 |
+| 完成汇总 | 子 Agent | 全部完成后 |
+| 新任务受理 | 主 Agent | 子 Agent 播报期间收到新任务 |
+
+---
+
 ## 引用方式
 
 在 Skill 文件顶部添加：

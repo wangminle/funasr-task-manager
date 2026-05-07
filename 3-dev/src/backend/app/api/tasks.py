@@ -95,7 +95,7 @@ async def create_tasks(body: TaskCreateRequest, db: DbSession, user_id: CurrentU
 
     file_repo = FileRepository(db)
     task_repo = TaskRepository(db)
-    task_group_id = str(ULID()) if task_count > 1 else None
+    task_group_id = str(ULID())
     created_tasks: list[Task] = []
     for item in body.items:
         file_record = await file_repo.get_file(item.file_id, user_id)

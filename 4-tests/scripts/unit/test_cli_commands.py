@@ -118,6 +118,63 @@ class TestTaskCommands:
         assert result.exit_code == 0
         assert out_file.read_text() == "hello world"
 
+    def test_task_result_output_dir_uses_current_source_filename(self, _mock_api_client, tmp_path):
+        _mock_api_client.get_task.return_value = {
+            "task_id": "T1",
+            "file_name": "办公平台20250724-144218.mp4",
+            "status": "SUCCEEDED",
+        }
+        _mock_api_client.get_result.return_value = "transcribed text"
+
+        result = runner.invoke(
+            app,
+            ["task", "result", "T1", "--format", "txt", "--output-dir", str(tmp_path)],
+        )
+
+        assert result.exit_code == 0
+        expected = tmp_path / "办公平台20250724-144218_result.txt"
+        assert expected.read_text(encoding="utf-8") == "transcribed text"
+        assert not (tmp_path / "tv-report-result.txt").exists()
+
+    def test_task_result_output_dir_all_formats_fail(self, _mock_api_client, tmp_path):
+        _mock_api_client.get_task.return_value = {
+            "task_id": "T1",
+            "file_name": "audio.wav",
+            "status": "SUCCEEDED",
+        }
+        _mock_api_client.get_result.side_effect = APIError(500, "result unavailable")
+
+        result = runner.invoke(
+            app,
+            ["task", "result", "T1", "--format", "txt,json", "--output-dir", str(tmp_path)],
+        )
+        assert result.exit_code == 1
+
+    def test_task_group_result_output_uses_each_source_filename(self, _mock_api_client, tmp_path):
+        _mock_api_client.get_task_group.return_value = {
+            "task_group_id": "G1",
+            "total": 2,
+            "succeeded": 2,
+            "failed": 0,
+        }
+        _mock_api_client.list_group_tasks.return_value = {
+            "items": [
+                {"task_id": "T1", "file_id": "F1", "status": "SUCCEEDED", "file_name": "办公平台20250724-144218.mp4"},
+                {"task_id": "T2", "file_id": "F2", "status": "SUCCEEDED", "file_name": "清华大学开放日.mp4"},
+            ]
+        }
+        _mock_api_client.get_result.side_effect = ["text one", "text two"]
+
+        result = runner.invoke(
+            app,
+            ["task", "result", "--group", "G1", "--format", "txt", "--output-dir", str(tmp_path)],
+        )
+
+        assert result.exit_code == 0
+        assert (tmp_path / "办公平台20250724-144218_result.txt").read_text(encoding="utf-8") == "text one"
+        assert (tmp_path / "清华大学开放日_result.txt").read_text(encoding="utf-8") == "text two"
+        assert not (tmp_path / "tv-report-result.txt").exists()
+
 
 class TestTranscribeCommand:
     def test_transcribe_no_wait_exits_zero(self, _mock_api_client, tmp_path):

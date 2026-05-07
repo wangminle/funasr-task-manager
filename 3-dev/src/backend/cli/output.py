@@ -55,8 +55,8 @@ def error(msg: str) -> None:
 
 
 def success(msg: str) -> None:
-    console.print(f"[green]{msg}[/green]")
+    err_console.print(f"[green]{msg}[/green]")
 
 
 def info(msg: str) -> None:
-    console.print(f"[dim]{msg}[/dim]")
+    err_console.print(f"[dim]{msg}[/dim]")

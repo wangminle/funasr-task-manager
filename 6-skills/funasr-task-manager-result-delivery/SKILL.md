@@ -141,19 +141,26 @@ Agent 在完成每一批任务交付后，必须进行以下自检：
 
 ### Phase 5：结果交付
 
-**核心原则**：所有结果以 **txt 文件** 形式发送到原渠道，不在消息中引用转写全文。txt 文件名与用户发送的原始文件名一致（仅替换扩展名为 `.txt`）。
+**核心原则**：所有结果以 **txt 文件** 形式发送到原渠道，不在消息中引用转写全文。txt 文件名必须从当前任务的用户原始文件名生成，格式为 `{原始文件名去扩展名}_result.txt`。
+
+> **强制防错规则**：结果文件名必须每次从当前任务 API 返回的 `file_name` / intake 阶段记录的 `original_filename` 重新计算。禁止使用固定路径或复用上一轮变量，例如 `/tmp/result.txt`、`/tmp/tv-report-result.txt`、`result_file` 的旧值、`ls *result* | head`。
 
 #### 交付步骤
 
 1. **生成结果文件**
-   - 文件名规则：`{原始文件名去扩展名}.txt`
-   - 示例：用户发送 `会议录音-20260415.mp4` → 结果文件名为 `会议录音-20260415.txt`
-   - 批量任务：每个文件各生成一个同名 txt
+   - 文件名规则：`{原始文件名去扩展名}_result.txt`
+   - 示例：用户发送 `会议录音-20260415.mp4` → 结果文件名为 `会议录音-20260415_result.txt`
+   - 批量任务：每个文件各生成一个同源文件名 txt；同目录内 stem 冲突时追加 `_1`、`_2`，禁止覆盖
+   - **优先使用 CLI 自动导出**，避免 Agent 手写临时文件名：
+     ```bash
+     python -m cli task result {task_id} --format txt --output-dir "{TMPDIR}/funasr-task-manager/{task_id}/"
+     ```
    - **保存路径规范**：
      - **禁止**将结果文件直接写入 workspace/项目根目录
-     - 必须保存到 Skill 专属临时目录：`{TMPDIR}/funasr-task-manager/{task_group_id}/`
+     - 单任务保存到：`{TMPDIR}/funasr-task-manager/{task_id}/`
+     - 批量任务保存到：`{TMPDIR}/funasr-task-manager/{task_group_id}/`
      - 如果用户指定了输出目录，使用用户指定的路径
-     - 示例：`/tmp/funasr-task-manager/01KQ8QER.../会议录音-20260415.txt`
+     - 示例：`/tmp/funasr-task-manager/01KQ8QER.../会议录音-20260415_result.txt`
      - 文件发送到渠道后，本地临时副本可以保留（方便重发）或由用户手动清理
 
 2. **发送结构化摘要消息**（固定格式，见下方模板）
@@ -167,24 +174,24 @@ Agent 在完成每一批任务交付后，必须进行以下自检：
 
    **优先级 1：OpenClaw `message` tool（首选）**
    ```json
-   {"name": "message", "arguments": {"action": "send", "message": "✅ 转写完成\n\n  文件: 会议录音-20260415.txt", "filePath": "/tmp/funasr-task-manager/01KQ8QER.../会议录音-20260415.txt"}}
+   {"name": "message", "arguments": {"action": "send", "message": "✅ 转写完成\n\n  文件: 会议录音-20260415_result.txt", "filePath": "/tmp/funasr-task-manager/01KQ8QER.../会议录音-20260415_result.txt"}}
    ```
    成功判断：toolResult 中 `ok == true`。
 
    **优先级 2：CLI `notify send-file`（无 message tool 时）**
    ```bash
-   python -m cli notify send-file --file "/tmp/funasr-task-manager/01KQ8QER.../会议录音-20260415.txt" --text "✅ 转写完成 — 会议录音-20260415.txt"
+   python -m cli notify send-file --file "/tmp/funasr-task-manager/01KQ8QER.../会议录音-20260415_result.txt" --text "✅ 转写完成 — 会议录音-20260415_result.txt"
    ```
    上述命令依赖 `FEISHU_CHAT_ID` 或 `notify.default_chat_id` 已配置；如果没有默认会话 ID，必须显式传入 `--chat-id "oc_xxx"`。
 
    显式指定会话：
    ```bash
-   python -m cli notify send-file --file "result.txt" --text "✅ 转写完成" --chat-id "oc_xxx"
+   python -m cli notify send-file --file "/tmp/funasr-task-manager/01KQ8QER.../会议录音-20260415_result.txt" --text "✅ 转写完成" --chat-id "oc_xxx"
    ```
 
    带回复线程：
    ```bash
-   python -m cli notify send-file --file "result.txt" --text "✅ 转写完成" --reply-to "om_xxx"
+   python -m cli notify send-file --file "/tmp/funasr-task-manager/01KQ8QER.../会议录音-20260415_result.txt" --text "✅ 转写完成" --reply-to "om_xxx"
    ```
 
    **各渠道底层 API 参考**：

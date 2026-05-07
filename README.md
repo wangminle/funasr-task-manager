@@ -8,7 +8,7 @@
 
 - **多服务器智能调度** — LPT + 最早完工时间预规划，空闲节点自动工作窃取
 - **长音频 VAD 分段并行** — 超过阈值的音频自动切分，分发到多台服务器并行转写，结果按时间戳合并
-- **AI Agent 原生支持** — 8 个配套 Skills，让 AI Agent（OpenClaw / Hermes / Cursor 等）开箱即用地完成聊天渠道转写和服务器本地批量转写全流程
+- **AI Agent 原生支持** — 9 个配套 Skills，让 AI Agent（OpenClaw / Hermes / Cursor 等）开箱即用地完成聊天渠道转写和服务器本地批量转写全流程
 
 ## 你想做什么？
 
@@ -97,7 +97,7 @@ python -m cli transcribe meeting.wav --format srt --output-dir ./runtime/storage
 
 ## Agent Skills 体系
 
-本项目为 AI Agent 提供了 **8 个配套 Skills**，安装到 Agent 平台（OpenClaw / Hermes / Cursor 等）后，Agent 可自主完成从环境检测到转写交付的全流程。
+本项目为 AI Agent 提供了 **9 个配套 Skills**，安装到 Agent 平台（OpenClaw / Hermes / Cursor 等）后，Agent 可自主完成从环境检测到转写交付的全流程。
 
 Agent 体系有两条主要入口：
 
@@ -112,7 +112,8 @@ Agent 体系有两条主要入口：
 |-------|------|---------|
 | **init** | 环境检测、依赖安装、后端启动、Skill 安装、渠道凭据配置、systemd 服务注册 | 首次部署或环境异常时 |
 | **channel-intake** | 意图识别、渠道文件下载（飞书/企微/Slack）、预检查、任务提交 | 用户发送音视频文件时 |
-| **local-batch-transcribe** | 扫描服务器本地目录、生成批量清单、分 chunk 提交、进度监控、结果归档、失败重试 | 用户要求批量转写本地目录/inbox 时 |
+| **local-batch-transcribe** | 扫描本地目录、生成清单、分 chunk 提交、委托子 Agent 监控、失败重试 | 用户要求批量转写本地目录/inbox 时 |
+| **batch-monitor** | 子 Agent 专用：绑定 task_group_id，定期查询进度并通过 message tool 播报 | 主 Agent 提交批量任务后委托 |
 | **media-preflight** | ffprobe 格式验证、时长检测、转码评估 | 文件上传到后端前 |
 | **result-delivery** | 任务状态轮询、结果拉取、质量初筛、格式化通知、文件附件发送 | 转写完成时 |
 | **server-benchmark** | ASR 节点性能校准（单线程 RTF + 梯度并发吞吐量） | 节点注册或定期校准时 |
@@ -655,6 +656,9 @@ python -m cli config set api_key dev-token-user1
 
 **Q: 如何一次性下载所有结果？**
 `python -m cli task result --group <group_id> --format txt,srt` 会把所有格式下载到 `runtime/storage/downloads/` 并生成 `batch-summary.json` 摘要文件；如果你只想导出副本到别处，再显式指定 `--output-dir`。
+
+**Q: 单个任务如何按源文件名导出结果？**
+`python -m cli task result <task_id> --format txt --output-dir /tmp/funasr-task-manager/<task_id>/` 会查询当前任务的原始文件名，并导出为 `{原始文件名去扩展名}_result.txt`，例如 `办公平台20250724-144218.mp4` 会生成 `办公平台20250724-144218_result.txt`。Agent 交付飞书附件时应优先使用这个命令生成文件，避免复用上一轮临时文件名。
 
 **Q: 任务显示 FAILED 但随后又变成 SUCCEEDED 了？**
 系统内置自动重试机制。任务首次失败（如网络抖动）后会自动从 FAILED 重新排队，在未达到最大重试次数前属于可恢复状态。API 响应中的 `is_terminal` 字段标识任务是否已到达真正终态——SUCCEEDED 和 CANCELED 总是终态，FAILED 仅在重试耗尽后才是终态。SSE 流和 CLI 批量轮询都依赖此字段判断何时停止观察。

@@ -60,7 +60,7 @@
 - `elapsed_sec`：`completed_at - started_at`，取整秒
 - `rtf`：`elapsed_sec / duration_sec`，保留 2 位小数
 - `text_length`：`len(result_txt.strip())`
-- `result_filename`：`{original_filename 去扩展名}.txt`
+- `result_filename`：`{original_filename 去扩展名}_result.txt`，必须从当前任务的 `file_name` / `original_filename` 重新计算，禁止复用上一轮临时文件名
 
 ### 失败
 

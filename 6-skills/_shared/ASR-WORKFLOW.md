@@ -77,7 +77,7 @@
 | 本地批量扫描 | local-batch-transcribe | 扫描本地目录，建 manifest 清单，分 chunk 提交 |
 | 媒体预检 | media-preflight | ffprobe 验证格式/时长/编码，决定是否转码 |
 | 转写执行 | 后端自动 | 调用 FunASR 服务器集群，长音频自动 VAD 分段并行 |
-| 进度监控 | local-batch-transcribe | 循环轮询 task-group 状态，主动向用户反馈进度 |
+| 进度监控 | **batch-monitor**（子 Agent） | 子 Agent 循环查询 task-group status，通过 message tool 播报进度 |
 | 结果交付 | result-delivery | 轮询任务状态，完成后格式化结果通知用户 |
 
 ### 音频分段策略
@@ -129,7 +129,21 @@ PENDING → PREPROCESSING → QUEUED → DISPATCHED → TRANSCRIBING → SUCCEED
 | GET | `/api/v1/tasks/{id}` | 任务状态 |
 | GET | `/api/v1/tasks/{id}/result` | 转写结果 |
 | GET | `/api/v1/tasks/{id}/progress` | SSE 实时进度 |
+| GET | `/api/v1/task-groups/{id}` | 任务组聚合统计（子 Agent 播报用） |
+| GET | `/api/v1/task-groups/{id}/tasks` | 任务组内任务列表 |
+| GET | `/api/v1/task-groups/{id}/results` | 任务组结果批量下载 |
 | GET | `/api/v1/servers` | 服务器列表（Admin） |
+
+### task-group CLI 短命令
+
+子 Agent 监控模式使用以下短命令，每条秒级返回：
+
+| 命令 | 用途 | 调用方 |
+|------|------|--------|
+| `python -m cli --output json task-group scan {dir}` | 扫描目录 → JSON 清单 | 主 Agent |
+| `python -m cli --output json task-group submit --manifest {file}` | 提交 → task_group_id | 主 Agent |
+| `python -m cli --output json task-group status {group_id}` | 查询进度 → JSON | 子 Agent |
+| `python -m cli --output json task-group download {group_id}` | 下载结果 → 路径 | 子 Agent |
 
 ### Skill 协作链
 
@@ -145,20 +159,28 @@ init → channel-intake → media-preflight → [后端转写] → result-delive
       用户发起                                           通知用户结果
 ```
 
-**入口 B：服务器本地批量转写（local-batch-transcribe）**
+**入口 B：服务器本地批量转写（local-batch-transcribe + batch-monitor）**
 
-用户指令扫描服务器本地目录，批量处理：
+用户指令扫描服务器本地目录，批量处理。采用**异步调度架构**：主 Agent 负责扫描和提交，子 Agent 负责监控和播报。
 
 ```
-init → local-batch-transcribe
+init → local-batch-transcribe（主 Agent）
          │
-         ├─ Phase 1-2：扫描目录、建清单
+         ├─ Phase 1-2：扫描目录、建清单（task-group scan）
          ├─ Phase 3：media-preflight（批量预检）
-         ├─ Phase 4：CLI --batch 批量提交
-         ├─ Phase 5：进度监控 + 主动反馈
-         ├─ Phase 6：结果归档（复用 result-delivery 格式）
-         └─ Phase 7：失败处理与重试
+         ├─ Phase 4：task-group submit 批量提交
+         ├─ Phase 5：委托子 Agent 执行 batch-monitor
+         │            │
+         │            └─ 主 Agent 释放，继续接新任务
+         │
+         └─ batch-monitor（子 Agent）
+              ├─ 定期 task-group status 查询进度
+              ├─ 通过 message tool 播报进度
+              ├─ 全部完成 → task-group download 下载结果
+              └─ 发送完成汇总 → 退出
 ```
+
+> **为什么拆成两个 Agent**：批量任务可能持续数分钟到数十分钟。如果主 Agent 自己轮询，就会被长任务绑死，无法响应群聊中其他用户的消息。委托子 Agent 监控后，主 Agent 秒级释放，可以同时处理多个用户的请求。
 
 **协作规则**：当两个入口同时有任务时，channel-intake 优先——local-batch-transcribe 暂停新提交、等待 intake 完成后恢复（让步机制）。
 
@@ -173,6 +195,7 @@ init → local-batch-transcribe
 | 用户说"继续上次的批量转写" | `local-batch-transcribe` |
 
 辅助 Skills：
+- `batch-monitor` — 子 Agent 异步监控播报（绑定 task_group_id，定期查询并发通知）
 - `server-benchmark` — 性能测试与 RTF 校准
 - `reset-test-db` — 重置本地测试环境
 - `web-e2e` — 浏览器端到端测试
