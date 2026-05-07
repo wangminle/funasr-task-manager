@@ -41,6 +41,28 @@ description: >
 | `result_format` | string | 否 | 结果下载格式，默认 "txt" |
 | `output_dir` | string | 否 | 结果归档目录，默认 `runtime/agent-local-batch/outputs/{batch_id}` |
 
+#### `notification_context`（必需）
+
+主 Agent 必须将当前会话的通知上下文传递给子 Agent，子 Agent 据此决定向哪个渠道发送通知：
+
+| 字段 | 类型 | 必需 | 说明 |
+|------|------|------|------|
+| `chat_id` | string | 条件 | 目标群聊 ID（`oc_xxx`），群聊场景必须；私聊时可省略 |
+| `open_id` | string | 条件 | 用户 Open ID（`ou_xxx`），私聊场景必须；群聊时可省略（但仍用于 @ 揦及） |
+| `message_id` | string | 否 | 原始触发消息 ID（`om_xxx`），用于回复线程 |
+| `reply_to_id` | string | 否 | 回复目标消息 ID，优先回复此线程 |
+| `sender_id` | string | 否 | 触发用户的 Open ID（`ou_xxx`），用于 @ 提及 |
+| `is_group_chat` | bool | 是 | `true` = 群聊，`false` = 私聊 |
+
+#### `notification_policy`（必需）
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `at_user_on_error` | bool | true（群聊）/ false（私聊） | 异常时是否 @ 触发用户 |
+| `at_user_on_complete` | bool | true（群聊）/ false（私聊） | 完成时是否 @ 触发用户 |
+| `reply_to_thread` | bool | true | 优先回复原消息线程 |
+| `template_variant` | string | 按 `is_group_chat` 自动 | `"group"` 或 `"dm"` |
+
 **启动参数传递方式**：主 Agent 在委托消息中以结构化文本传递这些参数。示例：
 
 ```
@@ -52,6 +74,17 @@ description: >
 - timeout_sec: 3600
 - result_format: txt
 - output_dir: runtime/agent-local-batch/outputs/local-20260506-143000
+- notification_context:
+    chat_id: oc_xxxxxxxxxxxxxxxx
+    open_id: ou_xxxxxxxxxxxxxxxx
+    message_id: om_xxxxxxxxxxxxxxxx
+    sender_id: ou_xxxxxxxxxxxxxxxx
+    is_group_chat: true
+- notification_policy:
+    at_user_on_error: true
+    at_user_on_complete: true
+    reply_to_thread: true
+    template_variant: group
 ```
 
 ---
@@ -62,39 +95,98 @@ description: >
 
 | # | 检查项 | 时机 | 模板引用 | 操作 |
 |---|--------|------|---------|------|
-| 1 | 启动确认 | 收到委托后立即 | `monitor-templates.md` §1 | 确认参数并通知用户 |
-| 2 | 定期进度播报 | 每 poll_interval_sec | `monitor-templates.md` §2 | 查状态 → 有变化则通知 |
-| 3 | 心跳播报 | 无变化超过 heartbeat_interval_sec | `monitor-templates.md` §3 | 告知用户仍在运行 |
-| 4 | 异常播报 | 检测到失败任务时 | `monitor-templates.md` §4 | 通知异常详情 |
+| 0 | **工具权限自检** | 收到委托后立即（Step 0 前） | — | 检查 `message` tool 和 `cli notify`，两者都不可用则报告失败退出 |
+| 1 | **启动确认 (ack)** | 自检通过后 5 秒内 | `monitor-templates.md` §1 | 确认参数并通知用户，记录 `notice_log[0]` |
+| 2 | 定期进度播报 | 每 poll_interval_sec | `monitor-templates.md` §2 | 查状态 → 有变化则通知，记录 `notice_log` |
+| 3 | 心跳播报 | 无变化超过 heartbeat_interval_sec | `monitor-templates.md` §3 | 告知用户仍在运行，记录 `notice_log` |
+| 4 | 异常播报 | 检测到失败任务时 | `monitor-templates.md` §4 | 通知异常详情（群聊 @ 用户），记录 `notice_log` |
 | 5 | 结果下载 | 全部完成时 | — | CLI: task-group download |
-| 6 | 完成汇总 | 下载完成后 | `monitor-templates.md` §5 | 发送完成通知并退出 |
+| 6 | **完成/异常汇总** | 下载完成后或异常退出前 | `monitor-templates.md` §5 | 发送完成通知（含通知统计），**子 Agent 不可静默退出** |
+
+### 通知日志格式 (`notice_log`)
+
+子 Agent 必须维护通知发送记录，用于完成汇总中的"通知统计"：
+
+```json
+{
+  "notice_log": [
+    {"seq": 1, "type": "ack", "adapter": "message", "message_id": "om_xxx", "delivered": true, "ts": "..."},
+    {"seq": 2, "type": "progress", "adapter": "cli-notify", "message_id": null, "delivered": true, "ts": "..."},
+    {"seq": 3, "type": "error", "adapter": "message", "message_id": "om_yyy", "delivered": false, "ts": "..."}
+  ]
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `seq` | 通知序号，从 1 递增 |
+| `type` | `ack` / `progress` / `heartbeat` / `error` / `timeout` / `complete` |
+| `adapter` | `message` / `cli-notify` / `text-only` |
+| `message_id` | 发送成功时的消息 ID（若平台返回） |
+| `delivered` | `true` / `false` |
+| `ts` | ISO 8601 时间戳 |
 
 ---
 
 ## 核心执行流程
 
-### Step 0：参数校验
+### Step 0：工具权限自检 + 参数校验
+
+#### 0a. 通知工具权限自检（强制，最先执行）
+
+子 Agent 启动后第一步必须确认自身是否拥有向用户发送消息的能力：
+
+1. **检查 `message` tool**：尝试在工具列表中确认 `message` 工具存在。
+2. **检查 `cli notify`**（两步：先确认模块存在，再验证凭据有效）：
+
+```bash
+# 第一步：确认 CLI 模块存在
+cd 3-dev/src/backend && python -m cli notify --help > /dev/null 2>&1
+# 第二步（如果第一步成功）：验证凭据可用
+python -m cli notify auth-check --channel feishu
+```
+
+3. **判定结果**：
+
+| `message` tool | `cli notify` | 结论 |
+|:-:|:-:|------|
+| ✅ | ✅ | 优先用 `message`，`cli notify` 备用。继续执行。|
+| ✅ | ❌ | 仅用 `message`。继续执行。|
+| ❌ | ✅ | 仅用 `cli notify`。继续执行。|
+| ❌ | ❌ | **立即报告失败退出**。通过 `completion announce` 报告："消息工具不可用，无法执行监控播报"。|
+
+4. 记录自检结果：`adapter = "message" | "cli-notify"`。
+
+#### 0b. 参数校验
 
 1. 确认工作目录是 `funasr-task-manager` 仓库。
-2. 检查后端健康状态：
+2. 解析 `notification_context`，确认 `chat_id`（群聊）或 `open_id`（私聊）存在。
+3. 解析 `notification_policy`，确定模板变体（`group` / `dm`）。
+4. 检查后端健康状态：
 
 ```bash
 curl -sf http://127.0.0.1:15797/health
 ```
 
-3. 后端不可达则立即通知用户并退出（不尝试启动——这不是子 Agent 的职责）。
-4. 确认所有 `task_group_ids` 存在：
+5. 后端不可达则通过 `send_user_notice()` 通知用户并退出（不尝试启动——这不是子 Agent 的职责）。
+6. 确认所有 `task_group_ids` 存在：
 
 ```bash
 cd 3-dev/src/backend
 python -m cli --output json task-group status {group_id}
 ```
 
-5. 不存在的 group 记录为错误，从监控列表中移除。全部不存在则通知用户并退出。
+7. 不存在的 group 记录为错误，从监控列表中移除。全部不存在则通知用户并退出。
 
-### Step 1：发送启动确认
+### Step 1：发送启动确认（ack）
 
-**必须**通过 `send_user_notice()` 发送启动通知，套用 `monitor-templates.md` §1。
+**必须在 Step 0 完成后 5 秒内**通过 `send_user_notice()` 发送启动通知，套用 `monitor-templates.md` §1。
+
+- 使用 Step 0a 确定的 `adapter` 发送。
+- 发送后记录 `notice_log[0]`（type=ack, adapter, delivered, ts）。
+- 若 `notification_policy.reply_to_thread == true` 且 `reply_to_id` 或 `message_id` 存在，优先回复原消息线程。
+
+主 Agent 依赖此 ack 消息判断子 Agent 是否成功启动。**未能发送 ack 的子 Agent 将被主 Agent 判定为启动失败。**
 
 ### Step 2：进度轮询循环
 
@@ -178,16 +270,38 @@ python -m cli --output json task-group download {group_id} \
 {"name": "message", "arguments": {"action": "send", "message": "...", "filePath": "..."}}
 ```
 
-### Step 5：退出
+### Step 5：退出（不可静默退出）
 
-子 Agent 在以下任一条件满足时退出：
+子 Agent 在以下任一条件满足时退出。**所有退出路径必须发送汇总通知，不可静默退出。**
 
 | 退出条件 | 退出前动作 |
 |---------|----------|
-| 全部任务完成（succeeded + failed == total） | 下载结果 → 发完成通知 |
-| 超时（elapsed > timeout_sec） | 发超时通知 → 下载已完成部分 |
-| 后端不可达（连续 3 次查询失败） | 发异常通知 |
-| 全部 group 不存在 | 发错误通知 |
+| 全部任务完成（succeeded + failed == total） | 下载结果 → 发完成汇总（含通知统计） |
+| 超时（elapsed > timeout_sec） | 发超时汇总（含通知统计） → 下载已完成部分 |
+| 后端不可达（连续 3 次查询失败） | 发异常汇总（含通知统计） |
+| 全部 group 不存在 | 发错误汇总 |
+| 工具权限自检失败（Step 0a） | 通过 `completion announce` 报告"消息工具不可用" |
+
+#### 汇总中的通知统计
+
+完成/异常汇总模板中必须包含通知发送统计：
+
+```
+📤 通知统计：{notice_sent} 条已送达，{notice_failed} 条未送达
+```
+
+统计数据从 `notice_log` 中计算：
+- `notice_sent = count(notice_log where delivered == true)`
+- `notice_failed = count(notice_log where delivered == false)`
+
+#### 退出清单
+
+子 Agent 退出前必须完成以下检查：
+
+1. ✅ 发送了汇总通知（完成/异常/超时/错误）
+2. ✅ 汇总包含通知统计
+3. ✅ 群聊场景下汇总 @ 了触发用户
+4. ✅ 无未处理的下载结果
 
 ---
 

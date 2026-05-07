@@ -23,6 +23,7 @@ description: >
 
 | # | 检查项 | 时机 | `send_user_notice()` 内容 | 发送后再执行 |
 |---|--------|------|--------------------------|-------------|
+| 0 | 通知预检 | Phase 0 | 内部记录，不通知用户 | 意图判断 |
 | 1 | 收到文件确认 | Phase 1 | "收到 N 个音频/视频文件：{文件列表}" | 意图判断 |
 | 2 | 意图确认 | Phase 1 | "需要转写吗？" 或直接进入（高置信度） | — |
 | 3 | 开始下载通知 | Phase 1.5 | "⏳ 正在从{渠道}下载文件..." | curl 下载 |
@@ -31,6 +32,23 @@ description: >
 | 6 | 开始上传通知 | Phase 4 | "⏳ 正在上传到转写引擎..." | POST /files/upload |
 | 7 | 任务提交确认 | Phase 4 | "✅ 已提交 N 个文件，任务编号 {task_id}，预计 {eta} 完成" | 移交监控 |
 | 8 | 移交结果交付 | Phase 5 | 无需用户可见通知，内部交接 | — |
+
+**每条通知必须记录以下结构化跟踪信息**（用于事后审计和问题排查）：
+
+```
+notice_log:
+  - seq: 1
+    phase: "Phase 1"
+    content: "收到 1 个音频文件：tv-report-1.wav"
+    adapter: "message"          # "message" / "cli_notify" / "assistant_text"
+    delivered: true              # toolResult ok / CLI exit 0
+    message_id: "om_xxx"        # 平台返回的消息 ID（用于回复线程）
+    timestamp: "2026-05-07T13:07:01"
+  - seq: 2
+    ...
+```
+
+Agent 在最终报告中应附上 `notice_log` 摘要，例如"本次共发送 7 条通知，6 条送达、1 条失败（seq=5, adapter=cli_notify, error=timeout）"。
 
 #### `send_user_notice()` 调用方式
 
@@ -59,6 +77,8 @@ python -m cli notify send --text "收到 1 个音频文件：tv-report-1.wav"
 | **大文件焦虑** | 处理大文件时把精力放在技术问题上 | 大文件/长时间操作**更需要**频繁通知 |
 | **只发结果** | 只在最后发送汇总和文件 | 各阶段都要 `send_user_notice()`，用户需要知道进度 |
 | **重复发送** | message tool 和 CLI 都调用了 | 只使用第一个可用方式，成功后不 fallback |
+| **手写 curl 发飞书** | 直接 `curl` 调用飞书 API 发消息 | 仅允许 `message` tool 或 `cli notify`，禁止手写 curl 作为默认路径 |
+| **通知不可用不标注** | 预检发现两个通道都不可用，但最终报告不提及 | 必须在最终报告追加"⚠ 实时通知不可用" |
 
 > **2026-04-28 复盘教训**：OpenClaw 机器人实际执行中，9 个通知阶段全部跳过，只做了最终交付。根因是"效率优先心态"和"无执行检查机制"。
 > **2026-05-05 排查结论**：批量转写 session 中 Agent 有 `message` tool 可用但未调用，所有阶段文本通过 OpenClaw 飞书 bridge 在 turn 结束后统一推送。本清单要求**必须显式调用 `send_user_notice()` 而非依赖普通文本**。
@@ -114,6 +134,41 @@ Layer C：决策（Decision）
 ```
 
 ## 完整交互流程
+
+### Phase 0：通知能力预检（强制）
+
+在进入任何业务逻辑之前，Agent 必须先检测当前 session 的通知能力。预检结果决定后续所有 `send_user_notice()` 的适配器路径。
+
+**检测步骤：**
+
+1. **检查 `message` tool 可用性**：查看当前 session 的工具列表是否包含 `message`。
+2. **检查 `cli notify` 可用性**：执行 `python -m cli notify auth-check --channel feishu`，检查退出码。
+3. **提取 `notification_context`**：从 runtime context 提取 `chat_id`、`open_id`、`message_id`、`sender_id` 等路由信息，判断 `is_group_chat`。
+
+**预检输出（结构化记录）：**
+
+```
+notification_precheck:
+  message_tool_available: true/false
+  cli_notify_available: true/false
+  cli_notify_error: null / "凭据未配置" / "auth-check 失败"
+  is_group_chat: true/false
+  receive_id_type: "chat_id" / "open_id"
+  receive_id: "oc_xxx" / "ou_xxx"
+  reply_to_id: "om_xxx" / null
+  adapter_priority: ["message", "cli_notify"] / ["cli_notify"] / ["assistant_text"]
+  notice_capable: true/false
+```
+
+**预检结果处理：**
+
+| 结果 | 处理 |
+|------|------|
+| `message` tool 可用 | 优先级 1 可用，继续 Phase 1 |
+| `message` 不可用，`cli notify` 可用 | 使用 CLI fallback，继续 Phase 1 |
+| 两者都不可用 | 记录 `notice_capable: false`；继续执行业务但最终报告标注"⚠ 实时通知不可用，本次所有阶段通知均未送达" |
+
+> 预检应在 5 秒内完成。`auth-check` 超时视为 CLI 不可用。
 
 ### Phase 1：意图确认
 
@@ -346,6 +401,7 @@ curl -s -o "$WORK_DIR/{original_filename}" \
 | 任务长时间 QUEUED | 报告"等待中，前方有 N 个任务" | 反复取消重建任务 |
 | 转写结果为空 | 报告"未检测到语音内容"，建议检查音频 | 假装成功 |
 | API 认证失败 401 | 提示检查 API Key 配置 | 自行生成 Key |
+| **通知预检全部失败** | 继续执行业务，但在最终报告尾部追加"⚠ 实时通知不可用：`message` tool 和 `cli notify` 均不可用，本次所有阶段通知均未送达用户" | 静默跳过不标注 |
 
 ## 相关文件
 

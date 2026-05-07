@@ -54,9 +54,14 @@ def _fingerprint(path: Path, stat: os.stat_result) -> str:
 
 
 def _resolve_manifest_item_path(item_path: str, source_dir: str) -> Path:
-    """Resolve a manifest item path without double-prefixing source_dir."""
+    """Resolve a manifest item path without double-prefixing source_dir.
+
+    Absolute paths are returned immediately. Relative paths are always resolved
+    against *source_dir* first so that a same-named file in the current working
+    directory cannot shadow the intended manifest entry.
+    """
     path = Path(item_path)
-    if path.is_absolute() or path.exists():
+    if path.is_absolute():
         return path
 
     if not source_dir:
@@ -85,6 +90,10 @@ def _resolve_manifest_item_path(item_path: str, source_dir: str) -> Path:
     for candidate in candidates:
         if candidate.exists():
             return candidate
+
+    if path.exists():
+        return path
+
     return candidates[0]
 
 
@@ -105,7 +114,8 @@ def scan(
     ),
     chunk_size: int = typer.Option(
         50, "--chunk-size",
-        help="每个提交块的文件数量",
+        min=1,
+        help="每个提交块的文件数量（最小 1）",
     ),
 ):
     """扫描目录中的音视频文件，返回 JSON 清单。

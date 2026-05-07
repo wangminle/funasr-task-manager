@@ -70,6 +70,30 @@ python -m cli notify send --text "我将扫描 runtime/agent-local-batch/inbox/ 
 
 ### Phase 0：运行上下文检查
 
+**0a. 通知能力预检（强制）**
+
+在进入业务逻辑前，先检测通知能力：
+
+1. 检查 `message` tool 是否在工具列表中。
+2. 执行 `python -m cli notify auth-check --channel feishu`，检查退出码。
+3. 从 runtime context 提取 `notification_context`（`chat_id`、`open_id`、`is_group_chat` 等）。
+
+预检输出：
+
+```
+notification_precheck:
+  message_tool_available: true/false
+  cli_notify_available: true/false
+  is_group_chat: true/false
+  adapter_priority: ["message", "cli_notify"] / ["cli_notify"] / ["assistant_text"]
+  notice_capable: true/false
+```
+
+- 两者都不可用时：继续执行业务，但最终报告标注"⚠ 实时通知不可用"。
+- 子 Agent 委托决策：如果 `notice_capable == false`，Phase 5 不启动子 Agent 监控播报，主 Agent 自行轮询。
+
+**0b. 仓库与后端检查**
+
 1. 确认当前目录是 `funasr-task-manager` 仓库（存在 `3-dev/src/backend/app/main.py`）。
 2. 检查后端健康状态：
 
@@ -198,9 +222,19 @@ python -m cli --output json task-group submit \
 
 > **关键变更**：主 Agent 在此阶段**不再自己轮询**，而是委托子 Agent 执行 `batch-monitor` Skill。
 
+#### 委托前提检查
+
+主 Agent 在委托前必须检查以下条件，**任一不满足则不启动子 Agent 监控播报，直接 fallback 到主 Agent 自行轮询**：
+
+1. **通知预检结果**：Phase 0a 的 `notice_capable == true`（至少有一种通知通道可用）。
+2. **`sessions_spawn` 可用**：工具列表中包含 `sessions_spawn`。
+3. **子 Agent 有消息工具**：`message` tool 需显式配置子 Agent 工具策略（`tools.subagents.tools.allow '["message"]'`），不自动继承；`cli notify` 可通过 `exec` 工具调用，子 Agent 自然继承此能力。
+
+如果子 Agent 启动后发现自身 `message` tool 和 `cli notify` 都不可用，子 Agent 应立即报告失败并退出（见 `batch-monitor` Step 0）。
+
 #### 委托协议
 
-主 Agent 发送以下委托消息启动子 Agent：
+主 Agent 发送以下委托消息启动子 Agent（通过 `sessions_spawn`）：
 
 ```
 请执行 batch-monitor 监控任务：
@@ -211,27 +245,54 @@ python -m cli --output json task-group submit \
 - timeout_sec: 3600
 - result_format: txt
 - output_dir: runtime/agent-local-batch/outputs/{batch_id}
+- notification_context:
+    chat_id: {chat_id}               # oc_xxx（群聊）
+    open_id: {open_id}               # ou_xxx（私聊，可选）
+    message_id: {message_id}         # om_xxx（触发消息 ID）
+    reply_to_id: {reply_to_id}       # om_xxx（回复目标，可选）
+    sender_id: {sender_id}           # ou_xxx（发送者 ID，用于 @ 提及）
+    is_group_chat: {true/false}
+- notification_policy:
+    at_user_on_error: {true/false}   # 异常时 @ 触发用户（群聊 true，私聊 false）
+    at_user_on_complete: {true/false}
+    reply_to_thread: {true/false}    # 优先回复原消息线程
+    template_variant: "group" / "dm" # 群聊 / 私聊模板
 ```
+
+> **启动方式**：主 Agent 调用 `sessions_spawn` 启动子 Agent：
+> ```json
+> {"name": "sessions_spawn", "arguments": {"task": "请执行 batch-monitor 监控任务：...", "label": "batch-monitor-{batch_id}"}}
+> ```
 
 #### 委托后主 Agent 的行为
 
 1. **发送委托通知**：通过 `send_user_notice()` 告知用户"已启动后台监控"。
-2. **释放控制权**：主 Agent 不再阻塞等待批量任务完成。
-3. **继续接新任务**：主 Agent 可以响应群聊中新的用户消息和任务请求。
+2. **记录监控状态**：`batch_id -> {spawn_time, last_notice_at: null, child_session_key}`。
+3. **等待启动确认（ack）**：使用 `sessions_yield` 等待子 Agent 的启动确认事件，或设 5 秒超时。
+4. **5 秒内收到 ack**：释放控制权，继续接新任务。
+5. **5 秒无 ack**：fallback 到主 Agent 自行轮询（见下方 Fallback）。
 
 #### 子 Agent 负责的工作
 
 子 Agent 按 `funasr-task-manager-batch-monitor` Skill 执行：
 
-1. 定期查询 `task-group status`
-2. 通过 `send_user_notice()` 发送进度通知
-3. 全部完成后执行 `task-group download` 下载结果
-4. 发送完成汇总通知
-5. 退出
+1. **工具权限自检**：检查 `message` tool 和 `cli notify` 可用性，两者都不可用则立即报告失败退出
+2. 发送启动确认（ack）
+3. 定期查询 `task-group status`
+4. 通过 `send_user_notice()` 发送进度通知（每条记录 `adapter`、`message_id`、`delivered`）
+5. 异常和完成时 @ 触发用户（群聊）/ 不 @（私聊）
+6. 全部完成后执行 `task-group download` 下载结果
+7. 发送完成汇总通知
+8. 退出
 
 #### Fallback：无子 Agent 能力时
 
-如果当前平台不支持子 Agent 并发（如 Codex 沙箱、纯本地 Cursor），主 Agent 回退到**自行轮询模式**：
+以下任一条件成立时，主 Agent 回退到**自行轮询模式**：
+
+- 运行环境为 Cursor / Claude Code / Codex（无 `sessions_spawn`）
+- Phase 0a 预检 `notice_capable == false`（子 Agent 没有消息工具，无法播报）
+- 子 Agent 启动后 5 秒无 ack
+- 子 Agent 报告"消息工具不可用"并退出
 
 ```
 while not all_groups_complete:
@@ -244,7 +305,81 @@ while not all_groups_complete:
     sleep 30
 ```
 
-回退判断条件：运行环境为 Cursor / Claude Code / Codex 时使用 fallback。
+### Phase 5.5：Watchdog 监控（主 Agent 职责）
+
+子 Agent 委托成功后，主 Agent 不主动轮询，但需维护 Watchdog 状态以防子 Agent 静默失联。
+
+#### 监控状态表
+
+主 Agent 维护以下状态，用于检测子 Agent 是否仍在正常播报：
+
+```json
+{
+  "batch_watchdog": {
+    "{batch_id}": {
+      "spawn_time": "2026-05-07T15:30:00Z",
+      "last_notice_at": null,
+      "child_session_key": "batch-monitor-{batch_id}",
+      "ack_received": false,
+      "status": "spawned"
+    }
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `spawn_time` | 子 Agent 启动时间 |
+| `last_notice_at` | 最近一次收到子 Agent 通知的时间（初始为 null） |
+| `child_session_key` | 子 Agent 的 session label，用于 `sessions_list` 查询 |
+| `ack_received` | 是否收到启动确认 |
+| `status` | `spawned` → `acked` → `running` → `completed` / `failed` / `timeout` |
+
+#### Watchdog 检查逻辑
+
+主 Agent 在以下时机检查 Watchdog 状态：
+
+1. **收到用户新消息时**（被动触发）：顺便检查 watchdog。
+2. **当前无其他任务时**（空闲触发）：主动检查 watchdog。
+
+```
+for each batch_id in batch_watchdog:
+  wd = batch_watchdog[batch_id]
+  
+  # 场景 A：启动后一直无通知
+  if wd.status == "spawned" and now() - wd.spawn_time > 60s:
+    # 子 Agent 可能已失败，主动查询
+    sessions_list → 找到 child_session_key → 检查状态
+    if child_exited or child_not_found:
+      send_user_notice("⚠️ 批次 {batch_id} 的后台监控可能已中断，正在接管...")
+      fallback 到主 Agent 自行轮询
+  
+  # 场景 B：曾有通知但长时间无更新（2 个轮询周期）
+  if wd.last_notice_at and now() - wd.last_notice_at > poll_interval_sec * 2:
+    # 检查子 Agent 是否还活着
+    sessions_list → 找到 child_session_key
+    if child_exited:
+      # 子 Agent 退出但没发完成通知
+      send_user_notice("⚠️ 批次 {batch_id} 的监控已结束，正在检查结果...")
+      检查 task-group status → 补发完成/异常汇总
+    elif child_running:
+      # 子 Agent 还在但不发通知了，可能通知通道有问题
+      记录 warning，继续等待
+  
+  # 场景 C：任务超时
+  if now() - wd.spawn_time > timeout_sec * 1.2:
+    send_user_notice("⚠️ 批次 {batch_id} 超时（已超过子 Agent 设定上限的 120%），检查状态中...")
+    检查 task-group status → 补发汇总
+```
+
+#### 补发逻辑
+
+| 场景 | 主 Agent 动作 |
+|------|-------------|
+| 子 Agent 已退出但未发完成通知 | 查询 `task-group status`，补发完成/异常汇总 |
+| 子 Agent 已退出但结果未下载 | 执行 `task-group download`，补发结果 |
+| 子 Agent 异常退出 | `send_user_notice("⚠️ 批次 {batch_id} 的后台监控异常中断。当前进度：{status_summary}。你可以说\"重启监控\"来恢复。")` |
+| 全部完成但无汇总 | 补发完成汇总（使用 `progress-templates` 模板） |
 
 ### Phase 6：结果归档（由子 Agent 或主 Agent 完成）
 

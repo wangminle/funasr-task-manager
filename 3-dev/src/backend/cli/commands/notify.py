@@ -123,7 +123,24 @@ def _get_token(app_id: str, app_secret: str) -> str | None:
     return _fetch_token(app_id, app_secret)
 
 
-def _send_text_message(token: str, chat_id: str, text: str, reply_to: str | None = None) -> dict:
+def _normalize_chat_id(chat_id: str) -> str:
+    """Strip known prefixes from chat_id (e.g. OpenClaw 'chat:' prefix).
+
+    OpenClaw runtime context returns 'chat:oc_xxx' but Feishu API expects 'oc_xxx'.
+    """
+    for prefix in ("chat:", "Chat:", "CHAT:"):
+        if chat_id.startswith(prefix):
+            return chat_id[len(prefix):]
+    return chat_id
+
+
+def _send_text_message(
+    token: str,
+    chat_id: str,
+    text: str,
+    reply_to: str | None = None,
+    receive_id_type: str = "chat_id",
+) -> dict:
     """Send a text message via Feishu IM API. Returns response dict."""
     headers = {
         "Authorization": f"Bearer {token}",
@@ -138,9 +155,9 @@ def _send_text_message(token: str, chat_id: str, text: str, reply_to: str | None
             "content": content_json,
         }
     else:
-        url = f"{FEISHU_SEND_API}?receive_id_type=chat_id"
+        url = f"{FEISHU_SEND_API}?receive_id_type={receive_id_type}"
         payload = {
-            "receive_id": chat_id,
+            "receive_id": _normalize_chat_id(chat_id),
             "msg_type": "text",
             "content": content_json,
         }
@@ -196,7 +213,11 @@ def _upload_file(token: str, file_path: str, filename: str | None = None) -> dic
 
 
 def _send_file_message(
-    token: str, chat_id: str, file_key: str, reply_to: str | None = None
+    token: str,
+    chat_id: str,
+    file_key: str,
+    reply_to: str | None = None,
+    receive_id_type: str = "chat_id",
 ) -> dict:
     """Send a file message via Feishu IM API using an already-uploaded file_key."""
     headers = {
@@ -212,9 +233,9 @@ def _send_file_message(
             "content": content_json,
         }
     else:
-        url = f"{FEISHU_SEND_API}?receive_id_type=chat_id"
+        url = f"{FEISHU_SEND_API}?receive_id_type={receive_id_type}"
         payload = {
-            "receive_id": chat_id,
+            "receive_id": _normalize_chat_id(chat_id),
             "msg_type": "file",
             "content": content_json,
         }
@@ -259,7 +280,13 @@ def _log_failure(text_preview: str, error: str) -> None:
         pass
 
 
-def _do_send(text: str, chat_id: str, reply_to: str | None, strict: bool) -> None:
+def _do_send(
+    text: str,
+    chat_id: str,
+    reply_to: str | None,
+    strict: bool,
+    receive_id_type: str = "chat_id",
+) -> None:
     """Core send logic with retry and exit-code handling."""
     creds = _get_credentials()
     if not creds:
@@ -283,7 +310,7 @@ def _do_send(text: str, chat_id: str, reply_to: str | None, strict: bool) -> Non
 
     # Attempt send with 1 retry
     for attempt in range(2):
-        result = _send_text_message(token, chat_id, text, reply_to)
+        result = _send_text_message(token, chat_id, text, reply_to, receive_id_type)
         code = result.get("code", -1)
 
         if code == 0:
@@ -318,8 +345,13 @@ def send(
     text: str | None = typer.Option(None, "--text", "-t", help="消息文本内容"),
     text_file: Path | None = typer.Option(None, "--text-file", help="从文件读取消息内容"),
     stdin: bool = typer.Option(False, "--stdin", help="从标准输入读取消息内容"),
-    chat_id: str | None = typer.Option(None, "--chat-id", "-c", help="目标会话 ID"),
+    chat_id: str | None = typer.Option(None, "--chat-id", "-c", help="目标会话/用户 ID"),
     reply_to: str | None = typer.Option(None, "--reply-to", "-r", help="回复的消息 ID（线程回复）"),
+    receive_id_type: str = typer.Option(
+        "chat_id",
+        "--receive-id-type",
+        help="接收者 ID 类型：chat_id（群聊）/ open_id（私聊）/ user_id / union_id / email",
+    ),
     channel: str = typer.Option("feishu", "--channel", help="渠道类型"),
     strict: bool = typer.Option(False, "--strict", help="严格模式：失败时 exit 1"),
 ):
@@ -376,7 +408,7 @@ def send(
         sys.stderr.write(f"[WARN] {msg}\n")
         return
 
-    _do_send(content, resolved_chat_id or "", resolved_reply_to, strict)
+    _do_send(content, resolved_chat_id or "", resolved_reply_to, strict, receive_id_type)
 
 
 @app.command(name="send-file")
@@ -384,8 +416,13 @@ def send_file(
     file: Path = typer.Option(..., "--file", "-f", help="本地文件路径"),
     filename: str | None = typer.Option(None, "--filename", help="飞书显示的文件名"),
     text: str | None = typer.Option(None, "--text", "-t", help="随附文本消息（先发文本再发文件）"),
-    chat_id: str | None = typer.Option(None, "--chat-id", "-c", help="目标会话 ID"),
+    chat_id: str | None = typer.Option(None, "--chat-id", "-c", help="目标会话/用户 ID"),
     reply_to: str | None = typer.Option(None, "--reply-to", "-r", help="回复的消息 ID（线程回复）"),
+    receive_id_type: str = typer.Option(
+        "chat_id",
+        "--receive-id-type",
+        help="接收者 ID 类型：chat_id（群聊）/ open_id（私聊）/ user_id / union_id / email",
+    ),
     channel: str = typer.Option("feishu", "--channel", help="渠道类型"),
     strict: bool = typer.Option(False, "--strict", help="严格模式：失败时 exit 1"),
 ):
@@ -451,13 +488,13 @@ def send_file(
 
     # Send accompanying text first if provided
     if text:
-        text_result = _send_text_message(token, resolved_chat_id or "", text, resolved_reply_to)
+        text_result = _send_text_message(token, resolved_chat_id or "", text, resolved_reply_to, receive_id_type)
         text_code = text_result.get("code", -1)
         if text_code != 0:
             # Token expired — refresh and retry once
             if text_code == 99991668:
                 token = _fetch_token(app_id, app_secret) or token
-                text_result = _send_text_message(token, resolved_chat_id or "", text, resolved_reply_to)
+                text_result = _send_text_message(token, resolved_chat_id or "", text, resolved_reply_to, receive_id_type)
                 text_code = text_result.get("code", -1)
             if text_code != 0:
                 error_msg = text_result.get("msg", "unknown error")
@@ -507,7 +544,7 @@ def send_file(
 
     # Send file message with retry on token expiry
     for attempt in range(2):
-        send_result = _send_file_message(token, resolved_chat_id, file_key, resolved_reply_to)
+        send_result = _send_file_message(token, resolved_chat_id, file_key, resolved_reply_to, receive_id_type)
         send_code = send_result.get("code", -1)
 
         if send_code == 0:

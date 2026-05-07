@@ -169,6 +169,58 @@ cd 3-dev/src/backend && python -m cli notify send --text "..."
 
 ---
 
+## 群聊 vs 私聊路由
+
+通知路由由 `notification_context.is_group_chat` 决定（详见 `CHANNEL-NOTIFICATION.md`）。
+
+### 群聊（`is_group_chat == true`）
+
+```json
+// message tool
+{"name": "message", "arguments": {"action": "send", "message": "⏳ 正在下载..."}}
+```
+
+```bash
+# CLI notify
+python -m cli notify send --text "⏳ 正在下载..." --chat-id oc_xxx
+# 回复原消息线程（优先）
+python -m cli notify send --text "⏳ 正在下载..." --chat-id oc_xxx --reply-to om_xxx
+```
+
+### 私聊（`is_group_chat == false`）
+
+```json
+// message tool（平台自动路由到私聊 session）
+{"name": "message", "arguments": {"action": "send", "message": "⏳ 正在下载..."}}
+```
+
+```bash
+# CLI notify - 需要指定 receive_id_type 为 open_id
+python -m cli notify send --text "3/20 已完成，预计还需 4 分钟" \
+  --receive-id-type open_id --chat-id ou_xxx
+
+# CLI notify - 私聊发文件附件
+python -m cli notify send-file --file /tmp/result.txt \
+  --receive-id-type open_id --chat-id ou_xxx
+```
+
+### 路由决策表
+
+| 条件 | `receive_id_type` | `receive_id` | `reply_to` |
+|------|-------------------|-------------|-----------|
+| 群聊 + 有 `reply_to_id` | `chat_id` | `oc_xxx` | `om_xxx` |
+| 群聊 + 无 `reply_to_id` | `chat_id` | `oc_xxx` | — |
+| 私聊 | `open_id` | `ou_xxx` | — |
+
+### 私聊模板差异
+
+- 不 @ 用户（私聊本身就是对用户的）
+- 不含群名、话题说明
+- 可以更简洁：`"3/20 已完成，预计还需 4 分钟"`
+- 群聊模板需包含 `batch_id` 避免多用户混淆
+
+---
+
 ## 故障排查
 
 | 症状 | 可能原因 | 解决 |

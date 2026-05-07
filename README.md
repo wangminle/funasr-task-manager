@@ -172,7 +172,7 @@ Agent 体系有两条主要入口：
 - **Hermes**：`~/.hermes/skills/`
 - **Cursor**：`{project}/.cursor/skills/` 或 `~/.cursor/skills-cursor/`
 
-安装后 Agent 启动时自动加载 ASR 转写能力，无需用户手动指挥。若需要聊天渠道实时进度，还应按 `init` Phase 7 配置渠道凭据与 `notify` fallback。详见 [init Skill](6-skills/funasr-task-manager-init/SKILL.md) 和 [渠道凭据配置](6-skills/funasr-task-manager-init/references/channel-credentials.md)。
+安装后 Agent 启动时自动加载 ASR 转写能力，无需用户手动指挥。若需要聊天渠道实时进度，还应按 `init` Phase 7 配置渠道凭据与 `notify` fallback。OpenClaw 环境下，Phase 7.5 会自动检查 CLI 和 Skill 版本一致性，确保部署环境与源仓库同步。详见 [init Skill](6-skills/funasr-task-manager-init/SKILL.md)、[渠道凭据配置](6-skills/funasr-task-manager-init/references/channel-credentials.md) 和 [部署同步指南](6-skills/_shared/DEPLOY-SYNC.md)。
 
 ### 端口与服务
 
@@ -403,6 +403,9 @@ python -m cli notify send-file --file /tmp/result.txt --filename "会议记录.t
 
 # 回复到指定飞书消息线程
 python -m cli notify send --text "处理中..." --reply-to om_xxxxxxxx
+
+# 向用户私聊发送（使用 open_id）
+python -m cli notify send --text "转写已完成" --receive-id-type open_id --chat-id ou_xxxxxxxx
 ```
 
 配置来源优先级：环境变量 > CLI 配置文件。
@@ -825,7 +828,7 @@ funasr-task-manager/
 │       ├── e2e/                       # 端到端测试（API/CLI 视角）
 │       └── load/                      # 压力测试
 ├── 6-skills/                          # Agent 可复用的自动化技能
-│   ├── _shared/                                # 共享 ASR 工作流与实时通知规范
+│   ├── _shared/                                # 共享 ASR 工作流、实时通知规范、部署同步指南
 │   ├── funasr-task-manager-init/               # 环境初始化与启动（Python/Docker）
 │   ├── funasr-task-manager-channel-intake/     # 音频入口与意图编排（飞书/企微/Slack）
 │   ├── funasr-task-manager-local-batch-transcribe/ # 服务器本地文件批量转写

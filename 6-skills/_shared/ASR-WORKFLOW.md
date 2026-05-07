@@ -3,6 +3,19 @@
 > 本文件由 `funasr-task-manager-init` Skill Phase 6 安装到 Agent workspace，供 Agent 随时检索 ASR 转写相关知识。
 > 源文件位于仓库 `6-skills/_shared/ASR-WORKFLOW.md`，更新后重新执行 Phase 6 即可同步。
 
+## 版本要求
+
+<!-- cli_min_version: 0.1.0 -->
+
+| 组件 | 当前版本 | 最低版本 | 说明 |
+|------|---------|---------|------|
+| CLI (`python -m cli`) | `0.1.0` | `>= 0.1.0` | 需要 `notify` 子命令（含 `send`、`send-file`、`auth-check`）和 `--receive-id-type` 参数 |
+| Backend API | — | `>= 1.0.0` | 需要 `/health`、`/tasks`、`/task-groups` 端点 |
+| Python | — | `>= 3.11` | CLI 依赖 `match` 语法和 `asyncio` 特性；pyproject.toml 声明 `requires-python = ">=3.11"` |
+| ffprobe / ffmpeg | — | `>= 5.0` | 音视频预检和转码 |
+
+> **版本检查时机**：`funasr-task-manager-init` Phase 7.5 会自动检查 CLI 版本一致性。若版本不满足，Agent 应提示用户重新执行部署同步。
+
 ---
 
 > **实时通知规范（强制）**：所有阶段通知必须通过 `send_user_notice()` 实时推送，禁止仅输出普通 assistant 文本。详见 `6-skills/_shared/CHANNEL-NOTIFICATION.md`。

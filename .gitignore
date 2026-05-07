@@ -203,6 +203,8 @@ cython_debug/
 /data/uploads/
 /7-data/
 /4-tests/batch-testing/
+/1-discussion/Agent实际运行记录/
+/1-discussion/beta测试记录/
 .DS_Store
 
 # test runtime data
