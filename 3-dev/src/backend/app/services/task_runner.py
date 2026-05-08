@@ -15,7 +15,6 @@ from app.config import SEGMENT_LEVEL_PRESETS, settings
 from app.fault.circuit_breaker import breaker_registry
 from app.models import (
     File, ServerInstance, Task, TaskStatus,
-    CallbackOutbox, OutboxStatus,
     TaskSegment, SegmentStatus,
 )
 from app.observability.logging import get_logger
@@ -23,10 +22,10 @@ from app.services.audio_preprocessor import (
     ensure_canonical_wav, ensure_wav, get_audio_duration_ms,
     needs_conversion, plan_segments, silence_detect, split_wav_segments,
 )
-from app.services.callback import create_outbox_record, deliver_callback, get_retry_delay, MAX_CALLBACK_RETRIES
+from app.services.callback_worker import callback_worker
 from app.services.result_formatter import to_json, to_srt, to_txt
-from app.services.result_merger import SegmentInput, merge_segment_results
 from app.services.scheduler import ScheduleDecision, ServerProfile, SlotQueue, scheduler as global_scheduler
+from app.services.task_finalizer import TaskFinalizer
 from app.storage.database import async_session_factory
 from app.storage.file_manager import save_result
 from app.storage.repository import SegmentRepository, TaskRepository
@@ -52,7 +51,8 @@ class BackgroundTaskRunner:
         self._slot_queues: dict[str, SlotQueue] = {}
         self._planned_task_ids: set[str] = set()
         self._planned_available_server_ids: frozenset[str] = frozenset()
-        self._finalize_locks: dict[str, asyncio.Lock] = {}
+        self._callback_worker = callback_worker
+        self._finalizer = TaskFinalizer(self._callback_worker)
 
     async def start(self) -> None:
         if self._loop_task and not self._loop_task.done():
@@ -129,7 +129,7 @@ class BackgroundTaskRunner:
 
         for tid in finalize_task_ids:
             try:
-                await self._maybe_finalize_segmented_task(tid)
+                await self._finalizer.maybe_finalize(tid)
                 logger.info("stalled_finalization_triggered", task_id=tid)
             except Exception as e:
                 logger.warning("stalled_finalization_failed", task_id=tid, error=str(e))
@@ -156,7 +156,7 @@ class BackgroundTaskRunner:
                     retry_tick = 0
                 callback_tick += 1
                 if callback_tick >= 30:
-                    await self._retry_pending_callbacks()
+                    await self._callback_worker.retry_pending()
                     callback_tick = 0
             except Exception as e:
                 logger.exception("task_runner_loop_error", error=str(e))
@@ -213,7 +213,7 @@ class BackgroundTaskRunner:
                     logger.info("task_retry_queued", task_id=task.task_id, retry=task.retry_count)
             await session.commit()
         for tid in merge_retry_task_ids:
-            await self._maybe_finalize_segmented_task(tid)
+            await self._finalizer.maybe_finalize(tid)
         self._request_dispatch()
 
     async def _promote_preprocessing_tasks(self) -> None:
@@ -783,7 +783,7 @@ class BackgroundTaskRunner:
             task.error_message = None
             if task.can_transition_to(TaskStatus.SUCCEEDED):
                 event = await repo.update_task_status(task, TaskStatus.SUCCEEDED)
-                outbox = await self._enqueue_callback(session, task, event.event_id, TaskStatus.SUCCEEDED)
+                outbox = await self._callback_worker.enqueue(session, task, event.event_id, TaskStatus.SUCCEEDED)
                 if outbox is not None:
                     pending_delivery = (outbox.outbox_id, task.callback_secret)
             user_id = task.user_id
@@ -794,7 +794,7 @@ class BackgroundTaskRunner:
             self._clear_slot_queues()
         self._request_dispatch()
         if pending_delivery:
-            await self._try_deliver_outbox(*pending_delivery)
+            await self._callback_worker.try_deliver(*pending_delivery)
 
     async def _mark_task_failed(self, task_id: str, message: str) -> None:
         pending_delivery = None
@@ -809,7 +809,7 @@ class BackgroundTaskRunner:
             if task.can_transition_to(TaskStatus.FAILED):
                 event = await repo.update_task_status(task, TaskStatus.FAILED)
                 if is_terminal:
-                    outbox = await self._enqueue_callback(session, task, event.event_id, TaskStatus.FAILED, error_message=message[:2000])
+                    outbox = await self._callback_worker.enqueue(session, task, event.event_id, TaskStatus.FAILED, error_message=message[:2000])
                     if outbox is not None:
                         pending_delivery = (outbox.outbox_id, task.callback_secret)
             user_id = task.user_id
@@ -823,7 +823,7 @@ class BackgroundTaskRunner:
             self._clear_slot_queues()
         self._request_dispatch()
         if pending_delivery:
-            await self._try_deliver_outbox(*pending_delivery)
+            await self._callback_worker.try_deliver(*pending_delivery)
 
     # ------------------------------------------------------------------
     # Segment-level execution (Stage 7)
@@ -1011,7 +1011,7 @@ class BackgroundTaskRunner:
                      completed_keep_ms=completed_keep, total_keep_ms=total_keep)
 
         if task_id:
-            await self._maybe_finalize_segmented_task(task_id)
+            await self._finalizer.maybe_finalize(task_id)
 
         self._request_dispatch()
 
@@ -1048,7 +1048,7 @@ class BackgroundTaskRunner:
                     )
                     task.error_message = error_msg
                     event = await repo.update_task_status(task, TaskStatus.FAILED)
-                    outbox = await self._enqueue_callback(
+                    outbox = await self._callback_worker.enqueue(
                         session, task, event.event_id, TaskStatus.FAILED,
                         error_message=error_msg,
                     )
@@ -1069,220 +1069,11 @@ class BackgroundTaskRunner:
             self._clear_slot_queues()
         self._request_dispatch()
         if pending_delivery:
-            await self._try_deliver_outbox(*pending_delivery)
+            await self._callback_worker.try_deliver(*pending_delivery)
 
     # ------------------------------------------------------------------
-    # Stage 8: Parent-task merge & terminal state
+    # Transcription helpers
     # ------------------------------------------------------------------
-
-    def _get_finalize_lock(self, task_id: str) -> asyncio.Lock:
-        if task_id not in self._finalize_locks:
-            self._finalize_locks[task_id] = asyncio.Lock()
-        return self._finalize_locks[task_id]
-
-    async def _maybe_finalize_segmented_task(self, task_id: str) -> None:
-        """Check whether all segments are done and merge results if so.
-
-        Uses a per-task asyncio.Lock plus a DB-level status double-check
-        to guarantee the merge executes at most once even when multiple
-        segments complete near-simultaneously.
-        """
-        lock = self._get_finalize_lock(task_id)
-        async with lock:
-            async with async_session_factory() as session:
-                seg_repo = SegmentRepository(session)
-                status_counts = await seg_repo.count_by_status(task_id)
-                total = sum(status_counts.values())
-                if total == 0:
-                    return
-
-                succeeded = status_counts.get(SegmentStatus.SUCCEEDED, 0)
-                failed = status_counts.get(SegmentStatus.FAILED, 0)
-                pending = status_counts.get(SegmentStatus.PENDING, 0)
-                active = (status_counts.get(SegmentStatus.DISPATCHED, 0)
-                          + status_counts.get(SegmentStatus.TRANSCRIBING, 0))
-
-                if active > 0 or pending > 0:
-                    return
-
-                repo = TaskRepository(session)
-                task = await repo.get_task(task_id)
-                if task is None or task.status in (
-                    TaskStatus.SUCCEEDED.value,
-                    TaskStatus.CANCELED.value,
-                    TaskStatus.FAILED.value,
-                ):
-                    return
-
-                if failed > 0:
-                    return
-
-                if succeeded != total:
-                    return
-
-            try:
-                await self._merge_and_finalize(task_id)
-            except Exception as e:
-                logger.exception("segment_merge_failed", task_id=task_id, error=str(e))
-                async with async_session_factory() as session:
-                    repo = TaskRepository(session)
-                    task = await repo.get_task(task_id)
-                    if task and task.can_transition_to(TaskStatus.FAILED):
-                        task.error_code = "MERGE_FAILED"
-                        task.error_message = f"Segment result merge failed: {str(e)[:500]}"
-                        await repo.update_task_status(task, TaskStatus.FAILED)
-                        await session.commit()
-            finally:
-                self._finalize_locks.pop(task_id, None)
-
-    async def _merge_and_finalize(self, task_id: str) -> None:
-        """Merge all segment results and mark the parent task SUCCEEDED."""
-        async with async_session_factory() as session:
-            seg_repo = SegmentRepository(session)
-            segments = await seg_repo.list_segments_by_task(task_id)
-
-            repo = TaskRepository(session)
-            task = await repo.get_task(task_id)
-            if task is None or task.status == TaskStatus.SUCCEEDED.value:
-                return
-
-        seg_inputs = [
-            SegmentInput(
-                segment_index=seg.segment_index,
-                source_start_ms=seg.source_start_ms,
-                keep_start_ms=seg.keep_start_ms,
-                keep_end_ms=seg.keep_end_ms,
-                raw_result_json=seg.raw_result_json or "{}",
-            )
-            for seg in segments
-        ]
-
-        merged_result, merge_status = merge_segment_results(seg_inputs)
-        logger.info("segment_merge_complete", task_id=task_id,
-                     segments=len(segments), merge_status=merge_status,
-                     text_length=len(merged_result.get("text", "")))
-
-        await save_result(task_id, to_json(merged_result), "json")
-        await save_result(task_id, to_txt(merged_result), "txt")
-        await save_result(task_id, to_srt(merged_result), "srt")
-
-        pending_delivery = None
-        async with async_session_factory() as session:
-            repo = TaskRepository(session)
-            task = await repo.get_task(task_id)
-            if task is None:
-                return
-            if not task.can_transition_to(TaskStatus.SUCCEEDED):
-                return
-
-            task.result_path = task_id
-            task.error_code = None
-            task.error_message = None
-            event = await repo.update_task_status(task, TaskStatus.SUCCEEDED)
-            outbox = await self._enqueue_callback(
-                session, task, event.event_id, TaskStatus.SUCCEEDED,
-            )
-            if outbox is not None:
-                pending_delivery = (outbox.outbox_id, task.callback_secret)
-            user_id = task.user_id
-            await session.commit()
-            logger.info("segmented_task_succeeded", task_id=task_id,
-                        segments=len(segments), merge_status=merge_status)
-            await rate_limiter.record_task_completed(user_id)
-
-        if not any(sq.decisions for sq in self._slot_queues.values()):
-            self._clear_slot_queues()
-        if pending_delivery:
-            await self._try_deliver_outbox(*pending_delivery)
-
-        asyncio.create_task(
-            self._cleanup_segment_files(task_id),
-            name=f"seg-cleanup-{task_id}",
-        )
-
-    @staticmethod
-    async def _cleanup_segment_files(task_id: str) -> None:
-        """Best-effort async cleanup of segment WAV files after successful merge."""
-        import shutil
-        seg_dir = settings.temp_dir / "segments" / task_id
-        try:
-            exists = await asyncio.to_thread(seg_dir.exists)
-            if exists:
-                await asyncio.to_thread(shutil.rmtree, seg_dir)
-                logger.info("segment_files_cleaned", task_id=task_id, dir=str(seg_dir))
-        except Exception as e:
-            logger.warning("segment_files_cleanup_error", task_id=task_id, error=str(e))
-
-    # ------------------------------------------------------------------
-    # Callback & misc helpers
-    # ------------------------------------------------------------------
-
-    async def _enqueue_callback(
-        self,
-        session,
-        task: Task,
-        event_id: str,
-        status: TaskStatus,
-        error_message: str | None = None,
-    ) -> CallbackOutbox | None:
-        """Write outbox record within the current transaction.
-
-        Returns the outbox record so the caller can attempt delivery AFTER commit.
-        """
-        if not task.callback_url:
-            return None
-        outbox = create_outbox_record(
-            task_id=task.task_id,
-            event_id=event_id,
-            callback_url=task.callback_url,
-            status=status.value,
-            progress=task.progress,
-            result_path=task.result_path,
-            error_message=error_message,
-        )
-        session.add(outbox)
-        await session.flush()
-        return outbox
-
-    async def _try_deliver_outbox(self, outbox_id: str, callback_secret: str | None) -> None:
-        """Best-effort immediate delivery using a dedicated session (post-commit)."""
-        try:
-            async with async_session_factory() as session:
-                stmt = select(CallbackOutbox).where(CallbackOutbox.outbox_id == outbox_id)
-                outbox = (await session.execute(stmt)).scalar_one_or_none()
-                if outbox is None or outbox.status != OutboxStatus.PENDING.value:
-                    return
-                await deliver_callback(outbox, secret=callback_secret)
-                await session.commit()
-        except Exception as e:
-            logger.warning("callback_immediate_delivery_failed", outbox_id=outbox_id, error=str(e))
-
-    async def _retry_pending_callbacks(self) -> None:
-        """Scan callback_outbox for undelivered PENDING records and retry."""
-        async with async_session_factory() as session:
-            stmt = (
-                select(CallbackOutbox)
-                .where(
-                    CallbackOutbox.status == OutboxStatus.PENDING.value,
-                    CallbackOutbox.retry_count < MAX_CALLBACK_RETRIES,
-                )
-                .order_by(CallbackOutbox.created_at.asc())
-                .limit(50)
-            )
-            records = list((await session.execute(stmt)).scalars().all())
-            if not records:
-                return
-            for outbox in records:
-                task_stmt = select(Task.callback_secret).where(Task.task_id == outbox.task_id)
-                secret = (await session.execute(task_stmt)).scalar_one_or_none()
-                try:
-                    await deliver_callback(outbox, secret=secret)
-                except Exception as e:
-                    logger.warning("callback_retry_error", outbox_id=outbox.outbox_id, error=str(e))
-            await session.commit()
-            delivered = sum(1 for r in records if r.status == OutboxStatus.SENT.value)
-            if delivered:
-                logger.info("callback_outbox_retry_batch", total=len(records), delivered=delivered)
 
     async def _transcribe_with_protocol_fallback(
         self,

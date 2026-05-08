@@ -700,3 +700,50 @@ class TestSendFileCommand:
         runner = CliRunner()
         result = runner.invoke(app, ["send-file", "--file", str(test_file), "--strict"])
         assert result.exit_code == 1
+
+
+class TestConstantPatchability:
+    """Verify that patching module-level constants actually affects HTTP calls."""
+
+    @patch("cli.commands.notify.httpx.post")
+    def test_patch_send_api_url_is_effective(self, mock_post):
+        """Patching FEISHU_SEND_API must affect _send_text_message's target URL."""
+        import cli.commands.notify as notify_mod
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"code": 0, "data": {"message_id": "om_test"}}
+        mock_post.return_value = mock_resp
+
+        original = notify_mod.FEISHU_SEND_API
+        notify_mod.FEISHU_SEND_API = "https://mock.example.com/send"
+        try:
+            from cli.commands.notify import _send_text_message
+            _send_text_message("tok", "oc_x", "hi")
+            call_url = mock_post.call_args[0][0]
+            assert "mock.example.com/send" in call_url
+        finally:
+            notify_mod.FEISHU_SEND_API = original
+
+    @patch("cli.commands.notify.httpx.post")
+    def test_patch_upload_api_url_is_effective(self, mock_post, _patch_paths):
+        """Patching FEISHU_UPLOAD_API must affect _upload_file's target URL."""
+        import cli.commands.notify as notify_mod
+
+        test_file = _patch_paths / "dummy.txt"
+        test_file.write_text("content", encoding="utf-8")
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"code": 0, "data": {"file_key": "fk_1"}}
+        mock_post.return_value = mock_resp
+
+        original = notify_mod.FEISHU_UPLOAD_API
+        notify_mod.FEISHU_UPLOAD_API = "https://mock.example.com/upload"
+        try:
+            from cli.commands.notify import _upload_file
+            _upload_file("tok", str(test_file), "dummy.txt")
+        finally:
+            notify_mod.FEISHU_UPLOAD_API = original
+
+        assert mock_post.called
+        call_url = mock_post.call_args[0][0]
+        assert "mock.example.com/upload" in call_url

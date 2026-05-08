@@ -16,11 +16,27 @@ from app.models.base import Base  # noqa: E402
 
 
 def pytest_configure(config):
+    import shutil
+
     state_dir = Path(config.rootpath) / ".pytest-state"
     cache_dir = state_dir / "cache"
     basetemp_dir = state_dir / "tmp"
+
     cache_dir.mkdir(parents=True, exist_ok=True)
-    basetemp_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if basetemp_dir.exists():
+            shutil.rmtree(basetemp_dir, ignore_errors=True)
+        basetemp_dir.mkdir(parents=True, exist_ok=True)
+        probe = basetemp_dir / ".probe"
+        probe.write_text("ok")
+        probe.unlink()
+    except OSError:
+        import time
+        alt_name = f"tmp-{int(time.time())}"
+        basetemp_dir = state_dir / alt_name
+        basetemp_dir.mkdir(parents=True, exist_ok=True)
+
     config.option.basetemp = str(basetemp_dir)
 
 

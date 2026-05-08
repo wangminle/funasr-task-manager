@@ -11,12 +11,9 @@ management, message delivery, and graceful failure modes.
 from __future__ import annotations
 
 import datetime
-import json
 import os
 import re
 import sys
-import time
-from contextlib import suppress
 from pathlib import Path
 
 import httpx
@@ -38,6 +35,9 @@ FAILURE_LOG_PATH = Path.home() / ".asr-cli-notify-failures.log"
 TOKEN_CACHE_DURATION_SEC = 110 * 60  # 110 minutes (Feishu token valid for 2h)
 MAX_FAILURE_LOG_LINES = 100
 REDACTED = "[REDACTED]"
+
+
+# --- Backward-compatible module-level functions (tests mock these) ---
 
 
 def _get_credentials() -> tuple[str, str] | None:
@@ -65,18 +65,22 @@ def _load_cached_token(app_id: str) -> str | None:
     if not TOKEN_CACHE_PATH.exists():
         return None
     try:
+        import json
         data = json.loads(TOKEN_CACHE_PATH.read_text(encoding="utf-8"))
         if data.get("app_id") != app_id:
             return None
+        import time
         if time.time() >= data.get("expires_at", 0):
             return None
         return data.get("tenant_access_token")
-    except (json.JSONDecodeError, OSError):
+    except (ValueError, KeyError, OSError):
         return None
 
 
 def _save_cached_token(app_id: str, token: str) -> None:
     """Save token to cache file with restricted permissions (0600)."""
+    import json
+    import time
     data = {
         "tenant_access_token": token,
         "expires_at": time.time() + TOKEN_CACHE_DURATION_SEC,
@@ -84,7 +88,6 @@ def _save_cached_token(app_id: str, token: str) -> None:
     }
     try:
         content = json.dumps(data)
-        # Write with 0600 permissions to prevent other users from reading the token
         fd = os.open(str(TOKEN_CACHE_PATH), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             os.write(fd, content.encode("utf-8"))
@@ -124,10 +127,7 @@ def _get_token(app_id: str, app_secret: str) -> str | None:
 
 
 def _normalize_chat_id(chat_id: str) -> str:
-    """Strip known prefixes from chat_id (e.g. OpenClaw 'chat:' prefix).
-
-    OpenClaw runtime context returns 'chat:oc_xxx' but Feishu API expects 'oc_xxx'.
-    """
+    """Strip known prefixes from chat_id (e.g. OpenClaw 'chat:' prefix)."""
     for prefix in ("chat:", "Chat:", "CHAT:"):
         if chat_id.startswith(prefix):
             return chat_id[len(prefix):]
@@ -142,25 +142,17 @@ def _send_text_message(
     receive_id_type: str = "chat_id",
 ) -> dict:
     """Send a text message via Feishu IM API. Returns response dict."""
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
+    import json
+
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     content_json = json.dumps({"text": text}, ensure_ascii=False)
 
     if reply_to:
         url = FEISHU_REPLY_API.format(message_id=reply_to)
-        payload = {
-            "msg_type": "text",
-            "content": content_json,
-        }
+        payload = {"msg_type": "text", "content": content_json}
     else:
         url = f"{FEISHU_SEND_API}?receive_id_type={receive_id_type}"
-        payload = {
-            "receive_id": _normalize_chat_id(chat_id),
-            "msg_type": "text",
-            "content": content_json,
-        }
+        payload = {"receive_id": _normalize_chat_id(chat_id), "msg_type": "text", "content": content_json}
 
     try:
         resp = httpx.post(url, json=payload, headers=headers, timeout=15)
@@ -171,38 +163,35 @@ def _send_text_message(
 
 def _upload_file(token: str, file_path: str, filename: str | None = None) -> dict:
     """Upload a file to Feishu and return the response with file_key."""
-    headers = {"Authorization": f"Bearer {token}"}
     local_path = Path(file_path)
 
     if not local_path.exists():
         return {"code": -1, "msg": f"File not found: {file_path}"}
-
     if not local_path.is_file():
         return {"code": -1, "msg": f"Not a regular file: {file_path}"}
-
     try:
         file_size = local_path.stat().st_size
     except OSError as e:
         return {"code": -1, "msg": f"Cannot stat file: {e}"}
-
     if file_size > 30 * 1024 * 1024:
         return {"code": -1, "msg": f"File too large ({file_size} bytes > 30MB limit)"}
 
     display_name = filename or local_path.name
+    headers = {"Authorization": f"Bearer {token}"}
 
     try:
         with open(local_path, "rb") as f:
-            upload_resp = httpx.post(
+            resp = httpx.post(
                 FEISHU_UPLOAD_API,
                 headers=headers,
                 data={"file_type": "stream", "file_name": display_name},
                 files={"file": (display_name, f)},
                 timeout=120,
             )
-        upload_body = upload_resp.json()
-        if upload_body.get("code", -1) != 0:
-            return upload_body
-        file_key = upload_body.get("data", {}).get("file_key")
+        body = resp.json()
+        if body.get("code", -1) != 0:
+            return body
+        file_key = body.get("data", {}).get("file_key")
         if not file_key:
             return {"code": -1, "msg": "No file_key in upload response"}
         return {"code": 0, "file_key": file_key}
@@ -220,31 +209,26 @@ def _send_file_message(
     receive_id_type: str = "chat_id",
 ) -> dict:
     """Send a file message via Feishu IM API using an already-uploaded file_key."""
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
+    import json
+
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     content_json = json.dumps({"file_key": file_key})
 
     if reply_to:
         url = FEISHU_REPLY_API.format(message_id=reply_to)
-        payload = {
-            "msg_type": "file",
-            "content": content_json,
-        }
+        payload = {"msg_type": "file", "content": content_json}
     else:
         url = f"{FEISHU_SEND_API}?receive_id_type={receive_id_type}"
-        payload = {
-            "receive_id": _normalize_chat_id(chat_id),
-            "msg_type": "file",
-            "content": content_json,
-        }
+        payload = {"receive_id": _normalize_chat_id(chat_id), "msg_type": "file", "content": content_json}
 
     try:
         resp = httpx.post(url, json=payload, headers=headers, timeout=15)
         return resp.json()
     except (httpx.HTTPError, ValueError) as e:
         return {"code": -1, "msg": f"Send failed: {e}"}
+
+
+# --- Error handling helpers ---
 
 
 def _redact_sensitive(value: str) -> str:
@@ -280,6 +264,52 @@ def _log_failure(text_preview: str, error: str) -> None:
         pass
 
 
+def _soft_fail(msg: str, strict: bool) -> None:
+    """Report an error: raise typer.Exit(1) if strict, else warn to stderr."""
+    if strict:
+        out.error(msg)
+        raise typer.Exit(1)
+    sys.stderr.write(f"[WARN] {msg}\n")
+
+
+def _with_retry(
+    fn,
+    token: str,
+    app_id: str,
+    app_secret: str,
+) -> tuple[dict, str]:
+    """Execute fn(token) with retry on failure.
+
+    Retry strategy (up to 2 attempts total):
+    - On 99991668 (token expired): refresh token and retry once.
+      If refresh fails, return immediately — no point retrying with
+      the same expired token.
+    - On any other non-zero code: sleep 1s and retry once.
+
+    Returns (result_dict, current_token).
+    """
+    import time as _time
+
+    for attempt in range(2):
+        result = fn(token)
+        code = result.get("code", -1)
+        if code == 0:
+            return result, token
+        if code == 99991668 and attempt == 0:
+            refreshed = _fetch_token(app_id, app_secret)
+            if not refreshed:
+                break
+            token = refreshed
+            continue
+        if attempt == 0:
+            _time.sleep(1)
+            continue
+    return result, token
+
+
+# --- Core send logic (kept for backward compat; tests mock _do_send) ---
+
+
 def _do_send(
     text: str,
     chat_id: str,
@@ -290,25 +320,19 @@ def _do_send(
     """Core send logic with retry and exit-code handling."""
     creds = _get_credentials()
     if not creds:
-        msg = "通知凭据未配置，跳过发送 (设置 FEISHU_APP_ID/FEISHU_APP_SECRET 或 cli config)"
-        if strict:
-            out.error(msg)
-            raise typer.Exit(1)
-        sys.stderr.write(f"[WARN] {msg}\n")
+        _soft_fail("通知凭据未配置，跳过发送 (设置 FEISHU_APP_ID/FEISHU_APP_SECRET 或 cli config)", strict)
         return
 
     app_id, app_secret = creds
     token = _get_token(app_id, app_secret)
     if not token:
-        msg = "飞书 token 获取失败，检查 app_id/app_secret 是否正确"
-        if strict:
-            out.error(msg)
-            raise typer.Exit(1)
-        sys.stderr.write(f"[WARN] {msg}\n")
         _log_failure(text, "token_fetch_failed")
+        _soft_fail("飞书 token 获取失败，检查 app_id/app_secret 是否正确", strict)
         return
 
-    # Attempt send with 1 retry
+    import time
+    result: dict = {}
+    code = -1
     for attempt in range(2):
         result = _send_text_message(token, chat_id, text, reply_to, receive_id_type)
         code = result.get("code", -1)
@@ -318,26 +342,23 @@ def _do_send(
             print(f"message_id={message_id}")
             return
 
-        # Token expired - refresh and retry
         if code == 99991668 and attempt == 0:
             token = _fetch_token(app_id, app_secret)
             if not token:
                 break
             continue
 
-        # Other error on first attempt - retry once
         if attempt == 0:
             time.sleep(1)
             continue
 
-    # All attempts failed
     error_msg = result.get("msg", "unknown error")
     msg = f"通知发送失败: code={code}, msg={error_msg}"
     _log_failure(text, msg)
-    if strict:
-        out.error(msg)
-        raise typer.Exit(1)
-    sys.stderr.write(f"[WARN] {msg}\n")
+    _soft_fail(msg, strict)
+
+
+# --- CLI Commands ---
 
 
 @app.command(name="send")
@@ -361,51 +382,27 @@ def send(
         content = sys.stdin.read().strip()
     elif text_file:
         if not text_file.exists():
-            msg = f"文件不存在: {text_file}"
-            if strict:
-                out.error(msg)
-                raise typer.Exit(1)
-            sys.stderr.write(f"[WARN] {msg}\n")
+            _soft_fail(f"文件不存在: {text_file}", strict)
             return
         content = text_file.read_text(encoding="utf-8").strip()
     elif text:
         content = text
     else:
-        msg = "必须提供 --text、--text-file 或 --stdin 之一"
-        if strict:
-            out.error(msg)
-            raise typer.Exit(1)
-        sys.stderr.write(f"[WARN] {msg}\n")
+        _soft_fail("必须提供 --text、--text-file 或 --stdin 之一", strict)
         return
 
     if not content:
-        msg = "通知内容为空，跳过发送"
-        if strict:
-            out.error(msg)
-            raise typer.Exit(1)
-        sys.stderr.write(f"[WARN] {msg}\n")
+        _soft_fail("通知内容为空，跳过发送", strict)
         return
 
-    # Resolve reply_to: only fall back to default when no explicit --chat-id
-    # (explicit chat_id means user wants to target a specific chat, not a thread)
     resolved_reply_to = reply_to or (None if chat_id else _get_default_reply_to())
-
-    # Resolve chat_id (not required when reply_to is present)
     resolved_chat_id = chat_id or _get_default_chat_id()
     if not resolved_chat_id and not resolved_reply_to:
-        msg = "缺少 chat_id (设置 --chat-id / FEISHU_CHAT_ID / notify.default_chat_id，或提供 --reply-to)"
-        if strict:
-            out.error(msg)
-            raise typer.Exit(1)
-        sys.stderr.write(f"[WARN] {msg}\n")
+        _soft_fail("缺少 chat_id (设置 --chat-id / FEISHU_CHAT_ID / notify.default_chat_id，或提供 --reply-to)", strict)
         return
 
     if channel != "feishu":
-        msg = f"渠道 '{channel}' 暂不支持，仅支持 feishu"
-        if strict:
-            out.error(msg)
-            raise typer.Exit(1)
-        sys.stderr.write(f"[WARN] {msg}\n")
+        _soft_fail(f"渠道 '{channel}' 暂不支持，仅支持 feishu", strict)
         return
 
     _do_send(content, resolved_chat_id or "", resolved_reply_to, strict, receive_id_type)
@@ -431,144 +428,75 @@ def send_file(
     支持最大 30MB 文件。如果提供 --text，会先发送文本消息再发送文件。
     """
     if channel != "feishu":
-        msg = f"渠道 '{channel}' 暂不支持，仅支持 feishu"
-        if strict:
-            out.error(msg)
-            raise typer.Exit(1)
-        sys.stderr.write(f"[WARN] {msg}\n")
+        _soft_fail(f"渠道 '{channel}' 暂不支持，仅支持 feishu", strict)
         return
 
-    # Only fall back to default reply_to when no explicit --chat-id
     resolved_reply_to = reply_to or (None if chat_id else _get_default_reply_to())
-
     resolved_chat_id = chat_id or _get_default_chat_id()
     if not resolved_chat_id and not resolved_reply_to:
-        msg = "缺少 chat_id (设置 --chat-id / FEISHU_CHAT_ID / notify.default_chat_id，或提供 --reply-to)"
-        if strict:
-            out.error(msg)
-            raise typer.Exit(1)
-        sys.stderr.write(f"[WARN] {msg}\n")
+        _soft_fail("缺少 chat_id (设置 --chat-id / FEISHU_CHAT_ID / notify.default_chat_id，或提供 --reply-to)", strict)
         return
 
     creds = _get_credentials()
     if not creds:
-        msg = "通知凭据未配置 (设置 FEISHU_APP_ID/FEISHU_APP_SECRET 或 cli config)"
-        if strict:
-            out.error(msg)
-            raise typer.Exit(1)
-        sys.stderr.write(f"[WARN] {msg}\n")
+        _soft_fail("通知凭据未配置 (设置 FEISHU_APP_ID/FEISHU_APP_SECRET 或 cli config)", strict)
         return
 
     app_id, app_secret = creds
     token = _get_token(app_id, app_secret)
     if not token:
-        msg = "飞书 token 获取失败，检查 app_id/app_secret 是否正确"
-        if strict:
-            out.error(msg)
-            raise typer.Exit(1)
-        sys.stderr.write(f"[WARN] {msg}\n")
         _log_failure(str(file), "token_fetch_failed")
+        _soft_fail("飞书 token 获取失败，检查 app_id/app_secret 是否正确", strict)
         return
 
     if not file.exists():
-        msg = f"文件不存在: {file}"
-        if strict:
-            out.error(msg)
-            raise typer.Exit(1)
-        sys.stderr.write(f"[WARN] {msg}\n")
+        _soft_fail(f"文件不存在: {file}", strict)
         return
-
     if not file.is_file():
-        msg = f"路径不是常规文件: {file}"
-        if strict:
-            out.error(msg)
-            raise typer.Exit(1)
-        sys.stderr.write(f"[WARN] {msg}\n")
+        _soft_fail(f"路径不是常规文件: {file}", strict)
         return
 
     # Send accompanying text first if provided
     if text:
-        text_result = _send_text_message(token, resolved_chat_id or "", text, resolved_reply_to, receive_id_type)
-        text_code = text_result.get("code", -1)
-        if text_code != 0:
-            # Token expired — refresh and retry once
-            if text_code == 99991668:
-                token = _fetch_token(app_id, app_secret) or token
-                text_result = _send_text_message(token, resolved_chat_id or "", text, resolved_reply_to, receive_id_type)
-                text_code = text_result.get("code", -1)
-            if text_code != 0:
-                error_msg = text_result.get("msg", "unknown error")
-                if strict:
-                    out.error(f"伴随文本发送失败: code={text_code}, msg={error_msg}")
-                    raise typer.Exit(1)
-                sys.stderr.write(f"[WARN] 伴随文本发送失败: {error_msg}\n")
+        result, token = _with_retry(
+            lambda t: _send_text_message(t, resolved_chat_id or "", text, resolved_reply_to, receive_id_type),
+            token, app_id, app_secret,
+        )
+        if result.get("code", -1) != 0:
+            error_msg = result.get("msg", "unknown error")
+            if strict:
+                out.error(f"伴随文本发送失败: code={result.get('code')}, msg={error_msg}")
+                raise typer.Exit(1)
+            sys.stderr.write(f"[WARN] 伴随文本发送失败: {error_msg}\n")
 
-    # Upload file with retry on token expiry
-    for attempt in range(2):
-        upload_result = _upload_file(token, str(file), filename)
-        upload_code = upload_result.get("code", -1)
-
-        if upload_code == 0:
-            break
-
-        if upload_code == 99991668 and attempt == 0:
-            token = _fetch_token(app_id, app_secret)
-            if not token:
-                break
-            continue
-
-        if attempt == 0:
-            time.sleep(1)
-            continue
-    else:
-        error_msg = upload_result.get("msg", "unknown error")
-        msg = f"文件上传失败: {error_msg}"
-        _log_failure(str(file), msg)
-        if strict:
-            out.error(msg)
-            raise typer.Exit(1)
-        sys.stderr.write(f"[WARN] {msg}\n")
-        return
-
+    # Upload file
+    upload_result, token = _with_retry(
+        lambda t: _upload_file(t, str(file), filename),
+        token, app_id, app_secret,
+    )
     if upload_result.get("code", -1) != 0:
         error_msg = upload_result.get("msg", "unknown error")
         msg = f"文件上传失败: {error_msg}"
         _log_failure(str(file), msg)
-        if strict:
-            out.error(msg)
-            raise typer.Exit(1)
-        sys.stderr.write(f"[WARN] {msg}\n")
+        _soft_fail(msg, strict)
         return
 
     file_key = upload_result["file_key"]
 
-    # Send file message with retry on token expiry
-    for attempt in range(2):
-        send_result = _send_file_message(token, resolved_chat_id, file_key, resolved_reply_to, receive_id_type)
-        send_code = send_result.get("code", -1)
+    # Send file message
+    send_result, token = _with_retry(
+        lambda t: _send_file_message(t, resolved_chat_id or "", file_key, resolved_reply_to, receive_id_type),
+        token, app_id, app_secret,
+    )
+    if send_result.get("code", -1) != 0:
+        error_msg = send_result.get("msg", "unknown error")
+        msg = f"文件消息发送失败: code={send_result.get('code')}, msg={error_msg}"
+        _log_failure(str(file), msg)
+        _soft_fail(msg, strict)
+        return
 
-        if send_code == 0:
-            message_id = send_result.get("data", {}).get("message_id", "")
-            print(f"message_id={message_id}")
-            return
-
-        if send_code == 99991668 and attempt == 0:
-            token = _fetch_token(app_id, app_secret)
-            if not token:
-                break
-            continue
-
-        if attempt == 0:
-            time.sleep(1)
-            continue
-
-    error_msg = send_result.get("msg", "unknown error")
-    msg = f"文件消息发送失败: code={send_result.get('code')}, msg={error_msg}"
-    _log_failure(str(file), msg)
-    if strict:
-        out.error(msg)
-        raise typer.Exit(1)
-    sys.stderr.write(f"[WARN] {msg}\n")
+    message_id = send_result.get("data", {}).get("message_id", "")
+    print(f"message_id={message_id}")
 
 
 @app.command(name="auth-check")
@@ -598,4 +526,4 @@ def auth_check(
 
     chat_id = _get_default_chat_id()
     chat_info = f", default_chat_id: {chat_id}" if chat_id else ", default_chat_id: 未设置"
-    out.success(f"飞书凭据有效 (app_id: {app_id}, token 已缓存{chat_info})")
+    typer.echo(f"飞书凭据有效 (app_id: {app_id}, token 已缓存{chat_info})")

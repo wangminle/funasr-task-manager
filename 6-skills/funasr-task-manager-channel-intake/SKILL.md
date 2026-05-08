@@ -142,7 +142,15 @@ Layer C：决策（Decision）
 **检测步骤：**
 
 1. **检查 `message` tool 可用性**：查看当前 session 的工具列表是否包含 `message`。
-2. **检查 `cli notify` 可用性**：执行 `python -m cli notify auth-check --channel feishu`，检查退出码。
+2. **检查 `cli notify` 可用性**（两步：先确认模块存在，再验证凭据有效）：
+
+```bash
+# 第一步：确认 CLI 模块存在
+cd 3-dev/src/backend && python -m cli notify --help > /dev/null 2>&1
+# 第二步（如果第一步成功）：验证凭据可用
+python -m cli notify auth-check --channel feishu
+```
+
 3. **提取 `notification_context`**：从 runtime context 提取 `chat_id`、`open_id`、`message_id`、`sender_id` 等路由信息，判断 `is_group_chat`。
 
 **预检输出（结构化记录）：**
@@ -334,36 +342,7 @@ curl -s -o "$WORK_DIR/{original_filename}" \
 
 - 将上下文交接给 `funasr-task-manager-result-delivery` 的执行流程
 - 交接字段：`task_id(s)`、`task_group_id`、用户偏好格式、channel 回传方式
-- 若 `funasr-task-manager-result-delivery` 尚未创建，可临时在本 Skill 内执行下方临时流程
-
-### 临时内置的结果交付流程（未来拆入 `funasr-task-manager-result-delivery`）
-
-**Phase A：进度监控**
-
-- 轮询任务状态（5-10 秒间隔）：`GET /api/v1/tasks/{task_id}`
-- 或通过 SSE 监听：`GET /api/v1/tasks/{task_id}/progress`
-- 状态变化时通知用户（仅变化时发送一次）：`⏳ {原始文件名} — {状态描述}`
-- 批量任务：汇报完成进度 "3/5 已完成"
-- 超时策略：
-  - 单文件：5 分钟超时
-  - 批量 ≤ 5 个：20 分钟超时
-  - 批量 > 5 个：按文件数 × 5 分钟
-
-**Phase B：结果交付**
-
-- 拉取结果
-  - 单任务：`GET /api/v1/tasks/{task_id}/result?format=txt`
-  - 批量：`GET /api/v1/task-groups/{group_id}/results?format=zip`
-- 结果质量初筛
-  - 空文本 → 标记异常，建议重试或检查音频质量
-  - 明显乱码 → 标记异常
-  - 正常 → 继续交付
-- 向用户返回（**严格按 `funasr-task-manager-result-delivery` 的强制模板**，禁止自由组织回复）
-  - 发送固定格式摘要消息（仅包含：文件名、时长、格式、转写耗时、文本长度、结果文件名）
-  - 以 **txt 文件附件** 形式发回原渠道，文件名与用户发送的原始文件名一致（仅换扩展名为 `.txt`）
-  - **不在消息中引用/粘贴转写全文**，不管文本长短
-  - **不添加模板外内容**（如性能对比表格、分段详情 JSON、加速比等）
-  - 批量 → 逐个发送 txt 文件 + 汇总统计
+- `funasr-task-manager-result-delivery` 已就绪，直接移交即可
 
 ## 与其他 Skill 的协作
 

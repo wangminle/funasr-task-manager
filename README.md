@@ -166,7 +166,7 @@ Agent 体系有两条主要入口：
 
 ### 安装 Skills 到 Agent 平台
 
-运行 `init` Skill 的 Phase 6 即可一键安装所有 8 个 Skills 和共享工作流文件到目标平台：
+运行 `init` Skill 的 Phase 6 即可一键安装所有 9 个 Skills 和共享工作流文件到目标平台：
 
 - **OpenClaw**：`~/.openclaw/workspace-{name}/skills/`
 - **Hermes**：`~/.hermes/skills/`
@@ -832,6 +832,7 @@ funasr-task-manager/
 │   ├── funasr-task-manager-init/               # 环境初始化与启动（Python/Docker）
 │   ├── funasr-task-manager-channel-intake/     # 音频入口与意图编排（飞书/企微/Slack）
 │   ├── funasr-task-manager-local-batch-transcribe/ # 服务器本地文件批量转写
+│   ├── funasr-task-manager-batch-monitor/         # 子 Agent 批量任务进度监控
 │   ├── funasr-task-manager-media-preflight/    # 媒体文件预检查（格式/时长/转码评估）
 │   ├── funasr-task-manager-result-delivery/    # 结果交付与质量初筛
 │   ├── funasr-task-manager-server-benchmark/   # 服务器性能校准（RTF 基线/并发梯度）
