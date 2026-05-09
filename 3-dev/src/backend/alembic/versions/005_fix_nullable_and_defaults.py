@@ -7,7 +7,8 @@ Create Date: 2026-05-09
 Changes:
 - H2: task_events.from_status → nullable=True (first event has no prior status)
 - H3: server_instances.status server_default → "OFFLINE" (unprobed servers should be offline)
-- L19: files/server_instances/tasks updated_at → nullable=False (align with ORM)
+- L19: files/server_instances updated_at → nullable=False (align with ORM)
+  Note: tasks table uses created_at/started_at/completed_at, has no updated_at.
 """
 
 from alembic import op
@@ -23,7 +24,7 @@ def upgrade() -> None:
     conn = op.get_bind()
     dialect = conn.dialect.name
 
-    _tables_with_updated_at = ["files", "server_instances", "tasks"]
+    _tables_with_updated_at = ["files", "server_instances"]
 
     if dialect == "sqlite":
         with op.batch_alter_table("task_events", recreate="auto") as batch_op:
