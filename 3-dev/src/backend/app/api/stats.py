@@ -81,7 +81,7 @@ async def get_system_stats(
     today_failed = row.today_failed
     finished_24h = row.finished_24h
     succeeded_24h = row.succeeded_24h
-    success_rate = (succeeded_24h / finished_24h * 100) if finished_24h > 0 else 100.0
+    success_rate = (succeeded_24h / finished_24h * 100) if finished_24h > 0 else None
 
     online_servers = [s for s in servers if s.status == ServerStatus.ONLINE and s.rtf_baseline]
     avg_rtf = (

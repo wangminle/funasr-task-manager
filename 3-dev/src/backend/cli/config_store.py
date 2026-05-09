@@ -16,13 +16,13 @@ DEFAULTS: dict[str, Any] = {
 
 def _load() -> dict[str, Any]:
     if CONFIG_PATH.exists():
-        with open(CONFIG_PATH) as f:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     return {}
 
 
 def _save(data: dict[str, Any]) -> None:
-    with open(CONFIG_PATH, "w") as f:
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, default_flow_style=False, allow_unicode=True)
 
 

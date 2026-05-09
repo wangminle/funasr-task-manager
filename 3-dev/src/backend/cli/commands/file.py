@@ -37,7 +37,7 @@ def file_info(
             ["编码", info.get("codec", "-")],
             ["采样率", str(info.get("sample_rate", "-"))],
             ["声道", str(info.get("channels", "-"))],
-            ["文件大小", f"{info.get('size_bytes', 0):,} bytes"],
+            ["文件大小", f"{(info.get('size_bytes') or 0):,} bytes"],
             ["状态", info.get("status", "")],
         ],
     )

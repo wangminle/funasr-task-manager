@@ -7,11 +7,18 @@ description: >
   mentions scanning directories, inbox, or wants to retry failed items.
 ---
 
+> **适配项目版本**：V0.4.14-Build0353-20260509
+
 # 服务器本地文件批量转写
 
 `funasr-task-manager-local-batch-transcribe` 是面向服务器本地文件的批量转写自动执行规程。它把"发现文件 → 预检查 → 批量提交 → 委托监控 → 结果归档 → 失败重试"固化为 Phase 0-7，智能体拿到触发词即可自主走完整个流程。
 
-> **异步调度架构**：本 Skill 采用"主 Agent 调度 + 子 Agent 监控播报"模式。主 Agent 负责 Phase 0-4（扫描/预检/提交），完成提交后立即委托子 Agent 执行 `batch-monitor` Skill 进行进度监控和结果下载（Phase 5-6），自身释放以继续接收新任务。详见 `2-design/主Agent异步调度与子Agent监控播报架构设计-20260506.md`。
+> **异步调度架构**：本 Skill 采用"主 Agent 调度 + 子 Agent 监控播报"模式。主 Agent 负责 Phase 0-4（扫描/预检/提交），完成提交后立即委托子 Agent 执行 `batch-monitor` Skill 进行进度监控和结果下载（Phase 5-6），自身释放以继续接收新任务。架构要点如下：
+>
+> - **职责分离**：主 Agent 控制扫描、预检、提交全流程；子 Agent 仅做"定期查询 + 播报 + 下载结果"，不参与意图理解和任务创建。
+> - **委托协议**：主 Agent 通过 `sessions_spawn`（OpenClaw）或等效 API 启动子 Agent，传递 `task_group_ids`、`batch_id`、`notification_context` 等参数。
+> - **Watchdog 机制**：主 Agent 维护 `batch_watchdog` 状态表，在被动（收到用户消息）或空闲时检查子 Agent 存活性，超时或失联时接管监控。
+> - **Fallback**：当运行环境无子 Agent 能力（Cursor/Claude Code/Codex 等）或子 Agent 启动失败时，主 Agent 自行轮询。
 
 ## 执行检查清单（强制）
 
@@ -227,7 +234,7 @@ python -m cli --output json task-group submit \
 主 Agent 在委托前必须检查以下条件，**任一不满足则不启动子 Agent 监控播报，直接 fallback 到主 Agent 自行轮询**：
 
 1. **通知预检结果**：Phase 0a 的 `notice_capable == true`（至少有一种通知通道可用）。
-2. **`sessions_spawn` 可用**：工具列表中包含 `sessions_spawn`。
+2. **子 Agent 启动能力可用**：工具列表中包含 `sessions_spawn`（OpenClaw）或 `spawn_agent`（Codex）等子 Agent 启动工具。
 3. **子 Agent 有消息工具**：`message` tool 需显式配置子 Agent 工具策略（`tools.subagents.tools.allow '["message"]'`），不自动继承；`cli notify` 可通过 `exec` 工具调用，子 Agent 自然继承此能力。
 
 如果子 Agent 启动后发现自身 `message` tool 和 `cli notify` 都不可用，子 Agent 应立即报告失败并退出（见 `batch-monitor` Step 0）。
@@ -289,7 +296,7 @@ python -m cli --output json task-group submit \
 
 以下任一条件成立时，主 Agent 回退到**自行轮询模式**：
 
-- 运行环境为 Cursor / Claude Code / Codex（无 `sessions_spawn`）
+- 运行环境无子 Agent 启动能力（如 Cursor / Claude Code 等无 `sessions_spawn` 或 `spawn_agent`）
 - Phase 0a 预检 `notice_capable == false`（子 Agent 没有消息工具，无法播报）
 - 子 Agent 启动后 5 秒无 ack
 - 子 Agent 报告"消息工具不可用"并退出

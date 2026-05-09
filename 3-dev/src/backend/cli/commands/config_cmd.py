@@ -19,7 +19,8 @@ def config_set(
 ):
     """设置 CLI 配置项。"""
     config_store.set_value(key, value)
-    out.success(f"配置已保存: {key} = {value}")
+    display_value = "***" if "key" in key.lower() or "secret" in key.lower() or "token" in key.lower() else value
+    out.success(f"配置已保存: {key} = {display_value}")
 
 
 @app.command(name="get")

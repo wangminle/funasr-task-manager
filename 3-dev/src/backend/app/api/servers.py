@@ -465,14 +465,12 @@ async def delete_server(server_id: str, db: DbSession, admin: AdminUser):
                    "(DISPATCHED/TRANSCRIBING). Cancel or wait for them to finish before deleting.",
         )
 
-    bound_stmt = (
-        _sel(Task)
+    from sqlalchemy import update as sql_update
+    await db.execute(
+        sql_update(Task)
         .where(Task.assigned_server_id == server_id)
-        .limit(500)
+        .values(assigned_server_id=None)
     )
-    bound_tasks = (await db.execute(bound_stmt)).scalars().all()
-    for task in bound_tasks:
-        task.assigned_server_id = None
 
     repo = ServerRepository(db)
     deleted = await repo.delete_server(server_id)
@@ -558,14 +556,11 @@ async def _probe_with_ssl_fallback(
         caps = None
 
     err_msg = (caps.error or "") if caps else ""
-    is_ssl_error = any(k in err_msg.lower() for k in ("ssl", "tls", "certificate"))
-    is_conn_error = any(k in err_msg.lower() for k in ("refused", "timeout", "network", "websocket", "http response"))
-    if is_ssl_error or is_conn_error or caps is None:
-        logger.info("probe_retry_plain_ws", host=host, port=port, original_error=err_msg)
-        try:
-            ws_caps = await probe_server(host=host, port=port, use_ssl=False, level=level, timeout=timeout)
-            return ws_caps
-        except Exception as e:
-            logger.warning("probe_ws_also_failed", host=host, port=port, error=str(e))
+    logger.info("probe_retry_plain_ws", host=host, port=port, original_error=err_msg)
+    try:
+        ws_caps = await probe_server(host=host, port=port, use_ssl=False, level=level, timeout=timeout)
+        return ws_caps
+    except Exception as e:
+        logger.warning("probe_ws_also_failed", host=host, port=port, error=str(e))
 
     return caps if caps else ServerCapabilities(error="probe failed")

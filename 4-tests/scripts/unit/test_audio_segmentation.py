@@ -64,15 +64,16 @@ class TestParseSilencedetectOutput:
         assert _parse_silencedetect_output("random ffmpeg output\nno silence\n") == []
 
     def test_unmatched_start(self):
-        """silence_start without a following silence_end is ignored."""
+        """silence_start without a following silence_end is kept with end_ms=-1."""
         text = (
             "[silencedetect @ 0xa] silence_start: 10.0\n"
             "[silencedetect @ 0xa] silence_end: 11.0 | silence_duration: 1.0\n"
             "[silencedetect @ 0xa] silence_start: 1199.5\n"
         )
         ranges = _parse_silencedetect_output(text)
-        assert len(ranges) == 1
+        assert len(ranges) == 2
         assert ranges[0] == SilenceRange(start_ms=10000, end_ms=11000)
+        assert ranges[1] == SilenceRange(start_ms=1199500, end_ms=-1)
 
     def test_integer_values(self):
         text = (

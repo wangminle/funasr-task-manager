@@ -59,7 +59,11 @@ class CircuitBreaker:
 
     @property
     def state(self) -> CircuitState:
-        """Non-async read for metrics/display — uses a snapshot, no mutation."""
+        """Non-async snapshot for metrics/display.
+
+        Safe in single-threaded asyncio: no await points means no interleaving.
+        Does NOT mutate _state — callers needing transitions must use allow_request().
+        """
         if self._state == CircuitState.OPEN:
             elapsed = time.monotonic() - self._last_failure_time
             if elapsed >= self.recovery_timeout:
@@ -137,14 +141,21 @@ class CircuitBreakerRegistry:
         self._half_open_max_calls = half_open_max_calls
 
     def get(self, server_id: str) -> CircuitBreaker:
-        if server_id not in self._breakers:
-            self._breakers[server_id] = CircuitBreaker(
+        """Get or create a circuit breaker for a server.
+
+        Safe in single-threaded asyncio: dict operations with no await points
+        cannot interleave. Uses setdefault for atomic get-or-create.
+        """
+        cb = self._breakers.get(server_id)
+        if cb is None:
+            cb = CircuitBreaker(
                 server_id=server_id,
                 failure_threshold=self._failure_threshold,
                 recovery_timeout=self._recovery_timeout,
                 half_open_max_calls=self._half_open_max_calls,
             )
-        return self._breakers[server_id]
+            self._breakers[server_id] = cb
+        return cb
 
     def get_all_states(self) -> dict[str, str]:
         return {sid: cb.state for sid, cb in self._breakers.items()}

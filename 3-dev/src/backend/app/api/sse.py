@@ -10,6 +10,7 @@ duration of the long-lived connection. Instead it:
 
 import asyncio
 import json
+import time
 from datetime import datetime, timezone
 from collections.abc import AsyncGenerator
 
@@ -42,11 +43,16 @@ async def _progress_stream(
     request: Request | None = None,
 ) -> AsyncGenerator[str, None]:
     """Generate SSE events using per-poll ephemeral DB sessions."""
+    _MAX_STREAM_SECONDS = 3600
     last_status = None
     last_progress = -1.0
     keepalive_counter = 0
+    stream_start = time.monotonic()
 
     while True:
+        if time.monotonic() - stream_start > _MAX_STREAM_SECONDS:
+            yield _format_sse("timeout", {"message": "SSE stream max lifetime reached"})
+            return
         if request and await request.is_disconnected():
             logger.info("sse_client_disconnected", task_id=task_id)
             return

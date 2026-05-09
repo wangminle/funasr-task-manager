@@ -113,7 +113,12 @@ export async function deleteAllTasks(status = null) {
 }
 
 export async function getTaskResult(taskId, format = 'json') {
-  const { data } = await api.get(`/tasks/${taskId}/result`, { params: { format } })
+  const config = { params: { format } }
+  if (format !== 'json') {
+    config.responseType = 'text'
+    config.transformResponse = [(data) => data]
+  }
+  const { data } = await api.get(`/tasks/${taskId}/result`, config)
   return data
 }
 

@@ -68,10 +68,10 @@ class CleanupService:
         count = 0
         now = time.time()
         cutoff = now - max_age_seconds
-        for prefix_dir in base_dir.iterdir():
+        for prefix_dir in list(base_dir.iterdir()):
             if not prefix_dir.is_dir():
                 continue
-            for item_dir in prefix_dir.iterdir():
+            for item_dir in list(prefix_dir.iterdir()):
                 if not item_dir.is_dir():
                     continue
                 if active_ids and item_dir.name in active_ids:

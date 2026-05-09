@@ -7,6 +7,7 @@ Ported and aligned with funasr-client-python's protocol_adapter + simple_funasr_
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import ssl
 import time
@@ -165,7 +166,7 @@ class FunASRWebSocketAdapter(BaseAdapter):
             return True
 
         stamp_sents = data.get("stamp_sents")
-        if stamp_sents and isinstance(stamp_sents, list) and len(stamp_sents) > 0:
+        if mode == "offline" and stamp_sents and isinstance(stamp_sents, list) and len(stamp_sents) > 0:
             return True
 
         return False
@@ -208,6 +209,7 @@ class FunASRWebSocketAdapter(BaseAdapter):
         if audio_bytes is None:
             return ParsedResult(error=f"Failed to read audio file: {audio_path}")
 
+        profile = copy.deepcopy(profile)
         if profile.wav_format == "pcm" and detected_wav_format != "pcm":
             profile.wav_format = detected_wav_format
         if detected_sample_rate != profile.audio_fs and detected_wav_format == "pcm":

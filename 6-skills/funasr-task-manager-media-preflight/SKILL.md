@@ -7,6 +7,8 @@ description: >
   committing, or checking ffmpeg/ffprobe availability.
 ---
 
+> **适配项目版本**：V0.4.14-Build0353-20260509
+
 # 媒体文件预检查
 
 在提交转写任务前，对音视频文件做格式、元数据、转码需求和耗时预估的检查。
@@ -46,7 +48,7 @@ description: >
 
 ### CHECK 3：元数据提取
 
-- 检查 `ffprobe` 是否可用
+- 检查 `ffprobe` 是否可用（V0.4.14 改进：后端 `metadata.py` 已通过 `shutil.which("ffprobe")` 做预检，避免直接执行时抛异常）
   - 不可用 → 标记 `precise_metadata=false`，说明 ETA 只能估算
 - 调用 `ffprobe` 获取：
   - `duration`（时长，秒）

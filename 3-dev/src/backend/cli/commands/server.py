@@ -269,7 +269,7 @@ def probe(
             ["支持 offline", "✅" if result.get("supports_offline") else "-"],
             ["支持 2pass", "✅" if result.get("supports_2pass") else "-"],
             ["支持 online", "✅" if result.get("supports_online") else "-"],
-            ["探测耗时", f"{result.get('probe_duration_ms', 0):.0f}ms"],
+            ["探测耗时", f"{(result.get('probe_duration_ms') or 0):.0f}ms"],
         ],
     )
 

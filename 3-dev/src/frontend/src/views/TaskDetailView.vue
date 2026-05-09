@@ -211,8 +211,7 @@ function connectSSE() {
   if (eventSource) { eventSource.close(); eventSource = null }
 
   const apiKey = getApiKey()
-  const tokenParam = apiKey ? `?token=${encodeURIComponent(apiKey)}` : ''
-  const url = `/api/v1/tasks/${taskId.value}/progress${tokenParam}`
+  const url = `/api/v1/tasks/${taskId.value}/progress`
 
   sseAbortController = new AbortController()
 

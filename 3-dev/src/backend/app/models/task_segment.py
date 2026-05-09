@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from enum import StrEnum
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, SmallInteger, String, Text, func
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, SmallInteger, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -19,6 +19,9 @@ class SegmentStatus(StrEnum):
 
 class TaskSegment(Base):
     __tablename__ = "task_segments"
+    __table_args__ = (
+        UniqueConstraint("task_id", "segment_index", name="ix_task_segments_task_index"),
+    )
 
     segment_id: Mapped[str] = mapped_column(String(26), primary_key=True)
     task_id: Mapped[str] = mapped_column(

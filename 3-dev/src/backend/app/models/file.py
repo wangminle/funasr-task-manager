@@ -23,7 +23,7 @@ class File(Base, TimestampMixin):
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     storage_path: Mapped[str] = mapped_column(Text, nullable=False)
     checksum_sha256: Mapped[str | None] = mapped_column(String(64))
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="UPLOADED")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="UPLOADED", server_default="UPLOADED")
 
     tasks: Mapped[list["Task"]] = relationship(back_populates="file", lazy="selectin")  # type: ignore[name-defined]
 

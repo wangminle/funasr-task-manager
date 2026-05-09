@@ -20,10 +20,13 @@ FFMPEG_BIN: str | None = None
 FFPROBE_BIN: str | None = None
 _MAX_CONVERSION_LOCKS = 500
 _conversion_locks: dict[str, asyncio.Lock] = {}
-_locks_guard = asyncio.Lock()
+_locks_guard: asyncio.Lock | None = None
 
 
 async def _get_path_lock(key: str) -> asyncio.Lock:
+    global _locks_guard
+    if _locks_guard is None:
+        _locks_guard = asyncio.Lock()
     async with _locks_guard:
         if key not in _conversion_locks:
             if len(_conversion_locks) >= _MAX_CONVERSION_LOCKS:
@@ -35,6 +38,11 @@ async def _get_path_lock(key: str) -> asyncio.Lock:
 
 
 def _find_ffmpeg() -> str | None:
+    """Locate ffmpeg binary and cache the result.
+
+    Multiple concurrent calls may race on first invocation, but the result
+    is idempotent (same path), so no lock is needed.
+    """
     global FFMPEG_BIN
     if FFMPEG_BIN is not None:
         return FFMPEG_BIN
@@ -349,6 +357,12 @@ def _parse_silencedetect_output(stderr_text: str) -> list[SilenceRange]:
                 end_ms=int(end_sec * 1000),
             ))
             current_start = None
+
+    if current_start is not None:
+        ranges.append(SilenceRange(
+            start_ms=int(current_start * 1000),
+            end_ms=-1,
+        ))
 
     return ranges
 

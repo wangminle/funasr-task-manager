@@ -8,6 +8,8 @@ description: >
   sub-agent so the main agent can continue accepting new tasks.
 ---
 
+> **适配项目版本**：V0.4.14-Build0353-20260509
+
 # 批量转写进度监控（子 Agent 专用）
 
 `funasr-task-manager-batch-monitor` 是子 Agent 专用的监控播报规程。它绑定一个或多个 `task_group_id`，按固定间隔查询状态，套用固定模板通过 `send_user_notice()` 发送进度通知，直到全部任务完成或超时。

@@ -7,6 +7,8 @@ description: >
   or agent needs to proactively guide a user into the transcription pipeline.
 ---
 
+> **适配项目版本**：V0.4.14-Build0353-20260509
+
 # 音频入口与意图编排
 
 这是 funasr-task-manager Skill 体系中最核心的入口。它让 Agent 从"被动等命令"变成"看到文件后主动引导用户完成转写"。
@@ -311,7 +313,7 @@ curl -s -o "$WORK_DIR/{original_filename}" \
 - 判断单文件 / 批量任务
   - 1 个文件 → 单文件流程
   - 多个文件 → 批量流程，自动生成 `task_group_id`
-- 特殊参数（如有）：语言、热词列表、回调 URL
+- 特殊参数（如有）：语言、热词列表、回调 URL（需附带 HMAC secret）
 - 长音频切分：用户可选 `segment_level`（off/10m/20m/30m，默认 10m）
 - 如果用户说"默认就行" → 全部使用默认值
 
@@ -369,6 +371,24 @@ curl -s -o "$WORK_DIR/{original_filename}" \
 3. 不静默回退到明文流程，不假装已加密
 
 > 注意：用户实时转写链路中，如果服务器缺少 `rtf_baseline`，不应自动启动 benchmark 阻塞任务；应提示"性能基线未校准，将使用默认估算"，除非用户明确要求先校准。此时可引导用户进入 `funasr-task-manager-server-benchmark` 规程。
+
+## 安全默认值（V0.4.14）
+
+本 Skill 涉及 callback URL 提交和任务创建，以下安全机制已在 V0.4.14 中默认启用，Agent 在执行时应知晓：
+
+| 安全特性 | 默认值 | 说明 |
+|---------|--------|------|
+| **SSRF 保护** | `ssrf_protection_enabled = True` | 所有 callback URL 均经过 SSRF 校验，私有 IP/内网地址会被拒绝 |
+| **DNS Fail-Closed** | 默认启用 | DNS 解析失败时视为私有地址拒绝（防止 DNS Rebinding 攻击） |
+| **Callback HMAC** | 支持 `secret` 字段 | 任务创建时可附带 callback secret，回调时使用 `hmac.compare_digest` 做时间安全比较 |
+| **Webhook 请求体限制** | 1MB | Alertmanager webhook 请求体不得超过 1MB |
+| **敏感值脱敏** | 自动 | CLI 的 `config set` 对 API Key 等敏感值在回显时自动脱敏；日志中 token 长度 >= 20 字符的 `t-` 前缀串会被脱敏 |
+| **SSE 认证** | `X-API-Key` header | SSE 进度流不再通过 URL query 传递 token，改用请求头认证（query `?token=` 仍可用但已 deprecated） |
+
+**Agent 执行注意**：
+- 提交任务时带 callback URL 的，应同时设置 `callback.secret` 字段
+- 不要向内网/私有 IP 提交 callback URL（会被 SSRF 保护拦截）
+- CLI 配置敏感凭据后回显会自动脱敏，这是预期行为
 
 ## 错误处理规范
 

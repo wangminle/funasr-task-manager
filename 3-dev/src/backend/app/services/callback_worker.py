@@ -74,17 +74,22 @@ class CallbackOutboxWorker:
             records = list((await session.execute(stmt)).scalars().all())
             if not records:
                 return
-            for outbox in records:
-                task_stmt = select(Task.callback_secret).where(Task.task_id == outbox.task_id)
-                secret = (await session.execute(task_stmt)).scalar_one_or_none()
-                try:
+
+        delivered = 0
+        for outbox in records:
+            try:
+                async with async_session_factory() as session:
+                    session.add(outbox)
+                    task_stmt = select(Task.callback_secret).where(Task.task_id == outbox.task_id)
+                    secret = (await session.execute(task_stmt)).scalar_one_or_none()
                     await deliver_callback(outbox, secret=secret)
-                except Exception as e:
-                    logger.warning("callback_retry_error", outbox_id=outbox.outbox_id, error=str(e))
-            await session.commit()
-            delivered = sum(1 for r in records if r.status == OutboxStatus.SENT.value)
-            if delivered:
-                logger.info("callback_outbox_retry_batch", total=len(records), delivered=delivered)
+                    await session.commit()
+                    if outbox.status == OutboxStatus.SENT.value:
+                        delivered += 1
+            except Exception as e:
+                logger.warning("callback_retry_error", outbox_id=outbox.outbox_id, error=str(e))
+        if delivered:
+            logger.info("callback_outbox_retry_batch", total=len(records), delivered=delivered)
 
 
 callback_worker = CallbackOutboxWorker()

@@ -269,12 +269,15 @@ class BackgroundTaskRunner:
                              "proceeding with unsegmented whole-file transcription",
                     )
 
-            async with async_session_factory() as session:
-                repo = TaskRepository(session)
-                task = await repo.get_task(task_id)
-                if task and task.can_transition_to(TaskStatus.QUEUED):
-                    await repo.update_task_status(task, TaskStatus.QUEUED)
-                    await session.commit()
+            try:
+                async with async_session_factory() as session:
+                    repo = TaskRepository(session)
+                    task = await repo.get_task(task_id)
+                    if task and task.can_transition_to(TaskStatus.QUEUED):
+                        await repo.update_task_status(task, TaskStatus.QUEUED)
+                        await session.commit()
+            except Exception as e:
+                logger.warning("promote_task_failed", task_id=task_id, error=str(e))
 
         self._request_dispatch()
 
@@ -557,7 +560,10 @@ class BackgroundTaskRunner:
                         await session.refresh(parent_task, ["status"])
                         if parent_task.status == TaskStatus.QUEUED.value:
                             if parent_task.can_transition_to(TaskStatus.DISPATCHED):
+                                parent_task.assigned_server_id = decision.server_id
                                 await repo.update_task_status(parent_task, TaskStatus.DISPATCHED)
+                        elif not parent_task.assigned_server_id:
+                            parent_task.assigned_server_id = decision.server_id
                         to_start_segments.append(seg.segment_id)
                     else:
                         task = regular_tasks.get(decision.task_id)
@@ -604,7 +610,10 @@ class BackgroundTaskRunner:
                         await session.refresh(parent_task, ["status"])
                         if parent_task.status == TaskStatus.QUEUED.value:
                             if parent_task.can_transition_to(TaskStatus.DISPATCHED):
+                                parent_task.assigned_server_id = sid
                                 await repo.update_task_status(parent_task, TaskStatus.DISPATCHED)
+                        elif not parent_task.assigned_server_id:
+                            parent_task.assigned_server_id = sid
                         to_start_segments.append(seg.segment_id)
                     else:
                         task = regular_tasks.get(decision.task_id)
@@ -722,7 +731,7 @@ class BackgroundTaskRunner:
                     server_id=server.server_id,
                     audio_duration_sec=audio_duration,
                     actual_duration_sec=actual_sec,
-                    predicted_duration_sec=float(task.eta_seconds) if task.eta_seconds else None,
+                    predicted_duration_sec=float(task.eta_seconds) if task.eta_seconds is not None else None,
                 )
 
             raw = result.raw if isinstance(result.raw, dict) and result.raw else {}
@@ -789,7 +798,7 @@ class BackgroundTaskRunner:
             user_id = task.user_id
             await session.commit()
             logger.info("task_transcription_succeeded", task_id=task_id)
-            await rate_limiter.record_task_completed(user_id)
+        await rate_limiter.record_task_completed(user_id)
         if not any(sq.decisions for sq in self._slot_queues.values()):
             self._clear_slot_queues()
         self._request_dispatch()
@@ -817,8 +826,8 @@ class BackgroundTaskRunner:
             logger.warning("task_transcription_failed", task_id=task_id,
                            error=message[:300], terminal=is_terminal,
                            retry_count=task.retry_count)
-            if is_terminal:
-                await rate_limiter.record_task_completed(user_id)
+        if is_terminal:
+            await rate_limiter.record_task_completed(user_id)
         if not any(sq.decisions for sq in self._slot_queues.values()):
             self._clear_slot_queues()
         self._request_dispatch()
@@ -838,9 +847,14 @@ class BackgroundTaskRunner:
                 return
             segment, parent_task, server = info
 
-            if parent_task.status in (TaskStatus.CANCELED.value, TaskStatus.FAILED.value):
+            async with async_session_factory() as session:
+                repo = TaskRepository(session)
+                fresh_parent = await repo.get_task(parent_task.task_id)
+                parent_status = fresh_parent.status if fresh_parent else parent_task.status
+
+            if parent_status in (TaskStatus.CANCELED.value, TaskStatus.FAILED.value):
                 logger.info("segment_skipped_parent_terminal",
-                            segment_id=segment_id, parent_status=parent_task.status)
+                            segment_id=segment_id, parent_status=parent_status)
                 async with async_session_factory() as session:
                     seg_repo = SegmentRepository(session)
                     seg = await seg_repo.get_segment(segment_id)
@@ -849,7 +863,7 @@ class BackgroundTaskRunner:
                     ):
                         await seg_repo.update_segment_status(
                             seg, SegmentStatus.FAILED,
-                            error_message=f"Parent task {parent_task.status}",
+                            error_message=f"Parent task {parent_status}",
                         )
                         await session.commit()
                 return
@@ -1026,11 +1040,8 @@ class BackgroundTaskRunner:
             if segment is None:
                 return
 
-            await seg_repo.update_segment_status(
-                segment, SegmentStatus.FAILED, error_message=message,
-            )
-
             if segment.retry_count < settings.segment_max_retry_count:
+                segment.error_message = message[:2000]
                 await seg_repo.increment_retry(segment)
                 await session.commit()
                 logger.info("segment_retry_queued",

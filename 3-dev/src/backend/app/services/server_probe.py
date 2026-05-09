@@ -101,7 +101,7 @@ def _coerce_bool(value: Any) -> bool | None:
             return True
         if s in ("false", "0", "no", "n", "off", ""):
             return False
-        return True
+        return None
     return bool(value)
 
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,7 +26,10 @@ async def extract_metadata(file_path: str | Path) -> MediaMetadata:
     path = Path(file_path)
     if not path.exists():
         return MediaMetadata(error=f"File not found: {path}")
-    cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", str(path)]
+    ffprobe_bin = shutil.which("ffprobe")
+    if not ffprobe_bin:
+        return MediaMetadata(error="ffprobe not found. Install ffmpeg.")
+    cmd = [ffprobe_bin, "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", str(path)]
     try:
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)

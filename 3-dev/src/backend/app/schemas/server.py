@@ -2,7 +2,16 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+_PROTOCOL_ALIASES = {
+    "funasr-main": "v2_new",
+    "funasr-legacy": "v1_old",
+}
+
+
+def _normalize_protocol(v: str) -> str:
+    return _PROTOCOL_ALIASES.get(v, v)
 
 
 class ServerRegisterRequest(BaseModel):
@@ -15,6 +24,11 @@ class ServerRegisterRequest(BaseModel):
     labels: dict | None = None
     run_benchmark: bool = False
 
+    @field_validator("protocol_version")
+    @classmethod
+    def _normalize_pv(cls, v: str) -> str:
+        return _normalize_protocol(v)
+
 
 class ServerUpdateRequest(BaseModel):
     name: str | None = None
@@ -23,6 +37,11 @@ class ServerUpdateRequest(BaseModel):
     protocol_version: str | None = None
     max_concurrency: int | None = None
     labels: dict | None = None
+
+    @field_validator("protocol_version")
+    @classmethod
+    def _normalize_pv(cls, v: str | None) -> str | None:
+        return _normalize_protocol(v) if v else v
 
 
 class ServerResponse(BaseModel):

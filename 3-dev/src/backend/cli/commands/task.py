@@ -125,7 +125,7 @@ def list_tasks(
         c.output_format, data=data,
         title=title,
         columns=["task_id", "状态", "进度", "语言", "创建时间"],
-        rows=[[t["task_id"][:12] + "...", t["status"], f"{t['progress']*100:.0f}%",
+        rows=[[t["task_id"][:12] + "...", t["status"], f"{(t.get('progress') or 0)*100:.0f}%",
                t.get("language", ""), t.get("created_at", "")[:19]] for t in items],
         footer=f"共 {total} 条 · 第 {page} 页 · 每页 {page_size} 条",
     )

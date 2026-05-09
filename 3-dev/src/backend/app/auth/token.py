@@ -7,6 +7,8 @@ Security policy: auth is **disabled** only when explicitly configured so.
 In production, set ASR_AUTH_ENABLED=true and provide token mappings.
 """
 
+import threading
+
 from fastapi import HTTPException, Query, Security
 from fastapi.security import APIKeyHeader
 
@@ -19,6 +21,7 @@ api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 _TOKEN_USER_MAP: dict[str, str] = {}
 _AUTH_ENABLED = False
 _AUTH_INITIALIZED = False
+_INIT_LOCK = threading.Lock()
 
 
 def configure_auth(token_map: dict[str, str] | None = None, enabled: bool = True) -> None:
@@ -75,11 +78,16 @@ async def verify_token(
     When auth is disabled, returns 'default_user' for backward compatibility.
     """
     if not _AUTH_INITIALIZED:
-        init_auth_from_settings()
+        with _INIT_LOCK:
+            if not _AUTH_INITIALIZED:
+                init_auth_from_settings()
 
     if not _AUTH_ENABLED:
         return "default_user"
 
+    if token and not api_key:
+        logger.warning("auth_token_via_query_param",
+                        hint="Token via ?token= query param is deprecated; use X-API-Key header instead.")
     effective_key = api_key or token
     if effective_key is None:
         raise HTTPException(status_code=401, detail="Missing API key. Provide X-API-Key header or ?token= param.")

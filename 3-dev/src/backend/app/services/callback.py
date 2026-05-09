@@ -35,6 +35,14 @@ def _get_shared_client() -> httpx.AsyncClient:
     return _shared_client
 
 
+async def close_shared_client() -> None:
+    """Close the shared httpx client on app teardown."""
+    global _shared_client
+    if _shared_client is not None and not _shared_client.is_closed:
+        await _shared_client.aclose()
+        _shared_client = None
+
+
 def generate_hmac_signature(payload: str, secret: str) -> str:
     """Generate HMAC-SHA256 signature for webhook verification."""
     return hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
@@ -80,7 +88,7 @@ def create_outbox_record(
         event_id=event_id,
         callback_url=callback_url,
         payload_json=payload,
-        status=OutboxStatus.PENDING,
+        status=OutboxStatus.PENDING.value,
         retry_count=0,
     )
 

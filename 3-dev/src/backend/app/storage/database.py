@@ -43,7 +43,7 @@ def _sqlite_on_connect(dbapi_conn, connection_record):
     separate -wal/-shm files instead of creating/deleting a single
     rollback journal on every transaction.
     """
-    if not _is_sqlite:
+    if "sqlite" not in type(dbapi_conn).__module__:
         return
     cursor = dbapi_conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
@@ -59,7 +59,8 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     async with async_session_factory() as session:
         try:
             yield session
-            await session.commit()
+            if session.dirty or session.new or session.deleted:
+                await session.commit()
         except Exception:
             await session.rollback()
             raise

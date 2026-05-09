@@ -245,7 +245,7 @@ def _run_batch(c, files, language, hotwords, fmt, output_dir, callback,
                 tid = t["task_id"]
                 if tid in completed or tid not in task_id_set:
                     continue
-                is_terminal = t.get("is_terminal", t["status"] in ("SUCCEEDED", "CANCELED"))
+                is_terminal = t.get("is_terminal", t["status"] in ("SUCCEEDED", "FAILED", "CANCELED"))
                 if is_terminal:
                     completed[tid] = t
                     if not c.quiet:

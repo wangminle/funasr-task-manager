@@ -55,6 +55,29 @@ class RateLimiter:
             state.daily_reset_time = day_start
         return state
 
+    async def check_and_acquire_task_slots(self, user_id: str, count: int = 1) -> None:
+        """Atomically check limits and record task creation in a single lock acquisition."""
+        if not self._enabled:
+            return
+        async with self._lock:
+            state = self._get_state(user_id)
+            if state.daily_task_count + count > self.config.max_tasks_per_day:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Daily task limit would be exceeded: "
+                           f"{state.daily_task_count} used + {count} new > "
+                           f"{self.config.max_tasks_per_day} max",
+                )
+            if state.concurrent_tasks + count > self.config.max_concurrent_tasks:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Concurrent task limit would be exceeded: "
+                           f"{state.concurrent_tasks} existing + {count} new > "
+                           f"{self.config.max_concurrent_tasks} max",
+                )
+            state.concurrent_tasks += count
+            state.daily_task_count += count
+
     async def check_task_limits(self, user_id: str, count: int = 1) -> None:
         """Check both daily and concurrent limits in a single lock acquisition."""
         if not self._enabled:
@@ -139,14 +162,15 @@ class RateLimiter:
             state = self._get_state(user_id)
             state.concurrent_tasks = max(0, state.concurrent_tasks - 1)
 
-    def get_user_stats(self, user_id: str) -> dict:
-        state = self._get_state(user_id)
-        return {
-            "concurrent_tasks": state.concurrent_tasks,
-            "daily_task_count": state.daily_task_count,
-            "max_concurrent": self.config.max_concurrent_tasks,
-            "max_daily": self.config.max_tasks_per_day,
-        }
+    async def get_user_stats(self, user_id: str) -> dict:
+        async with self._lock:
+            state = self._get_state(user_id)
+            return {
+                "concurrent_tasks": state.concurrent_tasks,
+                "daily_task_count": state.daily_task_count,
+                "max_concurrent": self.config.max_concurrent_tasks,
+                "max_daily": self.config.max_tasks_per_day,
+            }
 
 
 rate_limiter = RateLimiter()

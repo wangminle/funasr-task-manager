@@ -9,6 +9,8 @@ description: >
   "reset db", "clean state", "wipe data".
 ---
 
+> **适配项目版本**：V0.4.14-Build0353-20260509
+
 # Reset ASR DB Before Test
 
 在这个仓库里，需要在测试前把后端 SQLite 数据库恢复到干净状态时使用本技能。

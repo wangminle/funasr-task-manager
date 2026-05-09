@@ -53,11 +53,20 @@
 - 使用带 bash 的沙箱环境
 - 命令在隔离容器中运行
 - 文件系统为仓库检出目录
+- Codex 支持 `spawn_agent` 能力，可用于启动子 Agent 执行 `batch-monitor` 监控播报
 
 ### 进度监控实现
 
-- Codex 在单次会话轮次内的循环能力有限
-- 建议：Layer 2，拆成显式的顺序命令
+**优先方式（有 `spawn_agent` 时）：**
+
+```
+1. 主 Agent: task-group scan → task-group submit
+2. 主 Agent: 通过 spawn_agent 启动子 Agent 执行 batch-monitor（传递 task_group_ids）
+3. 子 Agent: 循环 task-group status → 输出进度
+4. 子 Agent: 全部完成 → task-group download → 输出汇总 → 退出
+```
+
+**Fallback（无 `spawn_agent` 或子 Agent 启动失败时）：**
 
 ```
 1. 使用 `--no-wait --json-summary` 逐个 chunk 提交（每 chunk 一条命令）
@@ -181,7 +190,7 @@ python -m cli notify send --text "⏳ Phase 4：正在提交..."
 | 能力 | Claude Code | Codex | OpenClaw | Hermes |
 |------|------------|-------|----------|--------|
 | 后台执行 | ✅（block_until_ms: 0） | ❌ | ✅（background: true） | ✅ |
-| 子 Agent 并发 | ⚠️（受限） | ❌ | ✅（推荐） | ⚠️（待验证） |
+| 子 Agent 并发 | ⚠️（受限） | ✅（`spawn_agent`） | ✅（推荐） | ⚠️（待验证） |
 | 文件系统写入 | ✅ | ✅ | ✅ | ✅ |
 | Windows 支持 | ✅ | ❌ | ❌ | ❌ |
 | `send_user_notice()` | CLI fallback | CLI fallback | **message tool**（首选） | message tool / CLI |

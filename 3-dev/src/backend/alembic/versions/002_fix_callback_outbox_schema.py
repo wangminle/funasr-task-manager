@@ -89,6 +89,7 @@ def _upgrade_generic(conn) -> None:
             ), {"uid": new_id, "oid": old_id})
 
     op.alter_column("callback_outbox", "outbox_id", nullable=False)
+    op.drop_constraint("callback_outbox_pkey", "callback_outbox", type_="primary")
     op.drop_column("callback_outbox", "id")
     op.drop_column("callback_outbox", "signature")
     op.drop_column("callback_outbox", "updated_at")

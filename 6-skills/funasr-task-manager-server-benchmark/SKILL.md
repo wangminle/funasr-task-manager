@@ -8,6 +8,8 @@ description: >
   normal transcription — missing rtf_baseline should use default RTF.
 ---
 
+> **适配项目版本**：V0.4.14-Build0353-20260509
+
 # 服务器能力校准
 
 Benchmark 是调度准确性的基础设施。它写回三个关键字段，直接影响调度器的 ETA 预估和配额分配：

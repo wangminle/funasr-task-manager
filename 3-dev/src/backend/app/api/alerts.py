@@ -1,5 +1,6 @@
 """Alertmanager webhook receiver endpoint."""
 
+import hmac
 import os
 from typing import Any
 
@@ -13,6 +14,8 @@ router = APIRouter(prefix="/api/v1/internal", tags=["internal"])
 
 _ALERT_WEBHOOK_SECRET = os.environ.get("ASR_ALERT_WEBHOOK_SECRET", "")
 
+_MAX_WEBHOOK_BODY_BYTES = 1_048_576  # 1 MB
+
 
 @router.post("/alert-webhook")
 async def receive_alertmanager_webhook(request: Request) -> dict[str, Any]:
@@ -24,10 +27,15 @@ async def receive_alertmanager_webhook(request: Request) -> dict[str, Any]:
     """
     if _ALERT_WEBHOOK_SECRET:
         auth_header = request.headers.get("Authorization", "")
-        if auth_header != f"Bearer {_ALERT_WEBHOOK_SECRET}":
+        expected = f"Bearer {_ALERT_WEBHOOK_SECRET}"
+        if not hmac.compare_digest(auth_header, expected):
             raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
-    payload = await request.json()
+    body = await request.body()
+    if len(body) > _MAX_WEBHOOK_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Request body too large")
+    import json
+    payload = json.loads(body)
 
     status = payload.get("status", "unknown")
     alerts = payload.get("alerts", [])

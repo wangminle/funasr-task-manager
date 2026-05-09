@@ -17,7 +17,10 @@ def health(ctx: typer.Context):
 
     try:
         data = c.client.health()
-    except (APIError, Exception) as e:
+    except APIError as e:
+        out.error(f"健康检查失败: {e}")
+        raise typer.Exit(1)
+    except Exception as e:
         out.error(f"健康检查失败: {e}")
         raise typer.Exit(1)
 
@@ -79,7 +82,10 @@ def doctor(ctx: typer.Context):
 
     try:
         data = c.client.diagnostics()
-    except (APIError, Exception) as e:
+    except APIError as e:
+        out.error(f"诊断接口调用失败: {e}")
+        raise typer.Exit(1)
+    except Exception as e:
         out.error(f"诊断接口调用失败: {e}")
         raise typer.Exit(1)
 

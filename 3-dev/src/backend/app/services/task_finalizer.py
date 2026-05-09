@@ -28,9 +28,11 @@ class TaskFinalizer:
         self._background_tasks: set[asyncio.Task] = set()
 
     def _get_finalize_lock(self, task_id: str) -> asyncio.Lock:
-        if task_id not in self._finalize_locks:
-            self._finalize_locks[task_id] = asyncio.Lock()
-        return self._finalize_locks[task_id]
+        lock = self._finalize_locks.get(task_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._finalize_locks[task_id] = lock
+        return lock
 
     async def maybe_finalize(self, task_id: str) -> None:
         """Check whether all segments are done and merge results if so.
@@ -98,20 +100,21 @@ class TaskFinalizer:
             if task is None or task.status == TaskStatus.SUCCEEDED.value:
                 return
 
-        seg_inputs = [
-            SegmentInput(
-                segment_index=seg.segment_index,
-                source_start_ms=seg.source_start_ms,
-                keep_start_ms=seg.keep_start_ms,
-                keep_end_ms=seg.keep_end_ms,
-                raw_result_json=seg.raw_result_json or "{}",
-            )
-            for seg in segments
-        ]
+            seg_inputs = [
+                SegmentInput(
+                    segment_index=seg.segment_index,
+                    source_start_ms=seg.source_start_ms,
+                    keep_start_ms=seg.keep_start_ms,
+                    keep_end_ms=seg.keep_end_ms,
+                    raw_result_json=seg.raw_result_json or "{}",
+                )
+                for seg in segments
+            ]
+            segment_count = len(segments)
 
         merged_result, merge_status = merge_segment_results(seg_inputs)
         logger.info("segment_merge_complete", task_id=task_id,
-                    segments=len(segments), merge_status=merge_status,
+                    segments=segment_count, merge_status=merge_status,
                     text_length=len(merged_result.get("text", "")))
 
         await save_result(task_id, to_json(merged_result), "json")
@@ -139,7 +142,7 @@ class TaskFinalizer:
             user_id = task.user_id
             await session.commit()
             logger.info("segmented_task_succeeded", task_id=task_id,
-                        segments=len(segments), merge_status=merge_status)
+                        segments=segment_count, merge_status=merge_status)
             await rate_limiter.record_task_completed(user_id)
 
         if pending_delivery:

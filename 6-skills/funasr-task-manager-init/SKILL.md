@@ -7,6 +7,8 @@ description: >
   services for the first time.
 ---
 
+> **适配项目版本**：V0.4.14-Build0353-20260509
+
 # 环境初始化与启动
 
 `funasr-task-manager-init` 负责所有前期环境准备工作：检查仓库是否已克隆、判断后端/前端是否已启动、根据用户选择的环境方式完成安装并启动服务。

@@ -11,7 +11,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import delete as sql_delete, func, select
 
 from app.deps import CurrentUser, DbSession
-from app.models import File, Task, TaskEvent, TaskStatus
+from app.models import File, Task, TaskEvent, TaskSegment, TaskStatus
+from app.config import settings
 from app.storage.file_manager import read_result
 from app.observability.logging import get_logger
 
@@ -116,8 +117,9 @@ async def delete_task_group(group_id: str, db: DbSession, user_id: CurrentUser):
 
     deletable_where = [*base_where, Task.status.notin_([s.value for s in active])]
 
-    del_events_sub = select(Task.task_id).where(*deletable_where)
-    await db.execute(sql_delete(TaskEvent).where(TaskEvent.task_id.in_(del_events_sub)))
+    deletable_task_ids_sub = select(Task.task_id).where(*deletable_where)
+    await db.execute(sql_delete(TaskSegment).where(TaskSegment.task_id.in_(deletable_task_ids_sub)))
+    await db.execute(sql_delete(TaskEvent).where(TaskEvent.task_id.in_(deletable_task_ids_sub)))
 
     del_stmt = (
         sql_delete(Task)
@@ -141,12 +143,21 @@ async def delete_task_group(group_id: str, db: DbSession, user_id: CurrentUser):
     await db.commit()
 
     from app.storage.file_manager import delete_result as _del_result, delete_file as _del_file
+    import shutil
     cleaned_results = 0
     cleaned_files = 0
+    cleaned_segments = 0
     deleted_fids: set[str] = set()
     for row in deleted_rows:
         if await _del_result(row.task_id):
             cleaned_results += 1
+        seg_dir = settings.temp_dir / "segments" / row.task_id
+        if seg_dir.exists():
+            try:
+                shutil.rmtree(seg_dir)
+                cleaned_segments += 1
+            except OSError:
+                pass
         if row.file_id and row.file_id in orphaned and row.file_id not in deleted_fids:
             if await _del_file(row.file_id):
                 cleaned_files += 1

@@ -6,13 +6,16 @@
 ## 版本要求
 
 <!-- cli_min_version: 0.1.0 -->
+<!-- project_version: V0.4.14-Build0353-20260509 -->
 
 | 组件 | 当前版本 | 最低版本 | 说明 |
 |------|---------|---------|------|
+| 项目版本 | `V0.4.14-Build0353` | — | 含 57 项 bug 修复、迁移 005、安全/并发/前端修复 |
 | CLI (`python -m cli`) | `0.1.0` | `>= 0.1.0` | 需要 `notify` 子命令（含 `send`、`send-file`、`auth-check`）和 `--receive-id-type` 参数 |
 | Backend API | — | `>= 1.0.0` | 需要 `/health`、`/tasks`、`/task-groups` 端点 |
 | Python | — | `>= 3.11` | CLI 依赖 `match` 语法和 `asyncio` 特性；pyproject.toml 声明 `requires-python = ">=3.11"` |
-| ffprobe / ffmpeg | — | `>= 5.0` | 音视频预检和转码 |
+| ffprobe / ffmpeg | — | `>= 5.0` | 音视频预检和转码；V0.4.14 修复：`shutil.which("ffprobe")` 预检，避免未安装时抛异常 |
+| Alembic 迁移 | `005` | head | V0.4.14 新增 `005_fix_nullable_and_defaults.py`，修复 nullable/server_default 不一致 |
 
 > **版本检查时机**：`funasr-task-manager-init` Phase 7.5 会自动检查 CLI 版本一致性。若版本不满足，Agent 应提示用户重新执行部署同步。
 
@@ -213,6 +216,16 @@ init → local-batch-transcribe（主 Agent）
 - `reset-test-db` — 重置本地测试环境
 - `web-e2e` — 浏览器端到端测试
 
+### V0.4.14 安全默认值
+
+| 安全特性 | 默认值 | 影响 |
+|---------|--------|------|
+| SSRF 保护 | `ssrf_protection_enabled = True` | callback URL 校验私有 IP |
+| DNS Fail-Closed | 启用 | DNS 解析失败 → 视为私有地址拒绝 |
+| Callback HMAC | 支持 | `hmac.compare_digest` 时间安全比较 |
+| SSE 认证 | `X-API-Key` header | query `?token=` deprecated，改用请求头 |
+| 敏感值脱敏 | 自动 | CLI/日志中自动脱敏 API Key 等 |
+
 ### 常见问题速查
 
 | 问题 | 原因 | 解决 |
@@ -222,3 +235,4 @@ init → local-batch-transcribe（主 Agent）
 | ffprobe 格式不识别 | 文件损坏或非音视频 | media-preflight 会拒绝 |
 | 数据库迁移失败 | alembic 版本不一致 | `alembic downgrade base && upgrade head` |
 | systemd 服务启动失败 | Python 路径无 uvicorn | 检查 service 文件中的 ExecStart 路径 |
+| callback URL 被拒绝 | SSRF 保护（V0.4.14 默认开启） | 确认 callback 指向公网地址 |

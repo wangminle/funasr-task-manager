@@ -2,6 +2,8 @@
 
 > **唯一事实源**：各 skill 的 `references/project-context.md` 应 symlink 或引用此文件。
 > 仅在此处维护，避免多处同步。
+>
+> **适配项目版本**：V0.4.14-Build0353-20260509（Alembic 迁移至 005）
 
 ## 关键路径
 
@@ -67,3 +69,20 @@ PENDING → PREPROCESSING → QUEUED → DISPATCHED → TRANSCRIBING → SUCCEED
 
 不转码：`.wav`、`.pcm`（直接发送给 FunASR）
 需转码：其他格式（ffmpeg 转为 16kHz 单声道 WAV）
+
+### 安全默认值（V0.4.14）
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `ssrf_protection_enabled` | `True` | callback URL SSRF 校验（私有 IP 拒绝） |
+| DNS Fail-Closed | 启用 | DNS 解析失败视为私有地址 |
+| `callback.secret` | 可选 | HMAC 时间安全比较 |
+| SSE 认证 | `X-API-Key` header | `?token=` query deprecated |
+| Webhook 请求体限制 | 1MB | Alertmanager webhook |
+| 敏感值脱敏 | 自动 | CLI `config set` 回显 / 日志中长 token 脱敏 |
+
+### 数据库迁移
+
+当前迁移链：`001` → `002` → `003` → `004` → `005`（head）
+
+- `005_fix_nullable_and_defaults.py`：修复 `task_events.from_status` nullable、`server_instances.status` server_default、多表 `updated_at` nullable 不一致

@@ -235,7 +235,7 @@ def _redact_sensitive(value: str) -> str:
     """Remove tokens and configured secrets before writing diagnostic logs."""
     redacted = re.sub(r"Bearer\s+[A-Za-z0-9._-]+", f"Bearer {REDACTED}", value)
     redacted = re.sub(r"(tenant_access_token[=:]\s*)[A-Za-z0-9._-]+", rf"\1{REDACTED}", redacted)
-    redacted = re.sub(r"\bt-[A-Za-z0-9._-]+", REDACTED, redacted)
+    redacted = re.sub(r"\bt-[A-Za-z0-9._-]{20,}", REDACTED, redacted)
 
     known_secrets = {
         os.environ.get("FEISHU_APP_SECRET"),
@@ -251,7 +251,7 @@ def _log_failure(text_preview: str, error: str) -> None:
     """Append failure to log file (keep last MAX_FAILURE_LOG_LINES)."""
     safe_error = _redact_sensitive(error)
     safe_preview = _redact_sensitive(text_preview)[:80]
-    entry = f"[{datetime.datetime.now().isoformat()}] {safe_error} | text={safe_preview}\n"
+    entry = f"[{datetime.datetime.now(datetime.timezone.utc).isoformat()}] {safe_error} | text={safe_preview}\n"
     try:
         lines: list[str] = []
         if FAILURE_LOG_PATH.exists():
@@ -330,27 +330,16 @@ def _do_send(
         _soft_fail("飞书 token 获取失败，检查 app_id/app_secret 是否正确", strict)
         return
 
-    import time
-    result: dict = {}
-    code = -1
-    for attempt in range(2):
-        result = _send_text_message(token, chat_id, text, reply_to, receive_id_type)
-        code = result.get("code", -1)
+    def _send_fn(t: str) -> dict:
+        return _send_text_message(t, chat_id, text, reply_to, receive_id_type)
 
-        if code == 0:
-            message_id = result.get("data", {}).get("message_id", "")
-            print(f"message_id={message_id}")
-            return
+    result, token = _with_retry(_send_fn, token, app_id, app_secret)
+    code = result.get("code", -1)
 
-        if code == 99991668 and attempt == 0:
-            token = _fetch_token(app_id, app_secret)
-            if not token:
-                break
-            continue
-
-        if attempt == 0:
-            time.sleep(1)
-            continue
+    if code == 0:
+        message_id = result.get("data", {}).get("message_id", "")
+        print(f"message_id={message_id}")
+        return
 
     error_msg = result.get("msg", "unknown error")
     msg = f"通知发送失败: code={code}, msg={error_msg}"

@@ -54,8 +54,8 @@ async def diagnostics(db: DbSession, admin: AdminUser) -> dict:
     from app.services.diagnostics import run_full_diagnostics
     report = await run_full_diagnostics(db)
     data = report.to_dict()
-    data["database_type"] = "PostgreSQL" if "postgresql" in settings.database_url else "SQLite"
-    data["auth_enabled"] = settings.auth_enabled
+    data["database_type"] = "relational"
+    data["auth_enabled"] = bool(settings.auth_enabled)
     return data
 
 
