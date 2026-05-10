@@ -36,12 +36,20 @@ class ServerUpdateRequest(BaseModel):
     port: int | None = None
     protocol_version: str | None = None
     max_concurrency: int | None = None
+    enabled: bool | None = None
     labels: dict | None = None
 
     @field_validator("protocol_version")
     @classmethod
     def _normalize_pv(cls, v: str | None) -> str | None:
         return _normalize_protocol(v) if v else v
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _reject_null_enabled(cls, v: bool | None) -> bool:
+        if v is None:
+            raise ValueError("enabled cannot be null; omit the field or use true/false")
+        return v
 
 
 class ServerResponse(BaseModel):
@@ -58,6 +66,7 @@ class ServerResponse(BaseModel):
     benchmark_concurrency: int | None = None
     penalty_factor: float = 0.1
     status: str
+    enabled: bool = True
     last_heartbeat: datetime | None = None
 
     model_config = {"from_attributes": True}

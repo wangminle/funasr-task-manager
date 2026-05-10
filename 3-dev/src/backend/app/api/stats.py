@@ -81,7 +81,7 @@ async def get_system_stats(
     today_failed = row.today_failed
     finished_24h = row.finished_24h
     succeeded_24h = row.succeeded_24h
-    success_rate = (succeeded_24h / finished_24h * 100) if finished_24h > 0 else None
+    success_rate = (succeeded_24h / finished_24h * 100) if finished_24h > 0 else 0.0
 
     online_servers = [s for s in servers if s.status == ServerStatus.ONLINE and s.rtf_baseline]
     avg_rtf = (
@@ -98,5 +98,5 @@ async def get_system_stats(
         tasks_today_completed=today_completed,
         tasks_today_failed=today_failed,
         success_rate_24h=round(success_rate, 1),
-        avg_rtf=round(avg_rtf, 3) if avg_rtf else None,
+        avg_rtf=round(avg_rtf, 3) if avg_rtf is not None else None,
     )

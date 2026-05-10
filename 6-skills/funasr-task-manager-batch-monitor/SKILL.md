@@ -50,11 +50,12 @@ description: >
 | 字段 | 类型 | 必需 | 说明 |
 |------|------|------|------|
 | `chat_id` | string | 条件 | 目标群聊 ID（`oc_xxx`），群聊场景必须；私聊时可省略 |
-| `open_id` | string | 条件 | 用户 Open ID（`ou_xxx`），私聊场景必须；群聊时可省略（但仍用于 @ 揦及） |
+| `open_id` | string | 条件 | 用户 Open ID（`ou_xxx`），私聊场景必须；群聊时可省略（但仍用于 @ 提及） |
 | `message_id` | string | 否 | 原始触发消息 ID（`om_xxx`），用于回复线程 |
 | `reply_to_id` | string | 否 | 回复目标消息 ID，优先回复此线程 |
 | `sender_id` | string | 否 | 触发用户的 Open ID（`ou_xxx`），用于 @ 提及 |
 | `is_group_chat` | bool | 是 | `true` = 群聊，`false` = 私聊 |
+| `prefer_cli_notify` | bool | 否 | `true` = 主 Agent 已检测到 `message` tool 路由异常，建议子 Agent 直接使用 CLI notify |
 
 #### `notification_policy`（必需）
 
@@ -132,7 +133,7 @@ description: >
 
 ## 核心执行流程
 
-### Step 0：工具权限自检 + 参数校验
+### Step 0：工具权限自检 + 路由验证 + 参数校验
 
 #### 0a. 通知工具权限自检（强制，最先执行）
 
@@ -148,16 +149,30 @@ cd 3-dev/src/backend && python -m cli notify --help > /dev/null 2>&1
 python -m cli notify auth-check --channel feishu
 ```
 
-3. **判定结果**：
+3. **检查 `prefer_cli_notify` 提示**：如果 `notification_context.prefer_cli_notify == true`，说明主 Agent 已检测到 `message` tool 路由异常，子 Agent 应直接跳过 `message` tool，锁定使用 CLI notify。
 
-| `message` tool | `cli notify` | 结论 |
-|:-:|:-:|------|
-| ✅ | ✅ | 优先用 `message`，`cli notify` 备用。继续执行。|
-| ✅ | ❌ | 仅用 `message`。继续执行。|
-| ❌ | ✅ | 仅用 `cli notify`。继续执行。|
-| ❌ | ❌ | **立即报告失败退出**。通过 `completion announce` 报告："消息工具不可用，无法执行监控播报"。|
+4. **判定结果**：
 
-4. 记录自检结果：`adapter = "message" | "cli-notify"`。
+| `message` tool | `cli notify` | `prefer_cli_notify` | 结论 |
+|:-:|:-:|:-:|------|
+| ✅ | ✅ | false | 优先用 `message`（Step 1 ack 时做路由验证），`cli notify` 备用。|
+| ✅ | ✅ | true | **直接锁定 `cli notify`**，跳过 `message` tool。|
+| ✅ | ❌ | — | 仅用 `message`（ack 时做路由验证）。|
+| ❌ | ✅ | — | 仅用 `cli notify`。|
+| ❌ | ❌ | — | **立即报告失败退出**。|
+
+5. 记录自检结果：`adapter = "message" | "cli-notify"`，`route_locked_to_cli = prefer_cli_notify`。
+
+#### 0a-2. 路由验证（ack 消息兼做路由探针）
+
+如果选定 `message` tool 且未锁定到 CLI：
+
+1. Step 1 的 ack 通知即为路由验证探针
+2. 发送 ack 后检查返回的 `chatId` 是否与 `notification_context` 中的预期目标一致
+3. **不匹配**：标记 `route_locked_to_cli = true`，通过 CLI notify 向正确目标重发 ack 消息，后续全部走 CLI
+4. **匹配**：继续使用 `message` tool
+
+验证规则详见 `NOTICE-PRIMITIVE.md` §路由验证机制。
 
 #### 0b. 参数校验
 

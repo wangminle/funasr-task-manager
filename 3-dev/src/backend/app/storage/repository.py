@@ -113,6 +113,7 @@ class ServerRepository:
                 "host": s.host,
                 "port": s.port,
                 "status": s.status,
+                "enabled": s.enabled,
                 "last_heartbeat": s.last_heartbeat,
             }
             for s in servers

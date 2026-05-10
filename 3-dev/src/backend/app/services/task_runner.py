@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update as sql_update
 from sqlalchemy.orm import selectinload
 
 from app.adapters.base import MessageProfile
@@ -218,13 +219,18 @@ class BackgroundTaskRunner:
 
     async def _promote_preprocessing_tasks(self) -> None:
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.preprocessing_delay_seconds)
+        claim_time = datetime.now(timezone.utc)
 
         candidates: list[tuple[str, float, str, str | None]] = []
         async with async_session_factory() as session:
             stmt = (
                 select(Task)
                 .options(selectinload(Task.file))
-                .where(Task.status == TaskStatus.PREPROCESSING, Task.created_at <= cutoff)
+                .where(
+                    Task.status == TaskStatus.PREPROCESSING,
+                    Task.created_at <= cutoff,
+                    Task.started_at.is_(None),
+                )
                 .order_by(Task.created_at.asc())
                 .limit(100)
             )
@@ -234,6 +240,21 @@ class BackgroundTaskRunner:
             for task in tasks:
                 if not task.can_transition_to(TaskStatus.QUEUED):
                     continue
+                # Atomic claim via started_at (no FK constraint, unlike
+                # assigned_server_id).  Other runners see started_at IS NOT
+                # NULL and skip the task.
+                claim_result = await session.execute(
+                    sql_update(Task)
+                    .where(
+                        Task.task_id == task.task_id,
+                        Task.status == TaskStatus.PREPROCESSING,
+                        Task.started_at.is_(None),
+                    )
+                    .values(started_at=claim_time)
+                )
+                if claim_result.rowcount != 1:
+                    continue
+                await session.commit()
                 duration_sec = task.file.duration_sec if task.file and task.file.duration_sec else 0
                 audio_path = task.file.storage_path if task.file else ""
                 candidates.append((task.task_id, duration_sec or 0, audio_path, task.options_json))
@@ -274,6 +295,7 @@ class BackgroundTaskRunner:
                     repo = TaskRepository(session)
                     task = await repo.get_task(task_id)
                     if task and task.can_transition_to(TaskStatus.QUEUED):
+                        task.started_at = None
                         await repo.update_task_status(task, TaskStatus.QUEUED)
                         await session.commit()
             except Exception as e:
@@ -290,10 +312,13 @@ class BackgroundTaskRunner:
         segment records uses a short dedicated session with an idempotency
         guard to handle runner restarts safely.
 
-        On failure, any intermediate files (canonical WAV, partial segments)
-        are cleaned up to avoid disk leaks.
+        On failure, only the worker-specific temp directory is cleaned up;
+        the published segment directory is never removed if DB records
+        already reference it.
         """
         import shutil
+        from pathlib import Path
+        from sqlalchemy.exc import IntegrityError
         from ulid import ULID
 
         async with async_session_factory() as session:
@@ -304,6 +329,7 @@ class BackgroundTaskRunner:
                 return
 
         output_dir_path = settings.temp_dir / "segments" / task_id
+        tmp_dir = settings.temp_dir / "segments" / f"{task_id}.tmp-{os.getpid()}"
         canonical_path: str | None = None
         try:
             canonical_path = await ensure_canonical_wav(audio_path)
@@ -324,8 +350,17 @@ class BackgroundTaskRunner:
                 return
 
             segment_paths = await split_wav_segments(
-                canonical_path, plans, str(output_dir_path), task_id,
+                canonical_path, plans, str(tmp_dir), task_id,
             )
+
+            if output_dir_path.exists():
+                # Stale directory from a previous attempt whose DB write
+                # failed.  Replace it with the fresh split results.
+                shutil.rmtree(output_dir_path)
+            Path(tmp_dir).rename(output_dir_path)
+            final_paths = [
+                str(output_dir_path / Path(p).name) for p in segment_paths
+            ]
 
             async with async_session_factory() as session:
                 seg_repo = SegmentRepository(session)
@@ -343,17 +378,26 @@ class BackgroundTaskRunner:
                         storage_path=path,
                         status=SegmentStatus.PENDING,
                     )
-                    for plan, path in zip(plans, segment_paths)
+                    for plan, path in zip(plans, final_paths)
                 ]
-                await seg_repo.create_segments(segments)
-                await session.commit()
+                try:
+                    await seg_repo.create_segments(segments)
+                    await session.commit()
+                except IntegrityError:
+                    await session.rollback()
+                    existing = await seg_repo.list_segments_by_task(task_id)
+                    if existing:
+                        logger.info("segments_already_exist_after_race",
+                                    task_id=task_id, count=len(existing))
+                        return
+                    raise
 
             logger.info("segments_created", task_id=task_id, count=len(plans),
                          duration_ms=duration_ms, silence_ranges=len(silence_ranges))
         except Exception:
-            if output_dir_path.exists():
+            if tmp_dir.exists():
                 try:
-                    shutil.rmtree(output_dir_path)
+                    shutil.rmtree(tmp_dir)
                 except OSError:
                     pass
             raise
@@ -365,7 +409,10 @@ class BackgroundTaskRunner:
 
             servers_stmt = (
                 select(ServerInstance)
-                .where(ServerInstance.status == "ONLINE")
+                .where(
+                    ServerInstance.status == "ONLINE",
+                    ServerInstance.enabled.is_(True),
+                )
                 .order_by(ServerInstance.server_id.asc())
             )
             servers = list((await session.execute(servers_stmt)).scalars().all())
@@ -411,16 +458,34 @@ class BackgroundTaskRunner:
             if not all_candidate_tasks:
                 return
 
+            # Find parent task IDs that have active segments — these parents
+            # are logical containers and should NOT count toward server slots.
+            active_seg_parent_stmt = (
+                select(TaskSegment.task_id)
+                .where(TaskSegment.status.in_([
+                    SegmentStatus.DISPATCHED, SegmentStatus.TRANSCRIBING,
+                ]))
+                .distinct()
+            )
+            active_seg_parent_ids: set[str] = set(
+                (await session.execute(active_seg_parent_stmt)).scalars().all()
+            )
+
+            task_count_where = [
+                Task.status.in_([TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING]),
+            ]
+            if active_seg_parent_ids:
+                task_count_where.append(Task.task_id.not_in(active_seg_parent_ids))
+
             count_stmt = (
                 select(Task.assigned_server_id, func.count())
-                .where(Task.status.in_([TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING]))
+                .where(*task_count_where)
                 .group_by(Task.assigned_server_id)
             )
             running_count: dict[str, int] = dict(
                 (await session.execute(count_stmt)).all()
             )
 
-            # Also count in-flight segments assigned to each server
             seg_server_count_stmt = (
                 select(TaskSegment.assigned_server_id, func.count())
                 .where(TaskSegment.status.in_([
@@ -795,9 +860,17 @@ class BackgroundTaskRunner:
                 outbox = await self._callback_worker.enqueue(session, task, event.event_id, TaskStatus.SUCCEEDED)
                 if outbox is not None:
                     pending_delivery = (outbox.outbox_id, task.callback_secret)
+                logger.info("task_transcription_succeeded", task_id=task_id)
+            else:
+                logger.warning(
+                    "task_succeeded_but_transition_blocked",
+                    task_id=task_id,
+                    current_status=task.status,
+                    hint="Status was likely reset by a concurrent restart; "
+                         "transcription completed but state cannot advance to SUCCEEDED",
+                )
             user_id = task.user_id
             await session.commit()
-            logger.info("task_transcription_succeeded", task_id=task_id)
         await rate_limiter.record_task_completed(user_id)
         if not any(sq.decisions for sq in self._slot_queues.values()):
             self._clear_slot_queues()

@@ -67,6 +67,8 @@ else:
 | 私聊发消息 | `send --receive-id-type open_id --chat-id ou_xxx` |
 | 私聊发文件 | `send-file --file path --receive-id-type open_id --chat-id ou_xxx` |
 
+**⚠ 显式路由强制规则**：CLI notify 调用**必须始终携带显式 `--chat-id` 和 `--receive-id-type`**，禁止依赖环境变量（`FEISHU_CHAT_ID`）或配置文件（`notify.default_chat_id`）中的默认值。默认值可能残留上一个 session 的目标，导致消息发到错误会话。
+
 ---
 
 ## `send_user_notice()` 适配器选择
@@ -74,10 +76,12 @@ else:
 按以下优先级选择实现方式。**只使用第一个可用的方式，成功后不再 fallback。**
 
 ```
-优先级 1：平台原生 message tool（OpenClaw / Hermes）
-优先级 2：CLI notify 命令（python -m cli notify send）
+优先级 1：平台原生 message tool（OpenClaw / Hermes）— 需通过路由验证
+优先级 2：CLI notify 命令（python -m cli notify send）— 必须携带显式路由参数
 优先级 3：普通 assistant 文本（仅当确认运行在纯本地终端时）
 ```
+
+> **路由验证**：`message` tool 无法指定投递目标，路由由平台上下文决定。平台上下文在 session 切换时可能存在传播延迟，导致消息投递到上一个 session 的会话。因此每条通过 `message` tool 发出的通知**必须验证返回的 `chatId`**。验证机制详见 `NOTICE-PRIMITIVE.md` §路由验证机制。
 
 ### 优先级 1：OpenClaw / Hermes `message` tool
 
@@ -231,13 +235,14 @@ python -m cli notify send-file --file /tmp/funasr-task-manager/results/会议录
 
 ### 子 Agent 特殊规则
 
-1. **子 Agent 必须通过 `send_user_notice()` 发送所有通知**，与主 Agent 使用相同的适配器选择逻辑。
+1. **子 Agent 必须通过 `send_user_notice()` 发送所有通知**，与主 Agent 使用相同的适配器选择和路由验证逻辑。
 2. **子 Agent 不输出对话内容**——所有输出仅限于固定模板通知，不做闲聊或自由文本生成。
 3. **子 Agent 的通知必须包含批次标识**（如 `batch_id`），以便用户区分不同批次的通知（群聊必须，私聊可省略）。
 4. **多个子 Agent 并发时**，各自独立发送通知，通知内容通过 batch_id / group_id 区分。
 5. **子 Agent 退出前必须发送一条完成或异常汇总通知**，不可静默退出。
 6. **OpenClaw completion announce 只作最终兜底**，不承担中间进度播报。批量进度必须由子 Agent 执行中主动调用 `message` tool 或 `cli notify` 发送。
 7. **子 Agent 没有消息工具时不启动监控播报**——如果子 Agent 启动后发现 `message` tool 和 `cli notify` 都不可用，应立即报告失败并退出，由主 Agent fallback 到自行轮询。
+8. **子 Agent 必须独立执行路由验证**——子 Agent 的 `message` tool 上下文可能与主 Agent 不同。子 Agent 首条通知（ack）发出后必须验证 `chatId`，不匹配时立即锁定到 CLI notify 并使用主 Agent 传递的 `notification_context` 中的显式路由参数。
 
 ### 主 Agent 与子 Agent 的通知分工
 

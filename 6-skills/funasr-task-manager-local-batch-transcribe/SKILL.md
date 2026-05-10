@@ -77,13 +77,17 @@ python -m cli notify send --text "我将扫描 runtime/agent-local-batch/inbox/ 
 
 ### Phase 0：运行上下文检查
 
-**0a. 通知能力预检（强制）**
+**0a. 通知能力预检 + 路由验证（强制）**
 
-在进入业务逻辑前，先检测通知能力：
+在进入业务逻辑前，先检测通知能力并验证路由：
 
 1. 检查 `message` tool 是否在工具列表中。
 2. 执行 `python -m cli notify auth-check --channel feishu`，检查退出码。
 3. 从 runtime context 提取 `notification_context`（`chat_id`、`open_id`、`is_group_chat` 等）。
+4. **路由验证（首条通知）**：Phase 1 启动通知即为路由验证探针。发送后检查 `message` tool 返回的 `chatId`：
+   - 匹配预期目标 → 继续使用 `message` tool
+   - 不匹配 → 立即标记 `route_locked_to_cli = true`，通过 CLI notify 携带显式路由参数向正确目标重发同一条消息，后续全部走 CLI
+   - 验证规则详见 `NOTICE-PRIMITIVE.md` §路由验证机制
 
 预检输出：
 
@@ -94,10 +98,13 @@ notification_precheck:
   is_group_chat: true/false
   adapter_priority: ["message", "cli_notify"] / ["cli_notify"] / ["assistant_text"]
   notice_capable: true/false
+  route_locked_to_cli: false              # 首条通知后可能变为 true
+  expected_chat_id: oc_xxx / ou_xxx       # 用于路由验证的预期目标
 ```
 
 - 两者都不可用时：继续执行业务，但最终报告标注"⚠ 实时通知不可用"。
 - 子 Agent 委托决策：如果 `notice_capable == false`，Phase 5 不启动子 Agent 监控播报，主 Agent 自行轮询。
+- **路由锁定传递**：如果主 Agent 的路由验证触发了 CLI 锁定，Phase 5 委托子 Agent 时应在 `notification_context` 中额外传递 `prefer_cli_notify: true`，提示子 Agent 跳过 `message` tool 直接使用 CLI。
 
 **0b. 仓库与后端检查**
 

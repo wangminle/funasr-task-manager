@@ -2,11 +2,11 @@
 
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import update
+from sqlalchemy import or_, update
 
 from app.config import settings
 from app.models import Task, TaskStatus
@@ -99,21 +99,45 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _schema_ok = False
 
     async with async_session_factory() as session:
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
         result = await session.execute(
             update(Task)
-            .where(Task.status.in_([TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING]))
+            .where(
+                Task.status.in_([TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING]),
+                or_(Task.started_at < stale_cutoff, Task.started_at.is_(None)),
+            )
             .values(status=TaskStatus.QUEUED, assigned_server_id=None, started_at=None)
         )
         stale_count = result.rowcount
         if stale_count > 0:
-            await session.commit()
             logger.warning(
                 "reset_stale_tasks",
                 count=stale_count,
-                hint="Tasks in DISPATCHED/TRANSCRIBING reset to QUEUED after restart",
+                stale_cutoff_minutes=10,
+                hint="Tasks in DISPATCHED/TRANSCRIBING reset to QUEUED: "
+                     "either started_at older than 10 minutes or never started (NULL)",
             )
-        else:
-            await session.commit()
+
+        # Release PREPROCESSING tasks whose claim (started_at != NULL) was
+        # orphaned by a previous crash — the preprocessor coroutine is gone.
+        prep_result = await session.execute(
+            update(Task)
+            .where(
+                Task.status == TaskStatus.PREPROCESSING,
+                Task.started_at.is_not(None),
+            )
+            .values(started_at=None)
+        )
+        prep_count = prep_result.rowcount
+        if prep_count > 0:
+            logger.warning(
+                "reset_orphaned_preprocessing_claims",
+                count=prep_count,
+                hint="PREPROCESSING tasks with orphaned claim (started_at) "
+                     "have been released for re-processing",
+            )
+
+        await session.commit()
 
     await heartbeat_service.start(_get_servers_for_heartbeat, _update_server_status)
 

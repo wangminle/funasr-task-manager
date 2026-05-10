@@ -162,6 +162,8 @@ Agent 体系有两条主要入口：
 2. CLI fallback：`python -m cli notify send --text "..."` 或 `python -m cli notify send-file --file result.txt`
 3. 普通 assistant 文本：仅限用户能直接看到实时输出的纯本地终端场景
 
+**路由验证**：`message` tool 无法指定投递目标，平台上下文在 session 切换时可能滞后。因此每条通知发出后都会验证返回的 `chatId` 是否匹配预期目标（群聊精确匹配 `chat_id`；私聊排除 `oc_` 前缀）。验证失败时自动锁定到 CLI notify 并使用显式路由参数重发，确保"从哪来回哪去"。详见 [通知原语规范](6-skills/_shared/NOTICE-PRIMITIVE.md)。
+
 `notify` CLI 当前支持飞书/Lark 文本通知、话题回复、文件附件、token 缓存、soft-fail / `--strict` 模式。详见下方 [notify — 渠道实时通知（飞书）](#notify--渠道实时通知飞书)。
 
 ### 安装 Skills 到 Agent 平台
@@ -598,8 +600,8 @@ python -m cli doctor
 ├─────────────────────┬──────┬────────────────────────┤
 │ 检查项              │ 状态 │ 说明                    │
 ├─────────────────────┼──────┼────────────────────────┤
-│ database_schema     │  ✅  │ version 004            │
-│ alembic_version     │  ✅  │ 004_task_segments      │
+│ database_schema     │  ✅  │ version 005            │
+│ alembic_version     │  ✅  │ 005_fix_nullable_defaults │
 │ ffprobe             │  ⚠️  │ not found              │
 │ upload_dir          │  ✅  │ runtime/storage/uploads writable │
 │ asr_servers         │  ✅  │ 2/2 online             │
@@ -686,7 +688,7 @@ python -m cli config set api_key dev-token-user1
 CLI 会在输出和 JSON 摘要中列出失败的文件（`upload_failures` 字段），并以非零退出码（exit 1）退出。已成功上传的文件仍会正常转写，不会因为部分失败而全部放弃。
 
 **Q: 从旧版本数据库升级需要注意什么？**
-运行 `alembic upgrade head`。迁移 `002_fix_callback_outbox_schema` 会自动为已有记录回填 `outbox_id`（ULID）；`003_add_throughput_rtf` 会为 `server_instances` 表新增 `throughput_rtf` 和 `benchmark_concurrency` 列（nullable），已有服务器首次 benchmark 后自动填充；`004_create_task_segments` 会创建 `task_segments` 表，用于 VAD 分段并行转写的段级调度和状态跟踪。
+运行 `alembic upgrade head`。迁移 `002_fix_callback_outbox_schema` 会自动为已有记录回填 `outbox_id`（ULID）；`003_add_throughput_rtf` 会为 `server_instances` 表新增 `throughput_rtf` 和 `benchmark_concurrency` 列（nullable），已有服务器首次 benchmark 后自动填充；`004_create_task_segments` 会创建 `task_segments` 表，用于 VAD 分段并行转写的段级调度和状态跟踪；`005_fix_nullable_and_defaults` 修复 `task_events.from_status` nullable、`server_instances.status` 默认值，以及 `files`/`server_instances` 的 `updated_at` NOT NULL 对齐。
 
 ---
 

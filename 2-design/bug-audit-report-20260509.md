@@ -13,10 +13,11 @@
 > | HIGH   | 10   | 1      | **9**    | 全部完成 |
 > | MEDIUM | 17   | 1      | **16**   | 全部完成 |
 > | LOW    | 33   | 1      | **32**   | 全部完成 |
-> | **合计** | **60** | **3** | **57** | **全部完成** |
+> | **部署后** | **5** | 0 | **5** | 全部完成 |
+> | **合计** | **65** | **3** | **62** | **全部完成** |
 >
 > 全部 HIGH、MEDIUM、LOW 级别 bug 已修复完毕（3 项经验证不存在）。
-> 593 个单元测试全通过，0 个 linter 错误。
+> 部署后新发现 5 项（P1-P5）已全部修复。593 个单元测试全通过，0 个 linter 错误。
 
 ---
 
@@ -272,7 +273,7 @@ webhook secret 用 `!=` 比较，易受 timing attack。
 | # | 文件 | Bug 描述 | 状态 |
 |---|------|----------|------|
 | L1 | task_runner.py:731 | `eta_seconds` 为 0 时被误判为 None（falsy check），跳过 ETA 计算 | ✅ 已修复：改用 `is not None` |
-| L2 | database.py:58-65 | `get_db_session` 对只读操作也 commit | ✅ 已修复：仅在有 dirty/new/deleted 时 commit |
+| L2 | database.py:58-65 | `get_db_session` 对只读操作也 commit | ⚠️ 修复已回滚：dirty/new/deleted 检查与 flush() 模式冲突，改回始终 commit |
 | L3 | database.py:36-52 | `_sqlite_on_connect` 模块级 `_is_sqlite` 变量 stale | ✅ 已修复：改为检测连接模块类型 |
 | L4 | sse.py:49-133 | SSE stream 无最大生命周期，卡住的任务连接永不关闭 | ✅ 已修复：添加 1h 超时 |
 | L5 | stats.py:84 | 无完成任务时 success_rate_24h 默认 100.0（误导） | ✅ 已修复：改为 None |
@@ -327,3 +328,41 @@ webhook secret 用 `!=` 比较，易受 timing attack。
 - **第三批 (LOW)**: L1-L33 共 32 项 — session 策略、SSRF 加固、flush 顺序、路径检测等
 
 3 项经代码验证确认不存在：H1、M5、L27。
+
+---
+
+## 部署后新发现 (2026-05-09 17:30)
+
+### P1: database.py — L2 修复引入的回归 Bug `✅ 已修复`
+
+**影响**: 所有通过 `DbSession` 依赖注入且内部调用 `flush()` 的 API 端点，事务从不提交
+
+L2 修复将 `get_db_session` 从"始终 commit"改为"仅在 `session.dirty/new/deleted` 时 commit"。但 `flush()` 会将对象从 `new`/`dirty` 状态移到 persistent，导致 commit 条件永远为 `False`。受影响路径：文件上传、任务创建、取消任务、注册/删除服务器。
+
+**修复**: 回滚 L2 修复，改回始终 `await session.commit()`（空 commit 是无害 no-op）。
+
+### P2: Skill 规范 — message tool 路由上下文滞后导致私聊消息发到群聊 `✅ 已修复`
+
+**影响**: 私聊发起的批量转写任务，前 3 条里程碑通知被投递到群聊
+
+OpenClaw `message` tool 无法指定投递目标，路由由平台上下文决定。session 切换时平台上下文可能残留上一个会话的路由信息。当前 Skill 规范中 `send_user_notice()` 发送后不验证 `chatId` 响应，无法检测路由错误。
+
+**修复**: 在 `NOTICE-PRIMITIVE.md` 中增加路由验证机制 — 每条通过 `message` tool 发出的通知必须验证返回的 `chatId`，不匹配时锁定到 CLI notify 并使用显式路由参数重发。同步更新 `CHANNEL-NOTIFICATION.md`、`local-batch-transcribe` SKILL、`batch-monitor` SKILL。
+
+### P3: server.py — ServerInstance ORM 缺少 `updated_at` 字段 `✅ 已修复`
+
+**影响**: 迁移 005 将 `server_instances.updated_at` 设为 `NOT NULL`，但 `ServerInstance` ORM 模型未继承 `TimestampMixin`、不管理 `updated_at`，INSERT/UPDATE 时该列缺失值触发 NOT NULL 约束报错
+
+**修复**: `ServerInstance` 改为继承 `TimestampMixin`，移除手动定义的 `created_at`，ORM 与数据库完全对齐。
+
+### P4: migration 005 — `downgrade()` 遗漏 `updated_at` nullable 恢复 `✅ 已修复`
+
+**影响**: `upgrade()` 将 `files` 和 `server_instances` 的 `updated_at` 改为 `nullable=False`，但 `downgrade()` 未回退此变更，降级后两张表的 `updated_at` 仍为非空约束
+
+**修复**: 在 `downgrade()` 的 SQLite 和非 SQLite 两个分支中，均为 `files` 和 `server_instances` 表的 `updated_at` 列添加 `nullable=True` 恢复操作。
+
+### P5: NOTICE-PRIMITIVE.md — 私聊首条路由验证逻辑缺陷 `✅ 已修复`
+
+**影响**: 私聊场景下，如果 `message` tool 首条通知因平台上下文残留被投到群聊（返回 `oc_xxx`），原验证逻辑会将该值记录为 `verified_p2p_chat_id`，后续通知继续发错会话
+
+**修复**: 私聊验证改为前缀排除法 — 如果返回的 `actual_chat_id` 以 `oc_` 开头则立即判定路由异常并降级到 CLI；非 `oc_` 前缀的首次返回值才记录为 `verified_p2p_chat_id`，后续检查一致性。

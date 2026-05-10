@@ -94,6 +94,9 @@ class HeartbeatService:
         port = server["port"]
         current_status = server.get("status", "OFFLINE")
 
+        if not server.get("enabled", True):
+            return
+
         caps = await self._probe_with_ssl_fallback(host, port)
 
         now = datetime.now(timezone.utc)

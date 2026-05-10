@@ -67,6 +67,8 @@ def downgrade() -> None:
     conn = op.get_bind()
     dialect = conn.dialect.name
 
+    _tables_with_updated_at = ["files", "server_instances"]
+
     if dialect == "sqlite":
         with op.batch_alter_table("task_events", recreate="auto") as batch_op:
             batch_op.alter_column("from_status", existing_type=sa.String(16), nullable=False)
@@ -76,6 +78,14 @@ def downgrade() -> None:
                 existing_type=sa.String(16),
                 server_default="ONLINE",
             )
+        for tbl in _tables_with_updated_at:
+            with op.batch_alter_table(tbl, recreate="auto") as batch_op:
+                batch_op.alter_column(
+                    "updated_at",
+                    existing_type=sa.DateTime(timezone=True),
+                    nullable=True,
+                    existing_server_default=sa.func.now(),
+                )
     else:
         op.alter_column(
             "task_events", "from_status",
@@ -87,3 +97,9 @@ def downgrade() -> None:
             existing_type=sa.String(16),
             server_default="ONLINE",
         )
+        for tbl in _tables_with_updated_at:
+            op.alter_column(
+                tbl, "updated_at",
+                existing_type=sa.DateTime(timezone=True),
+                nullable=True,
+            )
