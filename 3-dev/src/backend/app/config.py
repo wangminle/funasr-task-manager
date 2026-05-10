@@ -98,6 +98,12 @@ class Settings(BaseSettings):
 
     default_language: str = "zh"
     task_timeout_seconds: int = 3600
+    stale_task_timeout_minutes: int = 10
+    websocket_ping_interval_seconds: int = 20
+    websocket_ping_timeout_seconds: int = 10
+    websocket_read_idle_timeout_seconds: int = 120
+    segment_timeout_min_seconds: int = 120
+    segment_timeout_audio_multiplier: float = 2.0
     max_retry_count: int = 3
 
     heartbeat_interval_seconds: int = 30

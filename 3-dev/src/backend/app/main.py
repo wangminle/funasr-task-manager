@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import or_, update
+from sqlalchemy import or_, select, update
 
 from app.config import settings
 from app.models import Task, TaskStatus
@@ -40,10 +40,33 @@ async def _update_server_status(
         await session.commit()
 
 
+def _get_git_short_sha() -> str:
+    """Best-effort git HEAD short SHA for startup banner."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=3,
+        )
+        return result.stdout.strip() if result.returncode == 0 else "unknown"
+    except Exception:
+        return "unknown"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging(level=settings.log_level, fmt=settings.log_format)
-    logger.info("application_starting", version=settings.app_version)
+    git_sha = _get_git_short_sha()
+    logger.info(
+        "application_starting",
+        version=settings.app_version,
+        git_sha=git_sha,
+        python_version=__import__("sys").version.split()[0],
+        stale_task_timeout_minutes=settings.stale_task_timeout_minutes,
+        task_timeout_seconds=settings.task_timeout_seconds,
+        websocket_ping_interval=settings.websocket_ping_interval_seconds,
+        websocket_read_idle_timeout=settings.websocket_read_idle_timeout_seconds,
+    )
 
     from app.auth.token import init_auth_from_settings
     init_auth_from_settings()
@@ -98,8 +121,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("schema_check_skipped", error=str(e))
         _schema_ok = False
 
+    stale_minutes = settings.stale_task_timeout_minutes
     async with async_session_factory() as session:
-        stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)
+
+        # Only reset tasks that either never started or have been running
+        # longer than stale_minutes.  Tasks with a recent started_at are
+        # assumed to still be running from a previous process and will be
+        # handled by the late-completion recovery in _mark_task_succeeded.
         result = await session.execute(
             update(Task)
             .where(
@@ -109,17 +138,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             .values(status=TaskStatus.QUEUED, assigned_server_id=None, started_at=None)
         )
         stale_count = result.rowcount
-        if stale_count > 0:
+
+        # Count tasks that we intentionally do NOT reset (recently started,
+        # possibly still being processed by a lingering FunASR connection).
+        from sqlalchemy import func as sa_func
+        recent_result = await session.execute(
+            select(sa_func.count())
+            .where(
+                Task.status.in_([TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING]),
+                Task.started_at >= stale_cutoff,
+            )
+        )
+        recent_count = recent_result.scalar() or 0
+
+        if stale_count > 0 or recent_count > 0:
             logger.warning(
-                "reset_stale_tasks",
-                count=stale_count,
-                stale_cutoff_minutes=10,
-                hint="Tasks in DISPATCHED/TRANSCRIBING reset to QUEUED: "
-                     "either started_at older than 10 minutes or never started (NULL)",
+                "startup_task_recovery",
+                reset_count=stale_count,
+                preserved_count=recent_count,
+                stale_cutoff_minutes=stale_minutes,
+                hint=f"Reset {stale_count} stale tasks to QUEUED; "
+                     f"preserved {recent_count} recently-started tasks "
+                     f"(started within last {stale_minutes} min, may still be "
+                     f"processing — late completions handled by recovery path)",
             )
 
-        # Release PREPROCESSING tasks whose claim (started_at != NULL) was
-        # orphaned by a previous crash — the preprocessor coroutine is gone.
         prep_result = await session.execute(
             update(Task)
             .where(
@@ -133,8 +176,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.warning(
                 "reset_orphaned_preprocessing_claims",
                 count=prep_count,
-                hint="PREPROCESSING tasks with orphaned claim (started_at) "
-                     "have been released for re-processing",
             )
 
         await session.commit()

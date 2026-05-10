@@ -16,7 +16,7 @@ from app.config import SEGMENT_LEVEL_PRESETS, settings
 from app.fault.circuit_breaker import breaker_registry
 from app.models import (
     File, ServerInstance, Task, TaskStatus,
-    TaskSegment, SegmentStatus,
+    TaskEvent, TaskSegment, SegmentStatus,
 )
 from app.observability.logging import get_logger
 from app.services.audio_preprocessor import (
@@ -47,6 +47,7 @@ class BackgroundTaskRunner:
         self._loop_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         self._dispatch_event = asyncio.Event()
+        self._dispatch_lock = asyncio.Lock()
         self._inflight: set[str] = set()
         self._inflight_lock = asyncio.Lock()
         self._slot_queues: dict[str, SlotQueue] = {}
@@ -147,6 +148,7 @@ class BackgroundTaskRunner:
     async def _run_loop(self) -> None:
         retry_tick = 0
         callback_tick = 0
+        freeze_tick = 0
         while not self._stop_event.is_set():
             try:
                 await self._promote_preprocessing_tasks()
@@ -159,6 +161,10 @@ class BackgroundTaskRunner:
                 if callback_tick >= 30:
                     await self._callback_worker.retry_pending()
                     callback_tick = 0
+                freeze_tick += 1
+                if freeze_tick >= 60:
+                    await self._detect_frozen_tasks()
+                    freeze_tick = 0
             except Exception as e:
                 logger.exception("task_runner_loop_error", error=str(e))
             await self._wait_for_dispatch_signal()
@@ -217,9 +223,93 @@ class BackgroundTaskRunner:
             await self._finalizer.maybe_finalize(tid)
         self._request_dispatch()
 
+    async def _detect_frozen_tasks(self) -> None:
+        """Detect tasks stuck in TRANSCRIBING longer than expected.
+
+        Logs a warning for each frozen task.  Does not force-fail them
+        (the WebSocket read_idle_timeout and dynamic timeout handle that);
+        this is a diagnostic safety net.
+        """
+        freeze_threshold = timedelta(seconds=settings.task_timeout_seconds)
+        now = datetime.now(timezone.utc)
+        try:
+            async with async_session_factory() as session:
+                stmt = (
+                    select(Task)
+                    .where(
+                        Task.status == TaskStatus.TRANSCRIBING,
+                        Task.started_at.is_not(None),
+                    )
+                )
+                candidates = list((await session.execute(stmt)).scalars().all())
+                for task in candidates:
+                    started = task.started_at
+                    if started.tzinfo is None:
+                        started = started.replace(tzinfo=timezone.utc)
+                    if started >= now - freeze_threshold:
+                        continue
+                    elapsed = (now - started).total_seconds()
+                    logger.error(
+                        "progress_frozen_detected",
+                        task_id=task.task_id,
+                        server_id=task.assigned_server_id,
+                        started_at=started.isoformat(),
+                        elapsed_seconds=int(elapsed),
+                        threshold_seconds=settings.task_timeout_seconds,
+                        hint="Task has been TRANSCRIBING longer than "
+                             "task_timeout_seconds with no progress update",
+                    )
+
+                seg_stmt = (
+                    select(TaskSegment)
+                    .where(
+                        TaskSegment.status == SegmentStatus.TRANSCRIBING,
+                        TaskSegment.started_at.is_not(None),
+                    )
+                )
+                seg_candidates = list((await session.execute(seg_stmt)).scalars().all())
+                for seg in seg_candidates:
+                    started = seg.started_at
+                    if started.tzinfo is None:
+                        started = started.replace(tzinfo=timezone.utc)
+                    if started >= now - freeze_threshold:
+                        continue
+                    elapsed = (now - started).total_seconds()
+                    logger.error(
+                        "segment_progress_frozen_detected",
+                        segment_id=seg.segment_id,
+                        task_id=seg.task_id,
+                        server_id=seg.assigned_server_id,
+                        elapsed_seconds=int(elapsed),
+                    )
+        except Exception as e:
+            logger.warning("frozen_task_detection_failed", error=str(e))
+
     async def _promote_preprocessing_tasks(self) -> None:
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.preprocessing_delay_seconds)
         claim_time = datetime.now(timezone.utc)
+
+        # Release orphaned claims: if a previous runner crashed mid-preprocessing,
+        # started_at would remain set.  After 5 minutes, release the claim so the
+        # task can be re-processed.
+        claim_stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+        async with async_session_factory() as session:
+            stale_result = await session.execute(
+                sql_update(Task)
+                .where(
+                    Task.status == TaskStatus.PREPROCESSING,
+                    Task.started_at.is_not(None),
+                    Task.started_at < claim_stale_cutoff,
+                )
+                .values(started_at=None)
+            )
+            if stale_result.rowcount > 0:
+                await session.commit()
+                logger.warning(
+                    "released_stale_preprocessing_claims",
+                    count=stale_result.rowcount,
+                    stale_minutes=5,
+                )
 
         candidates: list[tuple[str, float, str, str | None]] = []
         async with async_session_factory() as session:
@@ -325,7 +415,28 @@ class BackgroundTaskRunner:
             seg_repo = SegmentRepository(session)
             existing = await seg_repo.list_segments_by_task(task_id)
             if existing:
-                logger.info("segments_already_exist", task_id=task_id, count=len(existing))
+                status_counts = {}
+                for seg in existing:
+                    status_counts[seg.status] = status_counts.get(seg.status, 0) + 1
+                has_actionable = any(
+                    seg.status in (SegmentStatus.PENDING, SegmentStatus.DISPATCHED,
+                                   SegmentStatus.TRANSCRIBING, SegmentStatus.SUCCEEDED)
+                    for seg in existing
+                )
+                if has_actionable:
+                    logger.info("segments_already_exist", task_id=task_id,
+                                count=len(existing), status_counts=status_counts)
+                    return
+                # All segments are in FAILED state with exhausted retries —
+                # the task should fall through to whole-file dispatch instead.
+                logger.warning(
+                    "segments_all_terminal_failed",
+                    task_id=task_id,
+                    count=len(existing),
+                    status_counts=status_counts,
+                    hint="All existing segments are in FAILED state; "
+                         "task will be dispatched as whole-file fallback",
+                )
                 return
 
         output_dir_path = settings.temp_dir / "segments" / task_id
@@ -403,19 +514,31 @@ class BackgroundTaskRunner:
             raise
 
     async def _dispatch_queued_tasks(self) -> None:
+        async with self._dispatch_lock:
+            await self._dispatch_queued_tasks_locked()
+
+    async def _dispatch_queued_tasks_locked(self) -> None:
         async with async_session_factory() as session:
             repo = TaskRepository(session)
             seg_repo = SegmentRepository(session)
 
-            servers_stmt = (
+            all_online_stmt = (
                 select(ServerInstance)
-                .where(
-                    ServerInstance.status == "ONLINE",
-                    ServerInstance.enabled.is_(True),
-                )
+                .where(ServerInstance.status == "ONLINE")
                 .order_by(ServerInstance.server_id.asc())
             )
-            servers = list((await session.execute(servers_stmt)).scalars().all())
+            all_online = list((await session.execute(all_online_stmt)).scalars().all())
+            servers = [s for s in all_online if s.enabled]
+            disabled = [s for s in all_online if not s.enabled]
+            if disabled:
+                logger.warning(
+                    "servers_disabled_excluded_from_dispatch",
+                    disabled_server_ids=[s.server_id for s in disabled],
+                    enabled_count=len(servers),
+                    hint="These ONLINE servers have enabled=false and will "
+                         "not receive tasks; use `cli server update <id> "
+                         "--enabled true` to re-enable",
+                )
             if not servers:
                 self._clear_slot_queues()
                 return
@@ -499,6 +622,17 @@ class BackgroundTaskRunner:
             for sid, cnt in seg_running.items():
                 if sid:
                     running_count[sid] = running_count.get(sid, 0) + cnt
+
+            server_by_id = {srv.server_id: srv for srv in servers}
+            for sid, active_count in running_count.items():
+                server = server_by_id.get(sid)
+                if server and active_count > server.max_concurrency:
+                    logger.error(
+                        "slot_overbooked",
+                        server_id=sid,
+                        active_count=active_count,
+                        max_concurrency=server.max_concurrency,
+                    )
 
             server_profiles = [
                 ServerProfile(
@@ -598,6 +732,7 @@ class BackgroundTaskRunner:
             work_map.update(regular_tasks)
             work_map.update({sid: seg for sid, (seg, _) in segment_items.items()})
 
+            max_concurrency_map = {sp.server_id: sp.max_concurrency for sp in available_profiles}
             free_slots = {sp.server_id: max(sp.max_concurrency - sp.running_tasks, 0)
                           for sp in available_profiles}
             profile_map = {sp.server_id: sp for sp in available_profiles}
@@ -708,6 +843,48 @@ class BackgroundTaskRunner:
 
             if not to_start_tasks and not to_start_segments:
                 return
+
+            # Post-dispatch invariant: verify no server exceeds max_concurrency
+            # by re-counting from DB before committing.
+            # Must exclude segmented parent tasks (same logic as running_count
+            # above) to avoid false positives when parent + segment both show
+            # as DISPATCHED on the same server.
+            post_task_where = [
+                Task.status.in_([TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING]),
+            ]
+            if active_seg_parent_ids:
+                post_task_where.append(Task.task_id.not_in(active_seg_parent_ids))
+            post_count_stmt = (
+                select(Task.assigned_server_id, func.count())
+                .where(*post_task_where)
+                .group_by(Task.assigned_server_id)
+            )
+            post_running: dict[str, int] = dict(
+                (await session.execute(post_count_stmt)).all()
+            )
+            post_seg_stmt = (
+                select(TaskSegment.assigned_server_id, func.count())
+                .where(TaskSegment.status.in_([
+                    SegmentStatus.DISPATCHED, SegmentStatus.TRANSCRIBING,
+                ]))
+                .group_by(TaskSegment.assigned_server_id)
+            )
+            for sid, cnt in (await session.execute(post_seg_stmt)).all():
+                if sid:
+                    post_running[sid] = post_running.get(sid, 0) + cnt
+
+            for sid, count in post_running.items():
+                limit = max_concurrency_map.get(sid)
+                if limit is not None and count > limit:
+                    logger.error(
+                        "slot_overcommit_invariant_violated",
+                        server_id=sid,
+                        active_count=count,
+                        max_concurrency=limit,
+                        dispatched_tasks=len(to_start_tasks),
+                        dispatched_segments=len(to_start_segments),
+                    )
+
             await session.commit()
 
         for task_id in to_start_tasks:
@@ -768,6 +945,7 @@ class BackgroundTaskRunner:
                 server=server,
                 audio_path=audio_path,
                 profile=profile,
+                audio_duration_sec=file_record.duration_sec,
             )
 
             if result.error:
@@ -861,6 +1039,37 @@ class BackgroundTaskRunner:
                 if outbox is not None:
                     pending_delivery = (outbox.outbox_id, task.callback_secret)
                 logger.info("task_transcription_succeeded", task_id=task_id)
+            elif task.status in (
+                TaskStatus.QUEUED.value,
+                TaskStatus.DISPATCHED.value,
+                TaskStatus.TRANSCRIBING.value,
+            ):
+                from ulid import ULID
+
+                from_status = task.status
+                task.status = TaskStatus.SUCCEEDED.value
+                task.progress = 1.0
+                task.assigned_server_id = None
+                task.completed_at = datetime.now(timezone.utc)
+                event = TaskEvent(
+                    event_id=str(ULID()),
+                    task_id=task.task_id,
+                    from_status=from_status,
+                    to_status=TaskStatus.SUCCEEDED.value,
+                    payload_json='{"recovered_from_late_completion": true}',
+                )
+                session.add(event)
+                await session.flush()
+                outbox = await self._callback_worker.enqueue(session, task, event.event_id, TaskStatus.SUCCEEDED)
+                if outbox is not None:
+                    pending_delivery = (outbox.outbox_id, task.callback_secret)
+                logger.warning(
+                    "task_succeeded_after_status_recovery",
+                    task_id=task_id,
+                    from_status=from_status,
+                    hint="Transcription result was already saved; task state was "
+                         "reconciled to SUCCEEDED after a stale reset/requeue.",
+                )
             else:
                 logger.warning(
                     "task_succeeded_but_transition_blocked",
@@ -995,6 +1204,7 @@ class BackgroundTaskRunner:
                 server=server,
                 audio_path=audio_path,
                 profile=profile,
+                audio_duration_sec=segment.duration_ms / 1000.0,
             )
 
             if result.error:
@@ -1166,8 +1376,15 @@ class BackgroundTaskRunner:
         server: ServerInstance,
         audio_path: str,
         profile: MessageProfile,
+        audio_duration_sec: float | None = None,
     ):
         timeout = float(settings.task_timeout_seconds)
+        if audio_duration_sec and audio_duration_sec > 0:
+            dynamic_timeout = max(
+                float(settings.segment_timeout_min_seconds),
+                float(audio_duration_sec) * float(settings.segment_timeout_audio_multiplier),
+            )
+            timeout = min(timeout, dynamic_timeout)
 
         result = await adapter.transcribe(
             host=server.host,

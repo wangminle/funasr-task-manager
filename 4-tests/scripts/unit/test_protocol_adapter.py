@@ -62,6 +62,13 @@ class TestParseResult:
         raw = json.dumps({"text": "", "stamp_sents": [{"text_seg": "你好", "ts": [0, 500]}, {"text_seg": "世界", "ts": [500, 1000]}], "mode": "offline"})
         result = adapter.parse_result(raw)
         assert result.text == "你好世界"
+        assert result.is_complete is True
+
+    def test_stamp_sents_complete_even_when_mode_missing(self, adapter):
+        raw = json.dumps({"text": "", "stamp_sents": [{"text_seg": "兜底", "ts": [0, 500]}]})
+        result = adapter.parse_result(raw)
+        assert result.text == "兜底"
+        assert result.is_complete is True
 
     def test_parse_2pass_offline(self, adapter):
         raw = json.dumps({"text_2pass_offline": "2pass结果", "mode": "2pass-offline"})

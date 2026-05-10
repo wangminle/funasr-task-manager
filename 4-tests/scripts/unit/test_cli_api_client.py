@@ -24,6 +24,7 @@ def _make_response(status_code: int = 200, json_data=None, text: str = ""):
         resp.json.return_value = json_data
         resp.text = json.dumps(json_data)
     else:
+        resp.json.side_effect = ValueError("no json")
         resp.text = text
     return resp
 
@@ -40,6 +41,24 @@ class TestHealth:
         with pytest.raises(APIError) as exc:
             mock_client.health()
         assert exc.value.status_code == 500
+
+
+class TestErrorHandling:
+    def test_empty_error_detail_has_fallback_message(self, mock_client):
+        response = _make_response(503, text="")
+        with pytest.raises(APIError) as exc:
+            mock_client._check(response)
+        assert exc.value.status_code == 503
+        assert "没有错误详情" in exc.value.detail
+        assert "config get server" in exc.value.detail
+
+    def test_connect_error_is_converted_to_api_error(self, mock_client):
+        mock_client._client.base_url = "http://127.0.0.1:28000"
+        mock_client._client.post.side_effect = httpx.ConnectError("connection refused")
+        with pytest.raises(APIError) as exc:
+            mock_client._request("post", "/api/v1/files/upload")
+        assert exc.value.status_code == 0
+        assert "无法连接到服务器" in exc.value.detail
 
 
 class TestStats:

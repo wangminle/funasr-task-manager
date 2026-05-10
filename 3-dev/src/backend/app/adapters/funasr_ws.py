@@ -17,6 +17,7 @@ from typing import Any
 
 from app.adapters.base import BaseAdapter, MessageProfile, ParsedResult, RecognitionMode, ServerType
 from app.adapters.websocket_compat import connect_websocket
+from app.config import settings
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -166,7 +167,7 @@ class FunASRWebSocketAdapter(BaseAdapter):
             return True
 
         stamp_sents = data.get("stamp_sents")
-        if mode == "offline" and stamp_sents and isinstance(stamp_sents, list) and len(stamp_sents) > 0:
+        if stamp_sents and isinstance(stamp_sents, list) and len(stamp_sents) > 0:
             return True
 
         return False
@@ -233,13 +234,23 @@ class FunASRWebSocketAdapter(BaseAdapter):
                      sample_rate=profile.audio_fs)
 
         start_time = time.time()
+        ping_interval = (
+            float(settings.websocket_ping_interval_seconds)
+            if settings.websocket_ping_interval_seconds > 0 else None
+        )
+        ping_timeout = (
+            float(settings.websocket_ping_timeout_seconds)
+            if settings.websocket_ping_timeout_seconds > 0 else None
+        )
+        read_idle_timeout = max(float(settings.websocket_read_idle_timeout_seconds), 1.0)
 
         try:
             async with asyncio.timeout(timeout):
                 async with connect_websocket(
                     uri,
                     subprotocols=["binary"],
-                    ping_interval=None,
+                    ping_interval=ping_interval,
+                    ping_timeout=ping_timeout,
                     ssl=ssl_ctx,
                     close_timeout=60,
                     max_size=1024 * 1024 * 1024,
@@ -264,7 +275,36 @@ class FunASRWebSocketAdapter(BaseAdapter):
                     total_text_len = 0
                     recv_start = time.time()
 
-                    async for raw_msg in ws:
+                    while True:
+                        try:
+                            raw_msg = await asyncio.wait_for(ws.recv(), timeout=read_idle_timeout)
+                        except asyncio.TimeoutError:
+                            logger.error(
+                                "websocket_read_idle_timeout",
+                                idle_timeout=read_idle_timeout,
+                                messages=msg_count,
+                                text_messages=text_msg_count,
+                                uri=uri,
+                                audio=audio_path,
+                            )
+                            return ParsedResult(
+                                error=(
+                                    f"No WebSocket response received for "
+                                    f"{read_idle_timeout:.0f}s after upload"
+                                )
+                            )
+                        except Exception as recv_exc:
+                            exc_name = type(recv_exc).__name__
+                            if "ConnectionClosedOK" in exc_name:
+                                logger.info(
+                                    "websocket_closed_ok",
+                                    messages=msg_count,
+                                    text_messages=text_msg_count,
+                                    has_result=bool(final_result.text),
+                                )
+                                break
+                            raise
+
                         if isinstance(raw_msg, bytes):
                             continue
 

@@ -46,29 +46,47 @@ EXPECTED_CALLBACK_OUTBOX_COLUMNS = {
 
 LEGACY_CALLBACK_OUTBOX_COLUMNS = {"id", "signature", "updated_at"}
 
+EXPECTED_CORE_TABLE_COLUMNS = {
+    "server_instances": {
+        "server_id", "status", "enabled", "max_concurrency",
+    },
+    "tasks": {
+        "task_id", "status", "started_at", "assigned_server_id",
+    },
+    "task_segments": {
+        "segment_id", "task_id", "status", "assigned_server_id",
+    },
+}
+
 
 async def check_schema(session: AsyncSession) -> DiagnosticCheck:
-    """Verify callback_outbox table matches the current ORM model."""
+    """Verify critical database tables match the current ORM model."""
     try:
         def _inspect_sync(connection):
             insp = inspect(connection)
-            if not insp.has_table("callback_outbox"):
-                return None, set()
-            columns = {col["name"] for col in insp.get_columns("callback_outbox")}
-            return True, columns
+            table_columns: dict[str, set[str] | None] = {}
+            for table_name in ["callback_outbox", *EXPECTED_CORE_TABLE_COLUMNS.keys()]:
+                if not insp.has_table(table_name):
+                    table_columns[table_name] = None
+                else:
+                    table_columns[table_name] = {
+                        col["name"] for col in insp.get_columns(table_name)
+                    }
+            return table_columns
 
         conn = await session.connection()
-        has_table, columns = await conn.run_sync(_inspect_sync)
+        table_columns = await conn.run_sync(_inspect_sync)
 
-        if has_table is None:
+        callback_columns = table_columns["callback_outbox"]
+        if callback_columns is None:
             return DiagnosticCheck(
                 name="database_schema",
                 level="error",
                 detail="callback_outbox table missing; run alembic upgrade head",
             )
 
-        legacy_found = columns & LEGACY_CALLBACK_OUTBOX_COLUMNS
-        expected_missing = EXPECTED_CALLBACK_OUTBOX_COLUMNS - columns
+        legacy_found = callback_columns & LEGACY_CALLBACK_OUTBOX_COLUMNS
+        expected_missing = EXPECTED_CALLBACK_OUTBOX_COLUMNS - callback_columns
 
         if legacy_found or expected_missing:
             detail_parts = []
@@ -80,6 +98,22 @@ async def check_schema(session: AsyncSession) -> DiagnosticCheck:
                 name="database_schema",
                 level="error",
                 detail=f"callback_outbox schema drift — {'; '.join(detail_parts)}; run alembic upgrade head",
+            )
+
+        core_drift: list[str] = []
+        for table_name, expected_columns in EXPECTED_CORE_TABLE_COLUMNS.items():
+            columns = table_columns[table_name]
+            if columns is None:
+                core_drift.append(f"{table_name} table missing")
+                continue
+            missing = expected_columns - columns
+            if missing:
+                core_drift.append(f"{table_name} missing columns: {sorted(missing)}")
+        if core_drift:
+            return DiagnosticCheck(
+                name="database_schema",
+                level="error",
+                detail=f"core schema drift — {'; '.join(core_drift)}; run alembic upgrade head",
             )
 
         return DiagnosticCheck(name="database_schema", level="ok", detail="schema aligned")

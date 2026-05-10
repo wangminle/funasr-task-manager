@@ -160,7 +160,29 @@ uvicorn app.main:app --host 0.0.0.0 --port 15797 --reload
 
 启动后等待 5 秒，验证 `GET http://localhost:15797/health` 返回 `{"status": "ok"}`。
 
-**后端启动成功即可进入 Phase 5。** 前端（Vue Web UI）是可选的，Agent 工作流不依赖前端。
+#### Step 7：验证 CLI 配置
+
+后端启动后，**必须**确认 CLI 指向正确的后端地址。CLI 默认从 `~/.asr-cli.yaml` 读取 `server` 字段，如果残留旧配置（如端口 28000），CLI 会静默连接到错误地址并报告空错误。
+
+```bash
+cd 3-dev/src/backend
+python -m cli config get server
+```
+
+- 输出 `http://localhost:15797` → ✅ 正确
+- 输出其他地址或为空 → 执行修正：
+  ```bash
+  python -m cli config set server http://localhost:15797
+  ```
+
+验证 CLI 可达后端：
+```bash
+python -m cli health
+```
+
+应返回 `{"status": "ok"}` 或类似健康信息。如果报 `无法连接到服务器`，检查上一步的地址设置和后端运行状态。
+
+**后端启动 + CLI 配置验证后即可进入 Phase 5。** 前端（Vue Web UI）是可选的，Agent 工作流不依赖前端。
 
 ### Phase 4B：Docker 环境安装
 
@@ -220,6 +242,7 @@ docker compose ps
   安装方式: {python/docker}
   后端地址: http://localhost:15797
   健康检查: ✅ 通过
+  CLI 配置: ✅ server = http://localhost:15797
   数据库:   ✅ 已迁移到最新版本
   ffprobe:  ✅ 可用（版本 x.x.x）
 
@@ -595,6 +618,7 @@ fi
 
 | 场景 | Agent 应做的事 | 不应做的事 |
 |------|--------------|----------|
+| CLI 报"无法连接到服务器"或错误信息为空 | 执行 `python -m cli config get server` 检查地址，确认是否指向正确的 `http://localhost:15797`；如不正确则 `config set server` 修正 | 假设后端未启动而反复重启；忽略空错误信息 |
 | Unicorn 安装失败 | 回退到直接使用系统 Python，提示手动创建 venv | 放弃安装 |
 | pip install 报错 | 展示完整错误日志，建议检查网络或 Python 版本 | 静默跳过 |
 | ffprobe 安装失败 | 展示错误，提示手动安装方法；标记 warning 但不阻断后续步骤 | 跳过不报告（会导致分段功能静默失效） |

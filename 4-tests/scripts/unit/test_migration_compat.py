@@ -59,6 +59,38 @@ async def old_schema_engine():
     await eng.dispose()
 
 
+@pytest_asyncio.fixture
+async def old_server_schema_engine():
+    """Create an engine where server_instances lacks the v0.4.16 enabled column."""
+    eng = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("DROP TABLE server_instances"))
+        await conn.execute(text("""
+            CREATE TABLE server_instances (
+                server_id VARCHAR(64) PRIMARY KEY,
+                name VARCHAR(128),
+                host VARCHAR(255) NOT NULL,
+                port INTEGER NOT NULL,
+                protocol_version VARCHAR(32) NOT NULL,
+                server_type VARCHAR(32) NOT NULL DEFAULT 'funasr-main',
+                supported_modes TEXT,
+                max_concurrency INTEGER NOT NULL DEFAULT 4,
+                rtf_baseline FLOAT,
+                throughput_rtf FLOAT,
+                benchmark_concurrency INTEGER,
+                penalty_factor FLOAT NOT NULL DEFAULT 0.1,
+                status VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN',
+                last_heartbeat DATETIME,
+                labels_json TEXT,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+    yield eng
+    await eng.dispose()
+
+
 @pytest.mark.unit
 class TestCallbackOutboxModel:
     async def test_create_outbox_record(self, session):
@@ -188,3 +220,14 @@ class TestOldSchemaDetection:
             result = await check_schema(sess)
             assert result.level == "error"
             assert "drift" in result.detail
+
+    async def test_missing_server_enabled_detected_as_drift(self, old_server_schema_engine):
+        """The diagnostics check should catch the v0.4.16 server enabled column."""
+        from app.services.diagnostics import check_schema
+
+        factory = async_sessionmaker(old_server_schema_engine, class_=AsyncSession, expire_on_commit=False)
+        async with factory() as sess:
+            result = await check_schema(sess)
+            assert result.level == "error"
+            assert "server_instances" in result.detail
+            assert "enabled" in result.detail

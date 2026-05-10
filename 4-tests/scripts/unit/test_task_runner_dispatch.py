@@ -139,6 +139,27 @@ class TestTaskRunnerDispatch:
 
         assert runner._dispatch_event.is_set()
 
+    async def test_late_completion_from_queued_recovers_to_succeeded(self, db_engine, monkeypatch):
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+
+        async with session_factory() as session:
+            session.add(_file("file-late", duration_sec=180))
+            session.add(_task("task-late", "file-late", TaskStatus.QUEUED))
+            await session.commit()
+
+        runner = BackgroundTaskRunner()
+        await runner._mark_task_succeeded("task-late")
+
+        async with session_factory() as session:
+            task = (await session.execute(
+                select(Task).where(Task.task_id == "task-late")
+            )).scalar_one()
+
+        assert task.status == TaskStatus.SUCCEEDED.value
+        assert task.progress == 1.0
+        assert task.result_path == "task-late"
+
 
 @pytest.mark.unit
 class TestSlotQueueDispatch:
@@ -746,3 +767,134 @@ class TestRetryFailedToQueued:
             )).scalar_one()
             assert task.status == TaskStatus.DISPATCHED.value
             assert task.assigned_server_id == "srv-retry"
+
+
+@pytest.mark.unit
+class TestPreprocessingClaimTimeout:
+    """Bug #6: stale preprocessing claims should be released."""
+
+    async def test_stale_preprocessing_claim_released(self, db_engine, monkeypatch):
+        from datetime import datetime, timedelta, timezone
+        from sqlalchemy import update as sql_update
+
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+
+        stale_started_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+        async with session_factory() as session:
+            session.add(_file("f-prep", duration_sec=30))
+            task = _task("t-prep", "f-prep", TaskStatus.PREPROCESSING)
+            session.add(task)
+            await session.commit()
+            await session.execute(
+                sql_update(Task)
+                .where(Task.task_id == "t-prep")
+                .values(started_at=stale_started_at)
+            )
+            await session.commit()
+
+        runner = BackgroundTaskRunner()
+        monkeypatch.setattr(runner, "_create_segments_for_task",
+                            lambda *a, **kw: asyncio.sleep(0))
+        await runner._promote_preprocessing_tasks()
+
+        async with session_factory() as session:
+            task = (await session.execute(
+                select(Task).where(Task.task_id == "t-prep")
+            )).scalar_one()
+
+        assert task.started_at is None, \
+            "Stale preprocessing claim should have been released"
+
+
+@pytest.mark.unit
+class TestFrozenTaskDetection:
+    """Bug #12: detect tasks frozen in TRANSCRIBING longer than timeout."""
+
+    async def test_frozen_task_detected_without_error(self, db_engine, monkeypatch):
+        from datetime import datetime, timedelta, timezone
+        from sqlalchemy import update as sql_update
+        from unittest.mock import AsyncMock
+
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+
+        frozen_started = datetime.now(timezone.utc) - timedelta(seconds=7200)
+
+        async with session_factory() as session:
+            session.add(_server("srv-frozen", 4))
+            session.add(_file("f-frozen", duration_sec=600))
+            task = _task("t-frozen", "f-frozen", TaskStatus.TRANSCRIBING)
+            task.assigned_server_id = "srv-frozen"
+            session.add(task)
+            await session.commit()
+            await session.execute(
+                sql_update(Task)
+                .where(Task.task_id == "t-frozen")
+                .values(started_at=frozen_started)
+            )
+            await session.commit()
+
+        logged_events: list[str] = []
+        original_logger = __import__("app.services.task_runner", fromlist=["logger"]).logger
+
+        class _CapturingLogger:
+            def __getattr__(self, name):
+                def _capture(event, **kw):
+                    logged_events.append(event)
+                    return getattr(original_logger, name)(event, **kw)
+                return _capture
+
+        monkeypatch.setattr("app.services.task_runner.logger", _CapturingLogger())
+
+        runner = BackgroundTaskRunner()
+        await runner._detect_frozen_tasks()
+
+        assert "progress_frozen_detected" in logged_events, \
+            f"Expected progress_frozen_detected, got: {logged_events}"
+
+
+@pytest.mark.unit
+class TestDisabledServerWarning:
+    """Bug #8: servers with enabled=false should trigger a warning log."""
+
+    async def test_disabled_server_excludes_from_dispatch(self, db_engine, monkeypatch):
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+        monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
+
+        async with session_factory() as session:
+            srv = _server("srv-disabled", 4)
+            srv.enabled = False
+            session.add(srv)
+            session.add(_file("f-dis", duration_sec=30))
+            session.add(_task("t-dis", "f-dis", TaskStatus.QUEUED))
+            await session.commit()
+
+        logged_events: list[str] = []
+        original_logger = __import__("app.services.task_runner", fromlist=["logger"]).logger
+
+        class _CapturingLogger:
+            def __getattr__(self, name):
+                def _capture(event, **kw):
+                    logged_events.append(event)
+                    return getattr(original_logger, name)(event, **kw)
+                return _capture
+
+        monkeypatch.setattr("app.services.task_runner.logger", _CapturingLogger())
+
+        runner = BackgroundTaskRunner()
+        monkeypatch.setattr(runner, "_execute_task", lambda tid: asyncio.sleep(0))
+
+        await runner._dispatch_queued_tasks()
+
+        assert "servers_disabled_excluded_from_dispatch" in logged_events, \
+            f"Expected disabled server warning, got: {logged_events}"
+
+        async with session_factory() as session:
+            task = (await session.execute(
+                select(Task).where(Task.task_id == "t-dis")
+            )).scalar_one()
+        assert task.status == TaskStatus.QUEUED.value, \
+            "Task should remain QUEUED when no enabled servers exist"
