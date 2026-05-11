@@ -581,24 +581,30 @@ class BackgroundTaskRunner:
             if not all_candidate_tasks:
                 return
 
-            # Find parent task IDs that have active segments — these parents
-            # are logical containers and should NOT count toward server slots.
-            active_seg_parent_stmt = (
-                select(TaskSegment.task_id)
-                .where(TaskSegment.status.in_([
-                    SegmentStatus.DISPATCHED, SegmentStatus.TRANSCRIBING,
+            # Find segmented parent task IDs that are currently in a
+            # running state.  These parents are logical containers and must
+            # NEVER count toward server slots.  We restrict the query to
+            # parents in DISPATCHED/TRANSCRIBING — completed/failed parents
+            # are already excluded by the task_count_where status filter,
+            # so they don't need to be in the NOT-IN set.  This keeps the
+            # set small (active batch only) instead of scanning the full
+            # historical TaskSegment table.
+            segmented_parent_stmt = (
+                select(TaskSegment.task_id).distinct()
+                .join(Task, Task.task_id == TaskSegment.task_id)
+                .where(Task.status.in_([
+                    TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING,
                 ]))
-                .distinct()
             )
-            active_seg_parent_ids: set[str] = set(
-                (await session.execute(active_seg_parent_stmt)).scalars().all()
+            segmented_parent_ids: set[str] = set(
+                (await session.execute(segmented_parent_stmt)).scalars().all()
             )
 
             task_count_where = [
                 Task.status.in_([TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING]),
             ]
-            if active_seg_parent_ids:
-                task_count_where.append(Task.task_id.not_in(active_seg_parent_ids))
+            if segmented_parent_ids:
+                task_count_where.append(Task.task_id.not_in(segmented_parent_ids))
 
             count_stmt = (
                 select(Task.assigned_server_id, func.count())
@@ -846,14 +852,13 @@ class BackgroundTaskRunner:
 
             # Post-dispatch invariant: verify no server exceeds max_concurrency
             # by re-counting from DB before committing.
-            # Must exclude segmented parent tasks (same logic as running_count
-            # above) to avoid false positives when parent + segment both show
-            # as DISPATCHED on the same server.
+            # Exclude segmented parent tasks (same set used in running_count
+            # above) — parents never hold real server slots.
             post_task_where = [
                 Task.status.in_([TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING]),
             ]
-            if active_seg_parent_ids:
-                post_task_where.append(Task.task_id.not_in(active_seg_parent_ids))
+            if segmented_parent_ids:
+                post_task_where.append(Task.task_id.not_in(segmented_parent_ids))
             post_count_stmt = (
                 select(Task.assigned_server_id, func.count())
                 .where(*post_task_where)

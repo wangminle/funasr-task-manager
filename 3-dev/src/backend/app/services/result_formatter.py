@@ -43,7 +43,7 @@ def parse_timestamp_segments(raw_result: dict) -> list[TimestampSegment]:
                 segments.append(TimestampSegment(
                     start_ms=start_ms,
                     end_ms=end_ms,
-                    text=text_seg + punc,
+                    text=(text_seg + punc).replace(" ", ""),
                 ))
         return segments
 

@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import File, ServerInstance, Task, TaskStatus
+from app.models.task_segment import SegmentStatus, TaskSegment
 from app.services.task_runner import BackgroundTaskRunner
 
 
@@ -767,6 +768,192 @@ class TestRetryFailedToQueued:
             )).scalar_one()
             assert task.status == TaskStatus.DISPATCHED.value
             assert task.assigned_server_id == "srv-retry"
+
+
+@pytest.mark.unit
+class TestSegmentedParentSlotDeadlock:
+    """Fix for deterministic slot deadlock: parent tasks with pending-but-no-active
+    segments must NOT occupy server slots, otherwise pending segments can never
+    be dispatched and the system deadlocks.
+
+    Reproduces the exact scenario from the 42-file batch test (2026-05-11):
+    all 7 slots occupied by 7 parent tasks, each with pending segments that
+    cannot be dispatched.
+    """
+
+    async def test_pending_segment_dispatched_when_parent_excluded_from_slots(
+        self, db_engine, monkeypatch,
+    ):
+        """A parent in TRANSCRIBING with 1 succeeded + 1 pending segment on a
+        1-slot server.  The parent must NOT occupy the slot so the pending
+        segment can be dispatched."""
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+        monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
+
+        async with session_factory() as session:
+            session.add(_server("srv-1", 1))
+
+            session.add(_file("f-seg-parent", duration_sec=1200))
+            parent = _task("t-seg-parent", "f-seg-parent", TaskStatus.TRANSCRIBING)
+            parent.assigned_server_id = "srv-1"
+            session.add(parent)
+
+            session.add(TaskSegment(
+                segment_id="seg-s1",
+                task_id="t-seg-parent",
+                segment_index=0,
+                source_start_ms=0, source_end_ms=600000,
+                keep_start_ms=0, keep_end_ms=600000,
+                storage_path="/tmp/seg-s1.wav",
+                status=SegmentStatus.SUCCEEDED,
+                assigned_server_id="srv-1",
+            ))
+            session.add(TaskSegment(
+                segment_id="seg-p1",
+                task_id="t-seg-parent",
+                segment_index=1,
+                source_start_ms=600000, source_end_ms=1200000,
+                keep_start_ms=600000, keep_end_ms=1200000,
+                storage_path="/tmp/seg-p1.wav",
+                status=SegmentStatus.PENDING,
+            ))
+            await session.commit()
+
+        runner = BackgroundTaskRunner()
+        started_segments: list[str] = []
+
+        async def _fake_execute_segment(segment_id: str):
+            started_segments.append(segment_id)
+
+        monkeypatch.setattr(runner, "_execute_task", lambda tid: asyncio.sleep(0))
+        monkeypatch.setattr(runner, "_execute_segment", _fake_execute_segment)
+
+        await runner._dispatch_queued_tasks()
+        await asyncio.sleep(0)
+
+        assert "seg-p1" in started_segments, (
+            f"Pending segment should be dispatched, started: {started_segments}"
+        )
+
+    async def test_parent_and_regular_task_both_dispatch_with_enough_slots(
+        self, db_engine, monkeypatch,
+    ):
+        """With 2 slots, a parent (not counting) + pending segment + regular
+        task should both dispatch."""
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+        monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
+
+        async with session_factory() as session:
+            session.add(_server("srv-1", 2))
+
+            session.add(_file("f-parent", duration_sec=600))
+            parent = _task("t-parent", "f-parent", TaskStatus.TRANSCRIBING)
+            parent.assigned_server_id = "srv-1"
+            session.add(parent)
+
+            session.add(TaskSegment(
+                segment_id="seg-done",
+                task_id="t-parent",
+                segment_index=0,
+                source_start_ms=0, source_end_ms=300000,
+                keep_start_ms=0, keep_end_ms=300000,
+                storage_path="/tmp/seg-done.wav",
+                status=SegmentStatus.SUCCEEDED,
+                assigned_server_id="srv-1",
+            ))
+            session.add(TaskSegment(
+                segment_id="seg-pend",
+                task_id="t-parent",
+                segment_index=1,
+                source_start_ms=300000, source_end_ms=600000,
+                keep_start_ms=300000, keep_end_ms=600000,
+                storage_path="/tmp/seg-pend.wav",
+                status=SegmentStatus.PENDING,
+            ))
+
+            session.add(_file("f-regular", duration_sec=30))
+            session.add(_task("t-regular", "f-regular", TaskStatus.QUEUED))
+            await session.commit()
+
+        runner = BackgroundTaskRunner()
+        started_tasks: list[str] = []
+        started_segments: list[str] = []
+
+        async def _fake_execute_segment(segment_id: str):
+            started_segments.append(segment_id)
+
+        monkeypatch.setattr(runner, "_execute_task",
+                            lambda tid: started_tasks.append(tid) or asyncio.sleep(0))
+        monkeypatch.setattr(runner, "_execute_segment", _fake_execute_segment)
+
+        await runner._dispatch_queued_tasks()
+        await asyncio.sleep(0)
+
+        assert "t-regular" in started_tasks, (
+            f"Regular task should be dispatched, started tasks: {started_tasks}"
+        )
+        assert "seg-pend" in started_segments, (
+            f"Pending segment should be dispatched, started segments: {started_segments}"
+        )
+
+    async def test_multiple_parents_all_slots_deadlock_resolved(
+        self, db_engine, monkeypatch,
+    ):
+        """Reproduce the exact deadlock: N parent tasks fill N slots, each with
+        pending segments.  After fix, pending segments should be dispatched."""
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+        monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
+
+        async with session_factory() as session:
+            session.add(_server("srv-1", 2))
+
+            for i in range(2):
+                fid = f"f-p{i}"
+                tid = f"t-p{i}"
+                session.add(_file(fid, duration_sec=600))
+                parent = _task(tid, fid, TaskStatus.TRANSCRIBING)
+                parent.assigned_server_id = "srv-1"
+                session.add(parent)
+
+                session.add(TaskSegment(
+                    segment_id=f"seg-done-{i}",
+                    task_id=tid,
+                    segment_index=0,
+                    source_start_ms=0, source_end_ms=300000,
+                    keep_start_ms=0, keep_end_ms=300000,
+                    storage_path=f"/tmp/seg-done-{i}.wav",
+                    status=SegmentStatus.SUCCEEDED,
+                    assigned_server_id="srv-1",
+                ))
+                session.add(TaskSegment(
+                    segment_id=f"seg-pend-{i}",
+                    task_id=tid,
+                    segment_index=1,
+                    source_start_ms=300000, source_end_ms=600000,
+                    keep_start_ms=300000, keep_end_ms=600000,
+                    storage_path=f"/tmp/seg-pend-{i}.wav",
+                    status=SegmentStatus.PENDING,
+                ))
+            await session.commit()
+
+        runner = BackgroundTaskRunner()
+        started_segments: list[str] = []
+
+        async def _fake_execute_segment(segment_id: str):
+            started_segments.append(segment_id)
+
+        monkeypatch.setattr(runner, "_execute_task", lambda tid: asyncio.sleep(0))
+        monkeypatch.setattr(runner, "_execute_segment", _fake_execute_segment)
+
+        await runner._dispatch_queued_tasks()
+        await asyncio.sleep(0)
+
+        assert len(started_segments) >= 1, (
+            f"At least 1 pending segment should be dispatched, got: {started_segments}"
+        )
 
 
 @pytest.mark.unit

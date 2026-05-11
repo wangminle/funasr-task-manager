@@ -56,12 +56,20 @@ def _fingerprint(path: Path, stat: os.stat_result) -> str:
 def _resolve_manifest_item_path(item_path: str, source_dir: str) -> Path:
     """Resolve a manifest item path without double-prefixing source_dir.
 
-    Absolute paths are returned immediately. Relative paths are always resolved
-    against *source_dir* first so that a same-named file in the current working
+    Absolute paths are checked for existence first; if missing, the filename
+    is looked up under *source_dir* as a fallback (handles directory renames
+    or file migrations).  Relative paths are always resolved against
+    *source_dir* first so that a same-named file in the current working
     directory cannot shadow the intended manifest entry.
     """
     path = Path(item_path)
     if path.is_absolute():
+        if path.exists():
+            return path
+        if source_dir:
+            fallback = Path(source_dir) / path.name
+            if fallback.exists():
+                return fallback
         return path
 
     if not source_dir:
@@ -100,9 +108,9 @@ def _resolve_manifest_item_path(item_path: str, source_dir: str) -> Path:
 @app.command(name="scan")
 def scan(
     ctx: typer.Context,
-    source_dir: Path = typer.Argument(
+    source_dirs: Optional[list[Path]] = typer.Argument(
         None,
-        help="扫描目录；默认 runtime/agent-local-batch/inbox/",
+        help="一个或多个扫描目录；不指定时默认 runtime/agent-local-batch/inbox/",
     ),
     extensions: Optional[str] = typer.Option(
         None, "--extensions", "-e",
@@ -120,18 +128,23 @@ def scan(
 ):
     """扫描目录中的音视频文件，返回 JSON 清单。
 
+    支持多目录：task-group scan dir1 dir2 dir3
+    所有目录的文件合并为一个清单，统一分块。
     不上传、不提交——纯本地扫描，秒级返回。
     """
     from cli.main import get_ctx
     c = get_ctx(ctx)
 
-    if source_dir is None:
-        source_dir = detect_project_root() / "runtime" / "agent-local-batch" / "inbox"
-    source_dir = source_dir.resolve()
+    if not source_dirs:
+        source_dirs = [detect_project_root() / "runtime" / "agent-local-batch" / "inbox"]
 
-    if not source_dir.is_dir():
-        out.error(f"目录不存在: {source_dir}")
-        raise typer.Exit(1)
+    resolved_dirs: list[Path] = []
+    for d in source_dirs:
+        d = d.resolve()
+        if not d.is_dir():
+            out.error(f"目录不存在: {d}")
+            raise typer.Exit(1)
+        resolved_dirs.append(d)
 
     allowed = SUPPORTED_EXTENSIONS
     if extensions:
@@ -143,27 +156,29 @@ def scan(
     total_duration = 0.0
     scan_start = time.time()
 
-    for path in sorted(source_dir.rglob("*")):
-        if not path.is_file():
-            continue
-        if path.suffix.lower() not in allowed:
-            continue
+    for scan_dir in resolved_dirs:
+        for path in sorted(scan_dir.rglob("*")):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in allowed:
+                continue
 
-        st = path.stat()
-        duration = _probe_duration(path) if probe else None
+            st = path.stat()
+            duration = _probe_duration(path) if probe else None
 
-        items.append({
-            "index": len(items),
-            "path": str(path.resolve()),
-            "name": path.name,
-            "size_bytes": st.st_size,
-            "duration_sec": duration,
-            "mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
-            "fingerprint": _fingerprint(path, st),
-        })
-        total_size += st.st_size
-        if duration:
-            total_duration += duration
+            items.append({
+                "index": len(items),
+                "path": str(path.resolve()),
+                "name": path.name,
+                "size_bytes": st.st_size,
+                "duration_sec": duration,
+                "mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+                "fingerprint": _fingerprint(path, st),
+                "source_dir": str(scan_dir),
+            })
+            total_size += st.st_size
+            if duration:
+                total_duration += duration
 
     scan_elapsed = round(time.time() - scan_start, 2)
 
@@ -177,8 +192,10 @@ def scan(
             "end_index": i + len(chunk_items) - 1,
         })
 
+    source_dirs_str = [str(d) for d in resolved_dirs]
     result = {
-        "source_dir": str(source_dir),
+        "source_dirs": source_dirs_str,
+        "source_dir": source_dirs_str[0],
         "total_files": len(items),
         "total_size_bytes": total_size,
         "total_duration_sec": round(total_duration, 1),
@@ -189,9 +206,10 @@ def scan(
         "items": items,
     }
 
+    dir_label = " + ".join(d.name for d in resolved_dirs)
     out.render(
         c.output_format, data=result,
-        title=f"扫描结果: {source_dir}",
+        title=f"扫描结果: {dir_label}",
         columns=["#", "文件名", "大小", "时长", "修改时间"],
         rows=[
             [
@@ -207,7 +225,8 @@ def scan(
             f"共 {len(items)} 个文件 · "
             f"{total_size / 1024 / 1024:.1f}MB · "
             f"时长 {total_duration:.0f}s · "
-            f"{len(chunks)} 个块"
+            f"{len(chunks)} 个块 · "
+            f"{len(resolved_dirs)} 个目录"
         ),
     )
 
@@ -245,7 +264,7 @@ def submit(
     chunks = manifest.get("chunks", [])
     cfg_chunk_size = manifest.get("chunk_size", 50)
 
-    source_dir = manifest.get("source_dir", "")
+    default_source_dir = manifest.get("source_dir", "")
 
     if chunk_index is not None:
         matching = [ch for ch in chunks if ch["chunk_index"] == chunk_index]
@@ -287,7 +306,8 @@ def submit(
         file_map: dict[str, str] = {}
 
         for item in chunk_items:
-            fpath = _resolve_manifest_item_path(item["path"], source_dir)
+            item_source = item.get("source_dir", default_source_dir)
+            fpath = _resolve_manifest_item_path(item["path"], item_source)
             if not fpath.exists():
                 upload_failures.append({"name": item["name"], "error": "file not found"})
                 continue

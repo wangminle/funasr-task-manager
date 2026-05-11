@@ -89,3 +89,29 @@ class TestToSrt:
     def test_srt_empty(self):
         raw = {}
         assert to_srt(raw) == ""
+
+
+@pytest.mark.unit
+class TestStampSentsSpacingRemoval:
+    """stamp_sents text_seg spaces stripped via .replace(' ', '')."""
+
+    def test_cjk_spacing_removed(self):
+        raw = {"stamp_sents": [
+            {"text_seg": "各 位 股 民 朋 友", "punc": "", "ts": [0, 2000]},
+        ]}
+        segs = parse_timestamp_segments(raw)
+        assert segs[0].text == "各位股民朋友"
+
+    def test_digits_and_cjk(self):
+        raw = {"stamp_sents": [
+            {"text_seg": "1 0 年 的 股 票", "punc": "", "ts": [0, 2000]},
+        ]}
+        segs = parse_timestamp_segments(raw)
+        assert segs[0].text == "10年的股票"
+
+    def test_punc_appended_and_cleaned(self):
+        raw = {"stamp_sents": [
+            {"text_seg": "各 位 股 民", "punc": "，", "ts": [0, 2000]},
+        ]}
+        segs = parse_timestamp_segments(raw)
+        assert segs[0].text == "各位股民，"

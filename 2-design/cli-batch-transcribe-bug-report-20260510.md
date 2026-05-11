@@ -1020,3 +1020,81 @@ required_columns = {
 **总新增工时**：约 3.5 小时（P0: 1.5h + P1: 40min + P2: 1.5h）
 
 **关键原则**：每个新测试都必须能直接拦截本次报告中的某个真实 Bug。不写"可能有用"的测试，只写"如果有这个测试，今天这个 Bug 就不会漏到生产"的测试。
+
+---
+
+## 第七部分：Slot 死锁修复（2026-05-11）
+
+### Bug #18：分段父任务 Slot 虚占导致确定性死锁
+
+| 字段 | 值 |
+|---|---|
+| 严重级别 | **P0 — 确定性死锁，必然复现** |
+| 影响范围 | 所有包含长视频分段的批量转写 |
+| 根因文件 | `task_runner.py` `_dispatch_queued_tasks_locked()` |
+| 修复 commit | 工作区（待提交） |
+
+#### 根因分析
+
+`running_count` 计算使用 `active_seg_parent_ids`（只包含有 DISPATCHED/TRANSCRIBING 分段的父任务）来排除父任务的 slot 占用。但当一个父任务的所有活跃分段完成（变为 SUCCEEDED）、仍有 PENDING 分段等待调度时，该父任务不再出现在 `active_seg_parent_ids` 中，从而被重新计入 slot 占用。
+
+**死锁条件**：当 `TRANSCRIBING 状态的分段父任务数 >= 总 slot 数` 时，所有 slot 被父任务"虚占"（父任务不持有 WebSocket 连接），pending 分段永远无法调度。
+
+#### 死锁复现证据（修复前）
+
+42 文件批量测试（30 短音频 + 12 长视频 × 3 台服务器 7 slot）：
+
+| 父任务 | 服务器 | 分段 (已完成/待调度/运行中) | 文件 |
+|---|---|---|---|
+| 01KRACN0PV7P... | asr-10097 | 1/1/0 | 第9集 量堆与谷堆 |
+| 01KRACN0NZK7... | asr-10096 | 1/1/0 | 第6集 脉冲放量 |
+| 01KRACN0NNXZ... | asr-10095 | 1/1/0 | 第5集 温和放量 |
+| 01KRACN0NCTE... | asr-10096 | 2/1/0 | 第4集 整体法和个体法 |
+| 01KRACN0MZ37... | asr-10095 | 1/1/0 | 第3集 形神分析法 |
+| 01KRACN0KV7B... | asr-10096 | 1/1/0 | 第11集 缩量 |
+| 01KRACN0KM54... | asr-10096 | 1/1/0 | 第10集 天量 |
+
+7 个父任务占满 7 slot，每个都有 pending 分段但 active=0。日志持续刷 `no_free_slots_for_scheduling` 超过 8 分钟。
+
+#### 修复方案
+
+将 `active_seg_parent_ids`（只排除有活跃分段的父任务）改为 `segmented_parent_ids`（排除**所有**有分段记录的父任务）。
+
+**代码变更**（`task_runner.py`）：
+
+```python
+# 修复前：只排除有活跃分段的父任务
+active_seg_parent_stmt = (
+    select(TaskSegment.task_id)
+    .where(TaskSegment.status.in_([
+        SegmentStatus.DISPATCHED, SegmentStatus.TRANSCRIBING,
+    ]))
+    .distinct()
+)
+
+# 修复后：排除所有有分段记录的父任务
+segmented_parent_stmt = (
+    select(TaskSegment.task_id).distinct()
+)
+```
+
+同步更新了 post-dispatch invariant 检查，确保计数逻辑一致。
+
+#### 验证结果
+
+**单元测试**：新增 3 个死锁场景测试，全部通过
+
+- `test_pending_segment_dispatched_when_parent_excluded_from_slots` — 1 slot、1 父任务、pending 分段可调度
+- `test_parent_and_regular_task_both_dispatch_with_enough_slots` — 2 slot、父任务 + 普通任务均调度
+- `test_multiple_parents_all_slots_deadlock_resolved` — 2 slot、2 父任务死锁场景解除
+
+**全量单测**：601/603 通过（2 个失败为 pre-existing 的 Windows 文件锁和长音频分段阈值问题）
+
+**42 文件回归测试**（修复后 vs 修复前）：
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| Group 1（30 短音频） | 14/30 成功后死锁 | **30/30 成功** |
+| Group 2（12 长视频） | 5/12 成功 + 7 死锁 | **12/12 成功** |
+| 总成功率 | 19/42 (45%) | **42/42 (100%)** |
+| 总耗时 | >8 分钟仍死锁 | **~3.5 分钟** |

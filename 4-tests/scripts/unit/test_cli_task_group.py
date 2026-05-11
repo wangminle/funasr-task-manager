@@ -136,11 +136,221 @@ class TestTaskGroupScan:
         assert result.exit_code == 0
         data = json.loads(result.stdout)
         required_fields = {"index", "path", "name", "size_bytes",
-                           "duration_sec", "mtime", "fingerprint"}
+                           "duration_sec", "mtime", "fingerprint",
+                           "source_dir"}
         for item in data["items"]:
             assert required_fields.issubset(item.keys())
             assert isinstance(item["size_bytes"], int)
             assert item["size_bytes"] > 0
+
+
+@pytest.mark.unit
+class TestTaskGroupMultiDirScan:
+    """Tests for scanning multiple directories in one command."""
+
+    @pytest.fixture
+    def two_dirs(self, tmp_path):
+        dir_a = tmp_path / "folder_a"
+        dir_b = tmp_path / "folder_b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        (dir_a / "a1.wav").write_bytes(b"RIFF" + b"\x00" * 200)
+        (dir_a / "a2.mp3").write_bytes(b"RIFF" + b"\x00" * 300)
+        (dir_b / "b1.flac").write_bytes(b"RIFF" + b"\x00" * 150)
+        (dir_b / "b2.wav").write_bytes(b"RIFF" + b"\x00" * 250)
+        (dir_b / "b3.m4a").write_bytes(b"RIFF" + b"\x00" * 100)
+        return dir_a, dir_b
+
+    def test_multi_dir_scan_merges_files(self, two_dirs, mock_client):
+        dir_a, dir_b = two_dirs
+        result = runner.invoke(app, [
+            "--server", "http://test:15797", "--output", "json",
+            "task-group", "scan", str(dir_a), str(dir_b), "--no-probe",
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["total_files"] == 5
+        names = {it["name"] for it in data["items"]}
+        assert names == {"a1.wav", "a2.mp3", "b1.flac", "b2.wav", "b3.m4a"}
+
+    def test_multi_dir_manifest_has_source_dirs(self, two_dirs, mock_client):
+        dir_a, dir_b = two_dirs
+        result = runner.invoke(app, [
+            "--server", "http://test:15797", "--output", "json",
+            "task-group", "scan", str(dir_a), str(dir_b), "--no-probe",
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert "source_dirs" in data
+        assert len(data["source_dirs"]) == 2
+        assert str(dir_a) in data["source_dirs"]
+        assert str(dir_b) in data["source_dirs"]
+        # backward compat: source_dir still present
+        assert data["source_dir"] == str(dir_a)
+
+    def test_multi_dir_items_track_source_dir(self, two_dirs, mock_client):
+        dir_a, dir_b = two_dirs
+        result = runner.invoke(app, [
+            "--server", "http://test:15797", "--output", "json",
+            "task-group", "scan", str(dir_a), str(dir_b), "--no-probe",
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        for item in data["items"]:
+            assert "source_dir" in item
+        a_items = [it for it in data["items"] if it["source_dir"] == str(dir_a)]
+        b_items = [it for it in data["items"] if it["source_dir"] == str(dir_b)]
+        assert len(a_items) == 2
+        assert len(b_items) == 3
+
+    def test_multi_dir_indices_are_continuous(self, two_dirs, mock_client):
+        dir_a, dir_b = two_dirs
+        result = runner.invoke(app, [
+            "--server", "http://test:15797", "--output", "json",
+            "task-group", "scan", str(dir_a), str(dir_b), "--no-probe",
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        indices = [it["index"] for it in data["items"]]
+        assert indices == list(range(5))
+
+    def test_multi_dir_one_nonexistent_fails(self, two_dirs, mock_client, tmp_path):
+        dir_a, _ = two_dirs
+        bad = tmp_path / "no_such_dir"
+        result = runner.invoke(app, [
+            "--server", "http://test:15797",
+            "task-group", "scan", str(dir_a), str(bad), "--no-probe",
+        ])
+        assert result.exit_code == 1
+
+    def test_multi_dir_with_extension_filter(self, two_dirs, mock_client):
+        dir_a, dir_b = two_dirs
+        result = runner.invoke(app, [
+            "--server", "http://test:15797", "--output", "json",
+            "task-group", "scan", str(dir_a), str(dir_b),
+            "--extensions", ".wav", "--no-probe",
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["total_files"] == 2
+        assert all(it["name"].endswith(".wav") for it in data["items"])
+
+    def test_single_dir_backward_compat(self, two_dirs, mock_client):
+        """Single dir still works exactly as before."""
+        dir_a, _ = two_dirs
+        result = runner.invoke(app, [
+            "--server", "http://test:15797", "--output", "json",
+            "task-group", "scan", str(dir_a), "--no-probe",
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["total_files"] == 2
+        assert data["source_dir"] == str(dir_a)
+        assert data["source_dirs"] == [str(dir_a)]
+
+
+@pytest.mark.unit
+class TestMultiDirSubmit:
+    """Tests for submitting multi-directory manifests."""
+
+    def test_submit_multi_dir_manifest(self, tmp_path, mock_client):
+        """Submit should work with a manifest from multi-dir scan."""
+        dir_a = tmp_path / "dir_a"
+        dir_b = tmp_path / "dir_b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        (dir_a / "a.wav").write_bytes(b"RIFF" + b"\x00" * 100)
+        (dir_b / "b.wav").write_bytes(b"RIFF" + b"\x00" * 100)
+
+        manifest = {
+            "source_dirs": [str(dir_a), str(dir_b)],
+            "source_dir": str(dir_a),
+            "total_files": 2,
+            "chunk_size": 50,
+            "total_chunks": 1,
+            "chunks": [{"chunk_index": 0, "file_count": 2,
+                        "start_index": 0, "end_index": 1}],
+            "items": [
+                {"index": 0, "path": str(dir_a / "a.wav"), "name": "a.wav",
+                 "size_bytes": 104, "duration_sec": None,
+                 "mtime": "2026-05-06T12:00:00+00:00",
+                 "fingerprint": "x:104:0", "source_dir": str(dir_a)},
+                {"index": 1, "path": str(dir_b / "b.wav"), "name": "b.wav",
+                 "size_bytes": 104, "duration_sec": None,
+                 "mtime": "2026-05-06T12:00:00+00:00",
+                 "fingerprint": "y:104:0", "source_dir": str(dir_b)},
+            ],
+        }
+        mf = tmp_path / "manifest.json"
+        mf.write_text(json.dumps(manifest), encoding="utf-8")
+
+        mock_client.upload_file.side_effect = [
+            {"file_id": "fid_a"}, {"file_id": "fid_b"},
+        ]
+        mock_client.create_tasks.return_value = [
+            _make_task("tid_a", "TG_MULTI"), _make_task("tid_b", "TG_MULTI"),
+        ]
+
+        result = runner.invoke(app, [
+            "--server", "http://test:15797", "--output", "json", "--quiet",
+            "task-group", "submit", "--manifest", str(mf),
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["total_uploaded"] == 2
+        assert data["upload_failures"] == 0
+
+    def test_submit_uses_item_source_dir_for_relative_paths(self, tmp_path, mock_client):
+        """When items have relative paths, per-item source_dir takes priority."""
+        dir_a = tmp_path / "alpha"
+        dir_b = tmp_path / "beta"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        (dir_a / "x.wav").write_bytes(b"RIFF" + b"\x00" * 100)
+        (dir_b / "y.wav").write_bytes(b"RIFF" + b"\x00" * 100)
+
+        manifest = {
+            "source_dirs": [str(dir_a), str(dir_b)],
+            "source_dir": str(dir_a),
+            "total_files": 2,
+            "chunk_size": 50,
+            "total_chunks": 0,
+            "chunks": [],
+            "items": [
+                {"index": 0, "path": "x.wav", "name": "x.wav",
+                 "size_bytes": 104, "duration_sec": None,
+                 "mtime": "2026-05-06T12:00:00+00:00",
+                 "fingerprint": "x:104:0", "source_dir": str(dir_a)},
+                {"index": 1, "path": "y.wav", "name": "y.wav",
+                 "size_bytes": 104, "duration_sec": None,
+                 "mtime": "2026-05-06T12:00:00+00:00",
+                 "fingerprint": "y:104:0", "source_dir": str(dir_b)},
+            ],
+        }
+        mf = tmp_path / "manifest.json"
+        mf.write_text(json.dumps(manifest), encoding="utf-8")
+
+        mock_client.upload_file.side_effect = [
+            {"file_id": "fid_x"}, {"file_id": "fid_y"},
+        ]
+        mock_client.create_tasks.return_value = [
+            _make_task("tid_x", "TG_REL_MULTI"),
+            _make_task("tid_y", "TG_REL_MULTI"),
+        ]
+
+        result = runner.invoke(app, [
+            "--server", "http://test:15797", "--output", "json", "--quiet",
+            "task-group", "submit", "--manifest", str(mf),
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["total_uploaded"] == 2
+        assert data["upload_failures"] == 0
+
+        calls = mock_client.upload_file.call_args_list
+        uploaded_paths = {str(c.args[0]) for c in calls}
+        assert str(dir_a / "x.wav") in uploaded_paths
+        assert str(dir_b / "y.wav") in uploaded_paths
 
 
 @pytest.mark.unit
@@ -611,3 +821,38 @@ class TestTaskGroupDownload:
             "--format", "txt",
         ])
         assert result.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# _resolve_manifest_item_path unit tests
+# ---------------------------------------------------------------------------
+from cli.commands.task_group import _resolve_manifest_item_path
+
+
+@pytest.mark.unit
+class TestResolveManifestItemPath:
+    """Tests for absolute path existence check and source_dir fallback."""
+
+    def test_absolute_path_exists(self, tmp_path):
+        f = tmp_path / "audio.wav"
+        f.write_bytes(b"RIFF")
+        resolved = _resolve_manifest_item_path(str(f), str(tmp_path / "other"))
+        assert resolved == f
+
+    def test_absolute_path_missing_falls_back_to_source_dir(self, tmp_path):
+        source = tmp_path / "real_dir"
+        source.mkdir()
+        (source / "audio.wav").write_bytes(b"RIFF")
+        bogus_abs = tmp_path / "deleted_dir" / "audio.wav"
+        resolved = _resolve_manifest_item_path(str(bogus_abs), str(source))
+        assert resolved == source / "audio.wav"
+
+    def test_absolute_path_missing_no_source_dir(self, tmp_path):
+        bogus_abs = tmp_path / "gone" / "audio.wav"
+        resolved = _resolve_manifest_item_path(str(bogus_abs), "")
+        assert resolved == bogus_abs
+
+    def test_absolute_path_missing_fallback_also_missing(self, tmp_path):
+        bogus_abs = tmp_path / "gone" / "audio.wav"
+        resolved = _resolve_manifest_item_path(str(bogus_abs), str(tmp_path / "empty"))
+        assert resolved == bogus_abs

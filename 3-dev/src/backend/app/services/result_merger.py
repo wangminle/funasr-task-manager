@@ -11,14 +11,16 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from app.services.result_formatter import TimestampSegment, parse_timestamp_segments
+from app.services.result_formatter import (
+    TimestampSegment,
+    parse_timestamp_segments,
+)
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 MERGE_STATUS_OK = "OK"
 MERGE_STATUS_TEXT_ONLY_FALLBACK = "TEXT_ONLY_FALLBACK"
-
 
 @dataclass
 class SegmentInput:
@@ -99,17 +101,22 @@ def merge_segment_results(
                 keep_end_ms=seg_input.keep_end_ms,
             )
             all_ts.extend(filtered)
-            all_text_parts.append("".join(ts.text for ts in filtered))
-        else:
-            text = raw.get("text", "")
-            if text:
-                all_text_parts.append(text)
-                has_text_only_fallback = True
+
+        text = raw.get("text", "")
+        if text:
+            all_text_parts.append(text)
+        if not has_real_ts and text:
+            has_text_only_fallback = True
 
     merged_text = "".join(all_text_parts)
 
     stamp_sents = [
-        {"text_seg": ts.text, "punc": "", "text": ts.text, "ts": [ts.start_ms, ts.end_ms]}
+        {
+            "text_seg": ts.text,
+            "punc": "",
+            "text": ts.text,
+            "ts": [ts.start_ms, ts.end_ms],
+        }
         for ts in all_ts
     ]
 

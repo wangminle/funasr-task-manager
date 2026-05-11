@@ -1,35 +1,35 @@
 {
-  "version": 1,
+  "version": 2,
   "files": {
     "test001.wav": {
       "expected_language": "zh-CN",
-      "keywords_all": [],
-      "keywords_any": [],
-      "notes": "短音频测试样本。首次回归后从 4-tests/batch-testing/outputs/e2e/ 抽取可接受文本，补充关键词。"
+      "keywords_all": ["欢喜", "禅定"],
+      "keywords_any": ["观音", "菩萨", "念经", "功德", "修学"],
+      "notes": "佛学讲座音频。关键词从 20260511-120519 E2E 稳定结果提取。"
     },
     "tv-report-1.wav": {
       "expected_language": "zh-CN",
-      "keywords_all": [],
-      "keywords_any": [],
-      "notes": "电视新闻报道音频。建议补充新闻领域常见关键词以验证转写质量。"
+      "keywords_all": ["五常大米", "哈尔滨"],
+      "keywords_any": ["省委", "绿色食品", "品牌", "陆浩", "宋希斌"],
+      "notes": "电视新闻报道音频。关键词从 20260511-120519 E2E 稳定结果提取。"
     },
     "test.mp4": {
       "expected_language": "zh-CN",
-      "keywords_all": [],
-      "keywords_any": [],
-      "notes": "短视频测试样本。验证视频预处理链路不会导致转写失败。首次回归后补充关键词。"
+      "keywords_all": ["设计", "乡村振兴"],
+      "keywords_any": ["农产品", "包装", "普惠", "生态"],
+      "notes": "短视频测试样本。关键词从 20260511-120519 E2E 稳定结果提取。"
     },
     "办公平台20250724-144218.mp4": {
       "expected_language": "zh-CN",
-      "keywords_all": [],
-      "keywords_any": [],
-      "notes": "办公场景录屏。文件名含中文，同时验证中文路径处理。首次回归后补充关键词。"
+      "keywords_all": ["空调"],
+      "keywords_any": ["省电", "三伏", "温度", "频繁"],
+      "notes": "办公场景录屏。关键词从 20260511-120519 E2E 稳定结果提取。"
     },
     "tv-report-1.mp4": {
       "expected_language": "zh-CN",
-      "keywords_all": [],
-      "keywords_any": [],
-      "notes": "电视新闻报道视频版本。与 tv-report-1.wav 为同源不同格式，可交叉验证转写一致性。"
+      "keywords_all": ["五常大米", "哈尔滨"],
+      "keywords_any": ["省委", "绿色食品", "品牌", "陆浩"],
+      "notes": "与 tv-report-1.wav 同源不同格式，共享关键词基线。"
     }
   }
 }

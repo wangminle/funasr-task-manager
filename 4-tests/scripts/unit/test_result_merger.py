@@ -20,8 +20,17 @@ from app.services.result_formatter import (
 )
 
 
-def _raw(stamp_sents: list[dict], text: str = "", mode: str = "offline") -> str:
-    """Build a raw FunASR result JSON string."""
+def _raw(stamp_sents: list[dict], text: str | None = None, mode: str = "offline") -> str:
+    """Build a raw FunASR result JSON string.
+
+    If *text* is not given, auto-generate it from stamp_sents text_seg + punc
+    (mimicking the clean text FunASR returns alongside stamp_sents).
+    """
+    if text is None:
+        text = "".join(
+            (s.get("text_seg", "") + s.get("punc", "")).replace(" ", "")
+            for s in stamp_sents
+        )
     return json.dumps({"text": text, "stamp_sents": stamp_sents, "mode": mode})
 
 
@@ -369,3 +378,47 @@ class TestDesignDocScenario:
         starts = [s["ts"][0] for s in result["stamp_sents"]]
         for i in range(1, len(starts)):
             assert starts[i] >= starts[i - 1], f"Non-monotonic: {starts}"
+
+
+@pytest.mark.unit
+class TestMergedTextFromRawText:
+    """Merged text uses raw['text'] (clean, from FunASR) directly."""
+
+    def test_merged_text_is_clean_raw_text(self):
+        """raw['text'] is already clean; merged text concatenates them."""
+        raw0 = json.dumps({
+            "text": "各位股民朋友",
+            "stamp_sents": [
+                {"text_seg": "各 位 股 民 朋 友", "punc": "", "ts": [0, 5000]},
+            ],
+        })
+        raw1 = json.dumps({
+            "text": "大家好",
+            "stamp_sents": [
+                {"text_seg": "大 家 好", "punc": "", "ts": [0, 3000]},
+            ],
+        })
+        inputs = [
+            SegmentInput(0, source_start_ms=0, keep_start_ms=0,
+                         keep_end_ms=10000, raw_result_json=raw0),
+            SegmentInput(1, source_start_ms=10000, keep_start_ms=10000,
+                         keep_end_ms=20000, raw_result_json=raw1),
+        ]
+        result, _ = merge_segment_results(inputs)
+        assert result["text"] == "各位股民朋友大家好"
+        assert " " not in result["text"]
+
+    def test_stamp_sents_spacing_stripped(self):
+        """stamp_sents text should have spaces stripped for SRT display."""
+        raw0 = json.dumps({
+            "text": "各位股民朋友",
+            "stamp_sents": [
+                {"text_seg": "各 位 股 民 朋 友", "punc": "", "ts": [0, 5000]},
+            ],
+        })
+        inputs = [
+            SegmentInput(0, source_start_ms=0, keep_start_ms=0,
+                         keep_end_ms=10000, raw_result_json=raw0),
+        ]
+        result, _ = merge_segment_results(inputs)
+        assert result["stamp_sents"][0]["text_seg"] == "各位股民朋友"
