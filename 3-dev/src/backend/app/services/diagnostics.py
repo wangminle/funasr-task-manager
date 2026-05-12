@@ -51,10 +51,10 @@ EXPECTED_CORE_TABLE_COLUMNS = {
         "server_id", "status", "enabled", "max_concurrency",
     },
     "tasks": {
-        "task_id", "status", "started_at", "assigned_server_id",
+        "task_id", "status", "started_at", "assigned_server_id", "run_generation",
     },
     "task_segments": {
-        "segment_id", "task_id", "status", "assigned_server_id",
+        "segment_id", "task_id", "status", "assigned_server_id", "run_generation",
     },
 }
 

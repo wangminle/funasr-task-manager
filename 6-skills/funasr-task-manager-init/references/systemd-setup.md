@@ -158,11 +158,47 @@ loginctl enable-linger $USER
 
 ## Step 5：验证
 
+### 5a：服务可用性验证
+
 ```bash
 sleep 5
 systemctl --user is-active funasr-task-manager-backend
 curl -sf http://127.0.0.1:{PORT}/health
 ```
+
+### 5b：版本一致性校验
+
+服务启动后，必须校验运行中的代码版本与仓库当前版本一致：
+
+```bash
+HEALTH=$(curl -sf http://127.0.0.1:{PORT}/health)
+RUNNING_VERSION=$(echo "$HEALTH" | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])")
+RUNNING_SHA=$(echo "$HEALTH" | python3 -c "import sys,json; print(json.load(sys.stdin)['git_sha'])")
+RUNNING_STARTED=$(echo "$HEALTH" | python3 -c "import sys,json; print(json.load(sys.stdin)['started_at'])")
+
+REPO_VERSION=$(grep -m1 '^version' "$(git rev-parse --show-toplevel)/3-dev/src/backend/pyproject.toml" | sed 's/.*"\(.*\)".*/\1/')
+REPO_SHA=$(git rev-parse --short HEAD)
+
+echo "运行中: version=$RUNNING_VERSION  git_sha=$RUNNING_SHA  started=$RUNNING_STARTED"
+echo "仓库:   version=$REPO_VERSION  git_sha=$REPO_SHA"
+```
+
+判断规则：
+
+- `RUNNING_SHA == REPO_SHA` 且 `RUNNING_VERSION == REPO_VERSION` → ✅ 版本一致
+- 任一不匹配 → ⚠️ 告警，询问用户是否重启：
+  ```
+  ⚠️ systemd 服务运行的版本与仓库不一致：
+    运行中: version={RUNNING_VERSION} git_sha={RUNNING_SHA} (启动于 {RUNNING_STARTED})
+    仓库:   version={REPO_VERSION} git_sha={REPO_SHA}
+
+  建议执行: systemctl --user restart funasr-task-manager-backend
+  是否立即重启？(y/n)
+  ```
+- 用户确认重启后，等待 5 秒再次执行 5a + 5b 校验
+- 重启后仍不一致 → 警告并输出诊断信息（unit 文件中的 WorkingDirectory 是否正确等），但不阻断
+
+### 5c：输出验证报告
 
 验证通过后输出：
 
@@ -172,6 +208,7 @@ curl -sf http://127.0.0.1:{PORT}/health
   服务名:   funasr-task-manager-backend
   状态:     active (running)
   健康检查: ✅ 通过
+  版本校验: ✅ version={RUNNING_VERSION} git_sha={RUNNING_SHA}
   端口:     {PORT}
   自启动:   已启用
   Linger:   已启用（断开 SSH 后服务不停止）
@@ -201,6 +238,7 @@ journalctl --user -u funasr-task-manager-backend --no-pager -n 30
 | 数据库锁 | `database is locked` | 确保无其他后端实例在运行 |
 | Linger 未启用 | SSH 断开后服务消失 | `loginctl enable-linger $USER` |
 | 旧系统级服务冲突 | 端口被占用（旧服务仍在运行） | 先执行 Step 0 清理旧服务 |
+| 版本不一致 | `/health` 的 `git_sha` 与仓库不同 | `systemctl --user restart funasr-task-manager-backend` |
 
 ## 卸载
 

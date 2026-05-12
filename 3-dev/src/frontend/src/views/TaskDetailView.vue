@@ -60,7 +60,11 @@
             <el-progress :percentage="Math.round(progress * 100)" :status="progressStatus(task.status)" :stroke-width="20" :text-inside="true" />
             <div class="progress-info">
               <span class="progress-msg">{{ progressMessage }}</span>
-              <span v-if="eta != null && eta > 0" class="eta">预计剩余: {{ formatEta(eta) }}</span>
+              <div v-if="hasEtaBreakdown" class="eta-stack">
+                <span v-if="runningEta != null && runningEta > 0" class="eta">运行中 ETA: {{ formatEta(runningEta) }}</span>
+                <span v-if="queueEta != null && queueEta > 0" class="eta">排队剩余 ETA: {{ formatEta(queueEta) }}</span>
+                <span v-if="showLegacyEta" class="eta">预计剩余: {{ formatEta(eta) }}</span>
+              </div>
             </div>
           </div>
 
@@ -131,6 +135,18 @@ let sseReconnectTimer = null
 let sseReader = null
 
 const canCancel = computed(() => ['PENDING', 'QUEUED'].includes(task.value.status))
+const runningEta = computed(() => task.value.running_eta_seconds ?? null)
+const queueEta = computed(() => task.value.queue_eta_seconds ?? null)
+const hasEtaBreakdown = computed(() => (
+  (runningEta.value != null && runningEta.value > 0)
+  || (queueEta.value != null && queueEta.value > 0)
+  || (eta.value != null && eta.value > 0)
+))
+const showLegacyEta = computed(() => (
+  eta.value != null && eta.value > 0
+  && !(runningEta.value != null && runningEta.value > 0)
+  && !(queueEta.value != null && queueEta.value > 0)
+))
 
 const STEP_ORDER = ['PENDING', 'PREPROCESSING', 'QUEUED', 'DISPATCHED', 'TRANSCRIBING']
 
@@ -181,6 +197,7 @@ async function loadTask() {
     const data = await getTask(taskId.value)
     task.value = data
     progress.value = data.progress
+    eta.value = data.eta_seconds
     if (data.file_id && !fileInfo.value) {
       try {
         fileInfo.value = await getFileMetadata(data.file_id)
@@ -261,6 +278,8 @@ function connectSSE() {
 function handleSSEEvent(eventType, data) {
   if (eventType === 'status_change') {
     task.value.status = data.status
+    task.value.running_eta_seconds = data.running_eta_seconds
+    task.value.queue_eta_seconds = data.queue_eta_seconds
     progress.value = data.progress
     eta.value = data.eta_seconds
     progressMessage.value = data.message
@@ -268,6 +287,8 @@ function handleSSEEvent(eventType, data) {
     if (events.value.length > 100) events.value.length = 100
   } else if (eventType === 'progress_update') {
     progress.value = data.progress
+    task.value.running_eta_seconds = data.running_eta_seconds
+    task.value.queue_eta_seconds = data.queue_eta_seconds
     eta.value = data.eta_seconds
     progressMessage.value = data.message
   } else if (eventType === 'complete') {

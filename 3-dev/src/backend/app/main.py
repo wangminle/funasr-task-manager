@@ -19,10 +19,15 @@ from app.storage.repository import ServerRepository
 logger = get_logger(__name__)
 
 _schema_ok: bool = False
+_git_sha: str = "unknown"
 
 
 def get_schema_ok() -> bool:
     return _schema_ok
+
+
+def get_git_sha() -> str:
+    return _git_sha
 
 
 async def _get_servers_for_heartbeat() -> list[dict]:
@@ -56,11 +61,12 @@ def _get_git_short_sha() -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging(level=settings.log_level, fmt=settings.log_format)
-    git_sha = _get_git_short_sha()
+    global _git_sha
+    _git_sha = _get_git_short_sha()
     logger.info(
         "application_starting",
         version=settings.app_version,
-        git_sha=git_sha,
+        git_sha=_git_sha,
         python_version=__import__("sys").version.split()[0],
         stale_task_timeout_minutes=settings.stale_task_timeout_minutes,
         task_timeout_seconds=settings.task_timeout_seconds,

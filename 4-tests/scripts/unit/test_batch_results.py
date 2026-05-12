@@ -201,6 +201,12 @@ class TestBatchSummaryFormat:
             "task_group_id": "GRP05", "total": 1, "succeeded": 1,
             "failed": 0, "canceled": 0, "in_progress": 0,
             "progress": 1.0, "is_complete": True,
+            "scheduling": {
+                "work_steal_count": 2,
+                "work_steal_estimated_gain_sec": 37.5,
+                "est_stolen_total_sec": 22.0,
+                "cross_server_segment_tasks": 1,
+            },
         }
         mock_client.list_group_tasks.return_value = {
             "task_group_id": "GRP05",
@@ -224,6 +230,10 @@ class TestBatchSummaryFormat:
         assert "formats_exported" in summary
         assert "output_directory" in summary
         assert "items" in summary
+        assert summary["scheduling"]["work_steal_count"] == 2
+        assert summary["scheduling"]["work_steal_estimated_gain_sec"] == 37.5
+        assert summary["scheduling"]["est_stolen_total_sec"] == 22.0
+        assert summary["scheduling"]["cross_server_segment_tasks"] == 1
         assert isinstance(summary["items"], list)
 
         item = summary["items"][0]

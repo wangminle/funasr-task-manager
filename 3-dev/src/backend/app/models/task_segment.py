@@ -43,6 +43,7 @@ class TaskSegment(Base):
         String(64), ForeignKey("server_instances.server_id"), nullable=True,
     )
     retry_count: Mapped[int] = mapped_column(SmallInteger, default=0)
+    run_generation: Mapped[int] = mapped_column(SmallInteger, default=0)
     raw_result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 

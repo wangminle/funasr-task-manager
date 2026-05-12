@@ -163,11 +163,11 @@ class TestTaskRunnerDispatch:
 
 
 @pytest.mark.unit
-class TestSlotQueueDispatch:
-    """Verify that slot queues cache the plan and avoid redundant re-planning."""
+class TestPlanPoolDispatch:
+    """Verify that PlanPool caches the plan and avoids redundant re-planning."""
 
-    async def test_slot_queues_populated_after_first_dispatch(self, db_engine, monkeypatch):
-        """First dispatch should build slot queues for deferred tasks."""
+    async def test_plan_pool_populated_after_first_dispatch(self, db_engine, monkeypatch):
+        """First dispatch should populate PlanPool for deferred tasks."""
         session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
         monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
         monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
@@ -186,12 +186,11 @@ class TestSlotQueueDispatch:
         await runner._dispatch_queued_tasks()
         await asyncio.sleep(0)
 
-        assert runner._slot_queues, "Slot queues should hold deferred tasks"
-        total_deferred = sum(len(sq.decisions) for sq in runner._slot_queues.values())
-        assert total_deferred > 0, "Some tasks should remain in slot queues for later dispatch"
+        assert runner._plan_pool, "PlanPool should hold deferred tasks"
+        assert len(runner._plan_pool) > 0, "Some tasks should remain in PlanPool"
 
-    async def test_second_dispatch_pops_from_queue(self, db_engine, monkeypatch):
-        """After a task completes, second dispatch should pop from pre-planned queue."""
+    async def test_second_dispatch_pops_from_pool(self, db_engine, monkeypatch):
+        """After a task completes, second dispatch should pop from PlanPool."""
         session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
         monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
         monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
@@ -213,7 +212,7 @@ class TestSlotQueueDispatch:
         first_wave = list(started)
         assert len(first_wave) == 1
 
-        deferred_before = sum(len(sq.decisions) for sq in runner._slot_queues.values())
+        deferred_before = len(runner._plan_pool)
         assert deferred_before == 2
 
         async with session_factory() as session:
@@ -227,7 +226,7 @@ class TestSlotQueueDispatch:
         await asyncio.sleep(0)
 
         assert len(started) == 2
-        deferred_after = sum(len(sq.decisions) for sq in runner._slot_queues.values())
+        deferred_after = len(runner._plan_pool)
         assert deferred_after == deferred_before - 1
 
 
@@ -351,7 +350,7 @@ class TestCircuitBreakerPlanInvalidation:
                             _breaker_mock_with_broken({"srv-1"}))
 
         started.clear()
-        runner._clear_slot_queues()
+        runner._clear_plan_pool()
         await runner._dispatch_queued_tasks()
         await asyncio.sleep(0)
 
@@ -364,7 +363,7 @@ class TestCircuitBreakerPlanInvalidation:
                 f"Task {t.task_id} dispatched to circuit-broken server srv-1"
 
     async def test_plan_invalidated_on_server_set_change(self, db_engine, monkeypatch):
-        """When available server set changes, _slot_queues should be rebuilt."""
+        """When available server set changes, PlanPool should be rebuilt."""
         session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
         monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
         monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
@@ -396,7 +395,7 @@ class TestCircuitBreakerPlanInvalidation:
         monkeypatch.setattr("app.services.task_runner.breaker_registry",
                             _breaker_mock_with_broken({"srv-2"}))
 
-        runner._clear_slot_queues()
+        runner._clear_plan_pool()
         await runner._dispatch_queued_tasks()
         await asyncio.sleep(0)
 
@@ -485,12 +484,12 @@ class TestPerSlotWorkStealing:
 
 @pytest.mark.unit
 class TestPlanInvalidationOnCompletion:
-    """Verify slot-queue plan invalidation on task completion (conservative clearing)."""
+    """Verify PlanPool plan invalidation on task completion (conservative clearing)."""
 
-    async def test_plan_preserved_when_slot_queues_still_have_decisions_on_success(
+    async def test_plan_preserved_when_pool_still_has_items_on_success(
         self, db_engine, monkeypatch,
     ):
-        """Do not wipe the global plan while other tasks remain in slot queues."""
+        """Do not wipe the global plan while items remain in PlanPool."""
         session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
         monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
 
@@ -500,27 +499,22 @@ class TestPlanInvalidationOnCompletion:
             await session.commit()
 
         runner = BackgroundTaskRunner()
-        from app.services.scheduler import ScheduleDecision, SlotQueue
-        pending = [
+        from app.services.scheduler import ScheduleDecision
+        runner._plan_pool.merge([
             ScheduleDecision("t-fake", "srv-1", 0, 10.0, 5.0, 15.0, 2, 30.0),
-        ]
-        runner._slot_queues = {
-            "srv-1:0": SlotQueue(server_id="srv-1", slot_index=0, decisions=pending.copy()),
-        }
-        runner._planned_task_ids = {"t-fake"}
+        ])
         runner._planned_available_server_ids = frozenset({"srv-1"})
 
         await runner._mark_task_succeeded("t-done")
 
-        assert runner._slot_queues["srv-1:0"].decisions == pending
-        assert runner._planned_task_ids == {"t-fake"}
+        assert runner._plan_pool.contains("t-fake")
         assert runner._planned_available_server_ids == frozenset({"srv-1"})
         assert runner._dispatch_event.is_set()
 
-    async def test_plan_preserved_when_slot_queues_still_have_decisions_on_failure(
+    async def test_plan_preserved_when_pool_still_has_items_on_failure(
         self, db_engine, monkeypatch,
     ):
-        """Same as success path: pending slot-queue work keeps the plan intact."""
+        """Same as success path: pending PlanPool work keeps the plan intact."""
         session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
         monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
 
@@ -530,27 +524,22 @@ class TestPlanInvalidationOnCompletion:
             await session.commit()
 
         runner = BackgroundTaskRunner()
-        from app.services.scheduler import ScheduleDecision, SlotQueue
-        pending = [
+        from app.services.scheduler import ScheduleDecision
+        runner._plan_pool.merge([
             ScheduleDecision("t-fake2", "srv-1", 0, 10.0, 5.0, 15.0, 2, 30.0),
-        ]
-        runner._slot_queues = {
-            "srv-1:0": SlotQueue(server_id="srv-1", slot_index=0, decisions=pending.copy()),
-        }
-        runner._planned_task_ids = {"t-fake2"}
+        ])
         runner._planned_available_server_ids = frozenset({"srv-1"})
 
         await runner._mark_task_failed("t-fail", "some error")
 
-        assert runner._slot_queues["srv-1:0"].decisions == pending
-        assert runner._planned_task_ids == {"t-fake2"}
+        assert runner._plan_pool.contains("t-fake2")
         assert runner._planned_available_server_ids == frozenset({"srv-1"})
         assert runner._dispatch_event.is_set()
 
-    async def test_plan_cleared_on_task_success_when_no_pending_slot_decisions(
+    async def test_plan_cleared_on_task_success_when_pool_empty(
         self, db_engine, monkeypatch,
     ):
-        """When every slot queue is empty, completion clears the plan for the next replan."""
+        """When PlanPool is empty, completion clears the plan for next replan."""
         session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
         monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
 
@@ -560,17 +549,11 @@ class TestPlanInvalidationOnCompletion:
             await session.commit()
 
         runner = BackgroundTaskRunner()
-        from app.services.scheduler import SlotQueue
-        runner._slot_queues = {
-            "srv-1:0": SlotQueue(server_id="srv-1", slot_index=0, decisions=[]),
-        }
-        runner._planned_task_ids = set()
         runner._planned_available_server_ids = frozenset({"srv-1"})
 
         await runner._mark_task_succeeded("t-done2")
 
-        assert runner._slot_queues == {}
-        assert runner._planned_task_ids == set()
+        assert not runner._plan_pool
         assert runner._planned_available_server_ids == frozenset()
         assert runner._dispatch_event.is_set()
 
@@ -582,17 +565,15 @@ class TestStealImprovementCalculation:
     def test_find_steal_candidate_uses_remaining_time(self):
         """Improvement should be computed as source_remaining - est_stolen,
         not decision.estimated_finish - est_stolen."""
-        from app.services.scheduler import ScheduleDecision, SlotQueue, ServerProfile
+        from app.services.scheduler import ScheduleDecision, ServerProfile
         from app.services.scheduler import scheduler as global_scheduler
 
         runner = BackgroundTaskRunner()
 
-        runner._slot_queues = {
-            "slow:0": SlotQueue(server_id="slow", slot_index=0, decisions=[
-                ScheduleDecision("t-ahead", "slow", 0, 0.0, 30.0, 30.0, 1, 100.0,),
-                ScheduleDecision("t-target", "slow", 0, 30.0, 25.0, 55.0, 2, 80.0),
-            ]),
-        }
+        runner._plan_pool.merge([
+            ScheduleDecision("t-ahead", "slow", 0, 0.0, 30.0, 30.0, 1, 100.0),
+            ScheduleDecision("t-target", "slow", 0, 30.0, 25.0, 55.0, 2, 80.0),
+        ])
 
         idle_profile = ServerProfile(
             server_id="fast", host="h", port=1,
@@ -613,25 +594,25 @@ class TestStealImprovementCalculation:
 
         result = runner._find_steal_candidate(idle_profile, profile_map, task_map, set())
         assert result is not None
-        decision, source_sq, est_stolen = result
+        decision, source_server, est_stolen, source_remaining_actual, estimated_gain = result
         assert decision.task_id == "t-target"
 
         est_on_idle = global_scheduler.estimate_processing_time(80.0, idle_profile)
         source_remaining = 30.0 + 25.0
         expected_improvement = source_remaining - est_on_idle
         assert expected_improvement > 0
+        assert source_remaining_actual == pytest.approx(source_remaining)
+        assert estimated_gain == pytest.approx(expected_improvement)
 
     def test_no_steal_when_source_faster_than_idle(self):
         """Should NOT steal when the source server processes faster than idle server."""
-        from app.services.scheduler import ScheduleDecision, SlotQueue, ServerProfile
+        from app.services.scheduler import ScheduleDecision, ServerProfile
 
         runner = BackgroundTaskRunner()
 
-        runner._slot_queues = {
-            "fast:0": SlotQueue(server_id="fast", slot_index=0, decisions=[
-                ScheduleDecision("t-only", "fast", 0, 0.0, 8.0, 8.0, 1, 10.0),
-            ]),
-        }
+        runner._plan_pool.merge([
+            ScheduleDecision("t-only", "fast", 0, 0.0, 8.0, 8.0, 1, 10.0),
+        ])
 
         idle_profile = ServerProfile(
             server_id="slow-idle", host="h", port=1,
@@ -652,6 +633,35 @@ class TestStealImprovementCalculation:
 
         result = runner._find_steal_candidate(idle_profile, profile_map, task_map, set())
         assert result is None, "Should not steal when idle server is slower than source"
+
+    def test_no_steal_when_estimated_gain_is_too_small(self):
+        """Small positive improvements should not churn PlanPool."""
+        from app.services.scheduler import ScheduleDecision, ServerProfile
+
+        runner = BackgroundTaskRunner()
+        runner._plan_pool.merge([
+            ScheduleDecision("candidate", "source", 0, 0.0, 14.0, 14.0, 1, 40.0),
+        ])
+
+        idle_profile = ServerProfile(
+            server_id="idle", host="h", port=1,
+            max_concurrency=1, rtf_baseline=0.2, penalty_factor=0.1,
+        )
+        profile_map = {
+            "idle": idle_profile,
+            "source": ServerProfile(
+                server_id="source", host="h", port=1,
+                max_concurrency=1, rtf_baseline=0.25, penalty_factor=0.1,
+            ),
+        }
+
+        class FakeTask:
+            def __init__(self, tid):
+                self.task_id = tid
+        task_map = {"candidate": FakeTask("candidate")}
+
+        result = runner._find_steal_candidate(idle_profile, profile_map, task_map, set())
+        assert result is None, "Should not steal when estimated gain is below threshold"
 
 
 @pytest.mark.unit
@@ -957,6 +967,336 @@ class TestSegmentedParentSlotDeadlock:
 
 
 @pytest.mark.unit
+class TestReplanCooldown:
+    """Global replan should be rate-limited to avoid re-plan tornado."""
+
+    async def test_replan_not_triggered_within_cooldown(self, db_engine, monkeypatch):
+        """Adding new work within cooldown should NOT trigger full replan
+        when an existing plan still has items in the queue."""
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+        monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
+
+        async with session_factory() as session:
+            session.add(_server("srv-1", 1))
+            for i in range(4):
+                session.add(_file(f"f-{i}", duration_sec=60))
+                session.add(_task(f"t-{i}", f"f-{i}", TaskStatus.QUEUED))
+            await session.commit()
+
+        replan_events: list[str] = []
+        original_logger = __import__("app.services.task_runner", fromlist=["logger"]).logger
+
+        class _CapturingLogger:
+            def __getattr__(self, name):
+                def _capture(event, **kw):
+                    if event == "global_replan_triggered":
+                        replan_events.append(kw.get("reason", ""))
+                    return getattr(original_logger, name)(event, **kw)
+                return _capture
+
+        monkeypatch.setattr("app.services.task_runner.logger", _CapturingLogger())
+
+        runner = BackgroundTaskRunner()
+        monkeypatch.setattr(runner, "_execute_task", lambda tid: asyncio.sleep(0))
+
+        await runner._dispatch_queued_tasks()
+        await asyncio.sleep(0)
+        assert len(replan_events) == 1, f"First dispatch should replan, got: {replan_events}"
+
+        async with session_factory() as session:
+            session.add(_file("f-new", duration_sec=60))
+            session.add(_task("t-new", "f-new", TaskStatus.QUEUED))
+            await session.commit()
+
+        replan_events.clear()
+        await runner._dispatch_queued_tasks()
+        await asyncio.sleep(0)
+
+        assert len(replan_events) == 0, (
+            f"Second dispatch within cooldown should NOT replan, got reasons: {replan_events}"
+        )
+
+    async def test_replan_triggers_after_cooldown_expires(self, db_engine, monkeypatch):
+        """After cooldown expires, new work items should trigger replan."""
+        import time as _time
+
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+        monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
+
+        async with session_factory() as session:
+            session.add(_server("srv-1", 1))
+            for i in range(4):
+                session.add(_file(f"f-{i}", duration_sec=60))
+                session.add(_task(f"t-{i}", f"f-{i}", TaskStatus.QUEUED))
+            await session.commit()
+
+        replan_events: list[str] = []
+        original_logger = __import__("app.services.task_runner", fromlist=["logger"]).logger
+
+        class _CapturingLogger:
+            def __getattr__(self, name):
+                def _capture(event, **kw):
+                    if event == "global_replan_triggered":
+                        replan_events.append(kw.get("reason", ""))
+                    return getattr(original_logger, name)(event, **kw)
+                return _capture
+
+        monkeypatch.setattr("app.services.task_runner.logger", _CapturingLogger())
+
+        runner = BackgroundTaskRunner()
+        monkeypatch.setattr(runner, "_execute_task", lambda tid: asyncio.sleep(0))
+
+        await runner._dispatch_queued_tasks()
+        await asyncio.sleep(0)
+        assert len(replan_events) == 1
+
+        runner._last_replan_time = _time.monotonic() - 10.0
+
+        async with session_factory() as session:
+            session.add(_file("f-new", duration_sec=60))
+            session.add(_task("t-new", "f-new", TaskStatus.QUEUED))
+            await session.commit()
+
+        replan_events.clear()
+        await runner._dispatch_queued_tasks()
+        await asyncio.sleep(0)
+
+        assert len(replan_events) == 1, (
+            f"After cooldown, new work should trigger replan, got: {replan_events}"
+        )
+        assert replan_events[0] == "new_work_items"
+
+    async def test_incremental_merge_does_not_leapfrog_existing_backlog(self, db_engine, monkeypatch):
+        """New tasks merged during cooldown must sort after existing PlanPool backlog,
+        not jump to the front due to estimated_finish being calculated without backlog offset."""
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+        monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
+
+        async with session_factory() as session:
+            session.add(_server("srv-1", 2))
+            for i in range(6):
+                session.add(_file(f"f-backlog-{i}", duration_sec=120))
+                session.add(_task(f"t-backlog-{i}", f"f-backlog-{i}", TaskStatus.QUEUED))
+            await session.commit()
+
+        runner = BackgroundTaskRunner()
+        monkeypatch.setattr(runner, "_execute_task", lambda tid: asyncio.sleep(0))
+
+        await runner._dispatch_queued_tasks()
+        await asyncio.sleep(0)
+
+        pool_before = {
+            sid: runner._plan_pool.get_queue_snapshot(sid)
+            for sid in runner._plan_pool.server_ids
+        }
+        old_task_ids = set()
+        max_old_finish = 0.0
+        for q in pool_before.values():
+            for d in q:
+                old_task_ids.add(d.task_id)
+                max_old_finish = max(max_old_finish, d.estimated_finish)
+
+        async with session_factory() as session:
+            session.add(_file("f-new-inc", duration_sec=30))
+            session.add(_task("t-new-inc", "f-new-inc", TaskStatus.QUEUED))
+            await session.commit()
+
+        await runner._dispatch_queued_tasks()
+        await asyncio.sleep(0)
+
+        pool_after = {
+            sid: runner._plan_pool.get_queue_snapshot(sid)
+            for sid in runner._plan_pool.server_ids
+        }
+
+        for sid, q in pool_after.items():
+            for i, d in enumerate(q):
+                if d.task_id == "t-new-inc":
+                    preceding_old = [q[j] for j in range(i) if q[j].task_id in old_task_ids]
+                    assert d.estimated_finish >= max_old_finish or len(preceding_old) == 0, (
+                        f"New task t-new-inc (finish={d.estimated_finish:.1f}) leapfrogged "
+                        f"old backlog (max_old_finish={max_old_finish:.1f}) on {sid}"
+                    )
+
+
+@pytest.mark.unit
+class TestQueueImbalanceDenoising:
+    """Queue imbalance with low remaining backlog should prefer steal over replan."""
+
+    def test_low_backlog_does_not_trigger_imbalance(self):
+        from app.services.scheduler import ScheduleDecision
+
+        runner = BackgroundTaskRunner()
+        runner._planned_available_server_ids = frozenset({"srv-1", "srv-2"})
+        runner._plan_pool.merge([
+            ScheduleDecision("t-1", "srv-1", 0, 0.0, 10.0, 10.0, 1, 20.0),
+        ])
+
+        result = runner._check_queue_imbalance(frozenset({"srv-1", "srv-2"}))
+        assert result is False, "Low backlog (<30s) should NOT trigger replan"
+
+    def test_high_backlog_triggers_true_imbalance(self):
+        from app.services.scheduler import ScheduleDecision
+
+        runner = BackgroundTaskRunner()
+        runner._planned_available_server_ids = frozenset({"srv-1", "srv-2"})
+        runner._plan_pool.merge([
+            ScheduleDecision("t-1", "srv-1", 0, 0.0, 200.0, 200.0, 1, 500.0),
+            ScheduleDecision("t-2", "srv-1", 0, 200.0, 200.0, 400.0, 2, 500.0),
+        ])
+
+        result = runner._check_queue_imbalance(frozenset({"srv-1", "srv-2"}))
+        assert result is True, "High backlog with exhausted server should trigger replan"
+
+
+@pytest.mark.unit
+class TestTrueActiveSlotCounting:
+    """Slot counting must count real work only: whole-file tasks + active segments."""
+
+    async def test_segmented_parent_does_not_count_as_server_slot(self, db_engine, monkeypatch):
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+
+        async with session_factory() as session:
+            session.add(_server("srv-1", 4))
+
+            session.add(_file("f-whole", duration_sec=60))
+            whole = _task("t-whole", "f-whole", TaskStatus.TRANSCRIBING)
+            whole.assigned_server_id = "srv-1"
+            session.add(whole)
+
+            session.add(_file("f-parent", duration_sec=1200))
+            parent = _task("t-parent", "f-parent", TaskStatus.TRANSCRIBING)
+            parent.assigned_server_id = "srv-1"
+            session.add(parent)
+
+            session.add(TaskSegment(
+                segment_id="seg-active",
+                task_id="t-parent",
+                segment_index=0,
+                source_start_ms=0,
+                source_end_ms=600000,
+                keep_start_ms=0,
+                keep_end_ms=600000,
+                storage_path="/tmp/seg-active.wav",
+                status=SegmentStatus.TRANSCRIBING,
+                assigned_server_id="srv-1",
+            ))
+            await session.commit()
+
+            counts = await BackgroundTaskRunner()._count_server_active_work(session)
+
+        assert counts == {"srv-1": 2}
+
+    async def test_dispatching_segment_parent_does_not_log_false_overcommit(self, db_engine, monkeypatch):
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+        monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
+
+        async with session_factory() as session:
+            session.add(_server("srv-1", 1))
+
+            session.add(_file("f-parent", duration_sec=1200))
+            parent = _task("t-parent", "f-parent", TaskStatus.QUEUED)
+            session.add(parent)
+            session.add(TaskSegment(
+                segment_id="seg-pending",
+                task_id="t-parent",
+                segment_index=0,
+                source_start_ms=0,
+                source_end_ms=600000,
+                keep_start_ms=0,
+                keep_end_ms=600000,
+                storage_path="/tmp/seg-pending.wav",
+                status=SegmentStatus.PENDING,
+            ))
+            await session.commit()
+
+        logged_errors: list[str] = []
+        original_logger = __import__("app.services.task_runner", fromlist=["logger"]).logger
+
+        class _CapturingLogger:
+            def __getattr__(self, name):
+                def _capture(event, **kw):
+                    if name == "error":
+                        logged_errors.append(event)
+                    return getattr(original_logger, name)(event, **kw)
+                return _capture
+
+        monkeypatch.setattr("app.services.task_runner.logger", _CapturingLogger())
+
+        runner = BackgroundTaskRunner()
+        started_segments: list[str] = []
+
+        async def _fake_execute_segment(segment_id: str):
+            started_segments.append(segment_id)
+
+        monkeypatch.setattr(runner, "_execute_task", lambda tid: asyncio.sleep(0))
+        monkeypatch.setattr(runner, "_execute_segment", _fake_execute_segment)
+
+        await runner._dispatch_queued_tasks()
+        await asyncio.sleep(0)
+
+        assert started_segments == ["seg-pending"]
+        assert "slot_overcommit_invariant_violated" not in logged_errors
+
+    async def test_real_post_dispatch_overcommit_rolls_back_and_does_not_start(self, db_engine, monkeypatch):
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+        monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
+
+        async with session_factory() as session:
+            session.add(_server("srv-1", 1))
+            session.add(_file("f-over", duration_sec=60))
+            session.add(_task("t-over", "f-over", TaskStatus.QUEUED))
+            await session.commit()
+
+        logged_errors: list[str] = []
+        original_logger = __import__("app.services.task_runner", fromlist=["logger"]).logger
+
+        class _CapturingLogger:
+            def __getattr__(self, name):
+                def _capture(event, **kw):
+                    if name == "error":
+                        logged_errors.append(event)
+                    return getattr(original_logger, name)(event, **kw)
+                return _capture
+
+        monkeypatch.setattr("app.services.task_runner.logger", _CapturingLogger())
+
+        runner = BackgroundTaskRunner()
+        count_calls = 0
+
+        async def _fake_count_active(_session):
+            nonlocal count_calls
+            count_calls += 1
+            if count_calls == 1:
+                return {}
+            return {"srv-1": 2}
+
+        started_tasks: list[str] = []
+        monkeypatch.setattr(runner, "_count_server_active_work", _fake_count_active)
+        monkeypatch.setattr(runner, "_execute_task",
+                            lambda tid: started_tasks.append(tid) or asyncio.sleep(0))
+
+        await runner._dispatch_queued_tasks()
+        await asyncio.sleep(0)
+
+        async with session_factory() as session:
+            task = (await session.execute(
+                select(Task).where(Task.task_id == "t-over")
+            )).scalar_one()
+
+        assert task.status == TaskStatus.QUEUED.value
+        assert task.assigned_server_id is None
+        assert started_tasks == []
+        assert "slot_overcommit_dispatch_blocked" in logged_errors
+
+
+@pytest.mark.unit
 class TestPreprocessingClaimTimeout:
     """Bug #6: stale preprocessing claims should be released."""
 
@@ -1078,10 +1418,95 @@ class TestDisabledServerWarning:
 
         assert "servers_disabled_excluded_from_dispatch" in logged_events, \
             f"Expected disabled server warning, got: {logged_events}"
-
         async with session_factory() as session:
             task = (await session.execute(
                 select(Task).where(Task.task_id == "t-dis")
             )).scalar_one()
         assert task.status == TaskStatus.QUEUED.value, \
             "Task should remain QUEUED when no enabled servers exist"
+
+
+@pytest.mark.unit
+class TestEmptyResultQualityGate:
+    """Long audio with empty ASR output should retry instead of succeeding."""
+
+    async def test_long_whole_file_empty_result_marks_task_failed_for_retry(self, db_engine, monkeypatch):
+        from app.adapters.base import ParsedResult
+
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+        monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
+
+        class _Adapter:
+            async def transcribe(self, **kwargs):
+                return ParsedResult(text="", raw={"text": ""})
+
+        monkeypatch.setattr("app.services.task_runner.get_adapter", lambda **kw: _Adapter())
+
+        async def _save_result_should_not_run(*args, **kwargs):
+            raise AssertionError("Empty long-audio result should not be saved as success")
+
+        monkeypatch.setattr("app.services.task_runner.save_result", _save_result_should_not_run)
+
+        async with session_factory() as session:
+            session.add(_server("srv-empty", 1))
+            session.add(_file("f-empty", duration_sec=120))
+            task = _task("t-empty", "f-empty", TaskStatus.DISPATCHED)
+            task.assigned_server_id = "srv-empty"
+            session.add(task)
+            await session.commit()
+
+        await BackgroundTaskRunner()._execute_task("t-empty")
+
+        async with session_factory() as session:
+            task = (await session.execute(
+                select(Task).where(Task.task_id == "t-empty")
+            )).scalar_one()
+
+        assert task.status == TaskStatus.FAILED.value
+        assert task.error_code == "EMPTY_RESULT"
+        assert task.result_path is None
+
+    async def test_long_segment_empty_result_requeues_segment_for_retry(self, db_engine, monkeypatch):
+        from app.adapters.base import ParsedResult
+
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+        monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
+
+        class _Adapter:
+            async def transcribe(self, **kwargs):
+                return ParsedResult(text="", raw={"text": ""})
+
+        monkeypatch.setattr("app.services.task_runner.get_adapter", lambda **kw: _Adapter())
+
+        async with session_factory() as session:
+            session.add(_server("srv-empty", 1))
+            session.add(_file("f-parent-empty", duration_sec=1200))
+            parent = _task("t-parent-empty", "f-parent-empty", TaskStatus.DISPATCHED)
+            parent.assigned_server_id = "srv-empty"
+            session.add(parent)
+            session.add(TaskSegment(
+                segment_id="seg-empty",
+                task_id="t-parent-empty",
+                segment_index=0,
+                source_start_ms=0,
+                source_end_ms=600000,
+                keep_start_ms=0,
+                keep_end_ms=600000,
+                storage_path="/tmp/seg-empty.wav",
+                status=SegmentStatus.DISPATCHED,
+                assigned_server_id="srv-empty",
+            ))
+            await session.commit()
+
+        await BackgroundTaskRunner()._execute_segment("seg-empty")
+
+        async with session_factory() as session:
+            segment = (await session.execute(
+                select(TaskSegment).where(TaskSegment.segment_id == "seg-empty")
+            )).scalar_one()
+
+        assert segment.status == SegmentStatus.PENDING.value
+        assert segment.retry_count == 1
+        assert "Empty ASR result" in (segment.error_message or "")

@@ -208,6 +208,56 @@ async def _group_stats(db, group_id: str, user_id: str) -> dict:
         "in_progress": total - succeeded - failed - canceled,
         "progress": round(avg_progress, 4),
         "is_complete": (succeeded + failed + canceled) == total,
+        "scheduling": await _group_scheduling_stats(db, group_id, user_id),
+    }
+
+
+async def _group_scheduling_stats(db, group_id: str, user_id: str) -> dict:
+    """Aggregate scheduling diagnostics stored on task events and segments."""
+    task_ids_subquery = (
+        select(Task.task_id)
+        .where(Task.task_group_id == group_id, Task.user_id == user_id)
+        .subquery()
+    )
+
+    event_rows = (await db.execute(
+        select(TaskEvent.payload_json)
+        .where(
+            TaskEvent.task_id.in_(select(task_ids_subquery.c.task_id)),
+            TaskEvent.payload_json.isnot(None),
+            TaskEvent.payload_json.like('%"event_type": "work_steal"%'),
+        )
+    )).scalars().all()
+
+    work_steal_count = 0
+    estimated_gain = 0.0
+    est_stolen_total = 0.0
+    for payload in event_rows:
+        try:
+            data = _json.loads(payload or "{}")
+        except _json.JSONDecodeError:
+            continue
+        if data.get("event_type") != "work_steal":
+            continue
+        work_steal_count += 1
+        estimated_gain += float(data.get("estimated_gain_sec") or 0.0)
+        est_stolen_total += float(data.get("est_stolen_sec") or 0.0)
+
+    cross_server_rows = (await db.execute(
+        select(TaskSegment.task_id)
+        .where(
+            TaskSegment.task_id.in_(select(task_ids_subquery.c.task_id)),
+            TaskSegment.assigned_server_id.isnot(None),
+        )
+        .group_by(TaskSegment.task_id)
+        .having(func.count(func.distinct(TaskSegment.assigned_server_id)) > 1)
+    )).all()
+
+    return {
+        "work_steal_count": work_steal_count,
+        "work_steal_estimated_gain_sec": round(estimated_gain, 1),
+        "est_stolen_total_sec": round(est_stolen_total, 1),
+        "cross_server_segment_tasks": len(cross_server_rows),
     }
 
 

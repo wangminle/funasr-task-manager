@@ -47,11 +47,72 @@ description: >
 
 1. 检查后端是否已启动（**核心判断条件，Agent 工作流仅依赖后端 API**）
    - 请求 `GET http://localhost:15797/health`
-   - 返回 `{"status": "ok"}` → 后端已运行
-   - 连接失败或非 200 → 后端未启动
+   - 返回 `{"status": "ok"}` → 后端已运行，进入 **Step 2（版本一致性校验）**
+   - 连接失败或非 200 → 后端未启动，跳过版本校验，直接进入 Phase 3
 
-2. 判断结果：
-   - 后端已运行 → 报告"环境就绪"，**询问是否执行后续可选阶段**：
+2. **版本一致性校验**（后端可达时必须执行）
+
+   从 `/health` 响应中提取 `version`、`git_sha`、`started_at`，与本地仓库比对：
+
+   ```bash
+   # 获取运行中的后端信息
+   HEALTH=$(curl -sf http://localhost:15797/health)
+   RUNNING_VERSION=$(echo "$HEALTH" | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])")
+   RUNNING_SHA=$(echo "$HEALTH" | python3 -c "import sys,json; print(json.load(sys.stdin)['git_sha'])")
+   RUNNING_STARTED=$(echo "$HEALTH" | python3 -c "import sys,json; print(json.load(sys.stdin)['started_at'])")
+
+   # 获取仓库当前版本信息
+   REPO_VERSION=$(grep -m1 '^version' 3-dev/src/backend/pyproject.toml | sed 's/.*"\(.*\)".*/\1/')
+   REPO_SHA=$(git rev-parse --short HEAD)
+   ```
+
+   比对规则（**两项都必须检查，任一不匹配即视为版本不一致**）：
+
+   | 检查项 | 运行中 | 仓库 | 一致？ |
+   |--------|--------|------|--------|
+   | app_version | `{RUNNING_VERSION}` | `{REPO_VERSION}` | ✅/❌ |
+   | git_sha | `{RUNNING_SHA}` | `{REPO_SHA}` | ✅/❌ |
+
+   - **两项均一致** → 报告"环境就绪，版本一致"
+   - **任一不一致** → 输出告警并**询问用户是否重启**：
+     > ⚠️ 后端版本与仓库不一致：
+     >
+     > | | 运行中 | 仓库 |
+     > |---|--------|------|
+     > | version | {RUNNING_VERSION} | {REPO_VERSION} |
+     > | git_sha | {RUNNING_SHA} | {REPO_SHA} |
+     > | 启动时间 | {RUNNING_STARTED} |
+     >
+     > 后端正在运行旧版本代码，可能缺少最新功能或修复。
+     >
+     > 1. **重启后端服务**（推荐） — 让后端加载最新代码
+     > 2. **跳过** — 继续使用当前运行的版本
+
+   - 用户选择重启 → 执行重启逻辑：
+     ```bash
+     # 检查是否由 systemd 管理
+     if systemctl --user is-active funasr-task-manager-backend &>/dev/null; then
+       systemctl --user restart funasr-task-manager-backend
+       echo "⏳ 正在通过 systemd 重启后端..."
+     else
+       # 非 systemd 环境：找到并终止旧进程，重新启动
+       PID=$(lsof -ti:15797 2>/dev/null)
+       if [ -n "$PID" ]; then
+         kill "$PID"
+         sleep 2
+       fi
+       cd 3-dev/src/backend
+       nohup uvicorn app.main:app --host 0.0.0.0 --port 15797 --reload &
+       echo "⏳ 正在重新启动后端..."
+     fi
+     sleep 5
+     ```
+   - 重启后**重新校验**：再次请求 `/health`，确认 `git_sha` 与仓库一致
+   - 校验通过 → 报告"环境就绪，版本已更新"
+   - 仍不一致 → 警告但不阻断，记录问题后继续
+
+3. 判断结果：
+   - 后端已运行且版本一致 → 报告"环境就绪"，**询问是否执行后续可选阶段**：
      > 环境已就绪。是否还需要：
      > 1. 安装/更新 Skills 到 Agent 平台（Phase 6）
      > 2. 配置渠道凭据（Phase 7）
@@ -242,6 +303,7 @@ docker compose ps
   安装方式: {python/docker}
   后端地址: http://localhost:15797
   健康检查: ✅ 通过
+  版本校验: ✅ version={版本号} git_sha={SHA}
   CLI 配置: ✅ server = http://localhost:15797
   数据库:   ✅ 已迁移到最新版本
   ffprobe:  ✅ 可用（版本 x.x.x）
@@ -608,7 +670,11 @@ fi
 5. 已有同名 service → 先展示 diff 让用户选择覆盖/跳过
 6. `systemctl --user daemon-reload && systemctl --user enable --now funasr-task-manager-backend`
 7. 等待 5 秒后验证 `systemctl --user is-active funasr-task-manager-backend` + `curl /health`
-8. 确保 `loginctl enable-linger $USER`（使服务在用户未登录时也能运行）
+8. **版本一致性校验**（与 Phase 2 相同逻辑）：
+   - 从 `/health` 提取 `git_sha`，与 `git rev-parse --short HEAD` 比对
+   - 不一致 → 告警并询问是否 `systemctl --user restart funasr-task-manager-backend`
+   - 重启后重新校验直到一致
+9. 确保 `loginctl enable-linger $USER`（使服务在用户未登录时也能运行）
 
 **安全规则**：写入 `~/.config/systemd/user/` 不需要 `sudo`。唯一可能需要 `sudo` 的操作是清理旧的系统级服务，此时必须展示完整命令让用户确认。
 

@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select, update as sql_update
 from sqlalchemy.orm import selectinload
+from ulid import ULID
 
 from app.adapters.base import MessageProfile
 from app.adapters.registry import get_adapter
@@ -25,7 +27,7 @@ from app.services.audio_preprocessor import (
 )
 from app.services.callback_worker import callback_worker
 from app.services.result_formatter import to_json, to_srt, to_txt
-from app.services.scheduler import ScheduleDecision, ServerProfile, SlotQueue, scheduler as global_scheduler
+from app.services.scheduler import PlanPool, ScheduleDecision, ServerProfile, scheduler as global_scheduler
 from app.services.task_finalizer import TaskFinalizer
 from app.storage.database import async_session_factory
 from app.storage.file_manager import save_result
@@ -36,6 +38,9 @@ logger = get_logger(__name__)
 
 
 REPLAN_IMBALANCE_RATIO = 1.5
+REPLAN_COOLDOWN_SEC = 5.0
+EMPTY_RESULT_RETRY_MIN_AUDIO_SEC = 30.0
+EMPTY_RESULT_RETRY_MIN_SEGMENT_SEC = 10.0
 
 
 class BackgroundTaskRunner:
@@ -50,9 +55,9 @@ class BackgroundTaskRunner:
         self._dispatch_lock = asyncio.Lock()
         self._inflight: set[str] = set()
         self._inflight_lock = asyncio.Lock()
-        self._slot_queues: dict[str, SlotQueue] = {}
-        self._planned_task_ids: set[str] = set()
+        self._plan_pool = PlanPool()
         self._planned_available_server_ids: frozenset[str] = frozenset()
+        self._last_replan_time: float = 0.0
         self._callback_worker = callback_worker
         self._finalizer = TaskFinalizer(self._callback_worker)
 
@@ -176,11 +181,11 @@ class BackgroundTaskRunner:
         immediately. The file is already uploaded and preprocessed, so
         there is no need to revisit PENDING/PREPROCESSING.
 
-        Segmented tasks are skipped — their retry happens at the segment
-        level inside ``_mark_segment_failed``.  The exception is
-        MERGE_FAILED tasks where all segments succeeded but the final
-        merge step hit a transient error; those are retried by pushing
-        the parent back to TRANSCRIBING and re-triggering finalize.
+        Three retry paths for segmented tasks:
+        - MERGE_FAILED: push parent back to TRANSCRIBING and re-trigger finalize.
+        - SEGMENT_RETRY_EXHAUSTED: delete old segment records and re-queue as
+          whole-file (one fallback attempt before giving up).
+        - Other segment errors: skip (segment-level retry already exhausted).
         """
         max_retries = settings.max_retry_count
         merge_retry_task_ids: list[str] = []
@@ -208,6 +213,21 @@ class BackgroundTaskRunner:
                         merge_retry_task_ids.append(task.task_id)
                         logger.info("merge_retry_queued",
                                     task_id=task.task_id, retry=task.retry_count)
+                    elif (task.error_code == "SEGMENT_RETRY_EXHAUSTED"
+                          and task.can_transition_to(TaskStatus.QUEUED)):
+                        deleted = await seg_repo.delete_segments_by_task(task.task_id)
+                        task.retry_count += 1
+                        task.assigned_server_id = None
+                        task.error_code = None
+                        task.error_message = None
+                        task.started_at = None
+                        task.completed_at = None
+                        await repo.update_task_status(task, TaskStatus.QUEUED)
+                        logger.info("whole_file_fallback_queued",
+                                    task_id=task.task_id,
+                                    retry=task.retry_count,
+                                    deleted_segments=deleted,
+                                    hint="All segments failed; retrying as whole-file")
                     continue
                 if task.can_transition_to(TaskStatus.QUEUED):
                     task.retry_count += 1
@@ -540,7 +560,7 @@ class BackgroundTaskRunner:
                          "--enabled true` to re-enable",
                 )
             if not servers:
-                self._clear_slot_queues()
+                self._clear_plan_pool()
                 return
 
             inflight = await self._get_inflight_snapshot()
@@ -581,53 +601,7 @@ class BackgroundTaskRunner:
             if not all_candidate_tasks:
                 return
 
-            # Find segmented parent task IDs that are currently in a
-            # running state.  These parents are logical containers and must
-            # NEVER count toward server slots.  We restrict the query to
-            # parents in DISPATCHED/TRANSCRIBING — completed/failed parents
-            # are already excluded by the task_count_where status filter,
-            # so they don't need to be in the NOT-IN set.  This keeps the
-            # set small (active batch only) instead of scanning the full
-            # historical TaskSegment table.
-            segmented_parent_stmt = (
-                select(TaskSegment.task_id).distinct()
-                .join(Task, Task.task_id == TaskSegment.task_id)
-                .where(Task.status.in_([
-                    TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING,
-                ]))
-            )
-            segmented_parent_ids: set[str] = set(
-                (await session.execute(segmented_parent_stmt)).scalars().all()
-            )
-
-            task_count_where = [
-                Task.status.in_([TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING]),
-            ]
-            if segmented_parent_ids:
-                task_count_where.append(Task.task_id.not_in(segmented_parent_ids))
-
-            count_stmt = (
-                select(Task.assigned_server_id, func.count())
-                .where(*task_count_where)
-                .group_by(Task.assigned_server_id)
-            )
-            running_count: dict[str, int] = dict(
-                (await session.execute(count_stmt)).all()
-            )
-
-            seg_server_count_stmt = (
-                select(TaskSegment.assigned_server_id, func.count())
-                .where(TaskSegment.status.in_([
-                    SegmentStatus.DISPATCHED, SegmentStatus.TRANSCRIBING,
-                ]))
-                .group_by(TaskSegment.assigned_server_id)
-            )
-            seg_running: dict[str, int] = dict(
-                (await session.execute(seg_server_count_stmt)).all()
-            )
-            for sid, cnt in seg_running.items():
-                if sid:
-                    running_count[sid] = running_count.get(sid, 0) + cnt
+            running_count = await self._count_server_active_work(session)
 
             server_by_id = {srv.server_id: srv for srv in servers}
             for sid, active_count in running_count.items():
@@ -715,28 +689,72 @@ class BackgroundTaskRunner:
             if not work_items:
                 return
 
-            # --- Slot-queue-aware planning and dispatch ---
+            # --- Two-layer scheduling: Local Refill / Work Steal vs Global Replan ---
             current_available_ids = frozenset(sp.server_id for sp in available_profiles)
-            has_unplanned = not self._slot_queues or any(
-                wi["task_id"] not in self._planned_task_ids for wi in work_items
-            )
             servers_changed = current_available_ids != self._planned_available_server_ids
+            new_work = [
+                wi for wi in work_items
+                if not self._plan_pool.contains(wi["task_id"])
+            ]
+            has_unplanned = bool(new_work) or not self._plan_pool
             queue_imbalanced = self._check_queue_imbalance(current_available_ids)
 
-            if has_unplanned or servers_changed or queue_imbalanced:
-                self._clear_slot_queues()
+            now = time.monotonic()
+            cooldown_elapsed = now - self._last_replan_time >= REPLAN_COOLDOWN_SEC
+
+            needs_replan = False
+            replan_reason = ""
+            if servers_changed:
+                needs_replan = True
+                replan_reason = "servers_changed"
+            elif has_unplanned and not self._plan_pool:
+                needs_replan = True
+                replan_reason = "no_existing_plan"
+            elif has_unplanned and cooldown_elapsed:
+                needs_replan = True
+                replan_reason = "new_work_items"
+            elif queue_imbalanced and cooldown_elapsed:
+                needs_replan = True
+                replan_reason = "queue_imbalance"
+
+            if needs_replan:
+                logger.info("global_replan_triggered",
+                            reason=replan_reason,
+                            since_last_replan_sec=f"{now - self._last_replan_time:.1f}")
                 decisions = global_scheduler.schedule_batch(work_items, available_profiles)
                 if decisions:
-                    self._slot_queues = global_scheduler.build_slot_queues(decisions)
-                    self._planned_task_ids = {d.task_id for d in decisions}
+                    self._plan_pool.replace(decisions)
                     self._planned_available_server_ids = current_available_ids
+                else:
+                    self._clear_plan_pool()
+                self._last_replan_time = now
+            elif new_work and not cooldown_elapsed:
+                inc_decisions = global_scheduler.schedule_batch(new_work, available_profiles)
+                if inc_decisions:
+                    tail_finish = self._plan_pool.server_tail_finish()
+                    for d in inc_decisions:
+                        offset = tail_finish.get(d.server_id, 0.0)
+                        if offset > 0:
+                            d.estimated_start += offset
+                            d.estimated_finish += offset
+                    added = self._plan_pool.merge(inc_decisions)
+                    logger.debug("incremental_merge",
+                                 new_items=len(new_work),
+                                 merged=added,
+                                 pool_size=len(self._plan_pool))
 
-            if not self._slot_queues:
+            if not self._plan_pool:
                 return
 
             work_map: dict[str, object] = {}
             work_map.update(regular_tasks)
             work_map.update({sid: seg for sid, (seg, _) in segment_items.items()})
+
+            stale_ids = self._plan_pool.task_ids - set(work_map.keys())
+            if stale_ids:
+                for stale_id in stale_ids:
+                    self._plan_pool.remove(stale_id)
+                logger.debug("plan_pool_stale_purged", count=len(stale_ids))
 
             max_concurrency_map = {sp.server_id: sp.max_concurrency for sp in available_profiles}
             free_slots = {sp.server_id: max(sp.max_concurrency - sp.running_tasks, 0)
@@ -746,70 +764,21 @@ class BackgroundTaskRunner:
             to_start_tasks: list[str] = []
             to_start_segments: list[str] = []
 
-            # Phase A: dispatch from pre-planned slot queues
-            for sq in list(self._slot_queues.values()):
-                if free_slots.get(sq.server_id, 0) <= 0:
-                    continue
-                while sq.decisions and free_slots.get(sq.server_id, 0) > 0:
-                    decision = sq.decisions[0]
-
-                    if decision.kind == "segment":
-                        seg_tuple = segment_items.get(decision.task_id)
-                        if seg_tuple is None or decision.task_id in inflight:
-                            sq.decisions.pop(0)
-                            self._planned_task_ids.discard(decision.task_id)
-                            continue
-                        seg, parent_task = seg_tuple
-                        await seg_repo.update_segment_status(
-                            seg, SegmentStatus.DISPATCHED, server_id=decision.server_id,
-                        )
-                        await session.refresh(parent_task, ["status"])
-                        if parent_task.status == TaskStatus.QUEUED.value:
-                            if parent_task.can_transition_to(TaskStatus.DISPATCHED):
-                                parent_task.assigned_server_id = decision.server_id
-                                await repo.update_task_status(parent_task, TaskStatus.DISPATCHED)
-                        elif not parent_task.assigned_server_id:
-                            parent_task.assigned_server_id = decision.server_id
-                        to_start_segments.append(seg.segment_id)
-                    else:
-                        task = regular_tasks.get(decision.task_id)
-                        if (task is None or task.task_id in inflight
-                                or not task.can_transition_to(TaskStatus.DISPATCHED)):
-                            sq.decisions.pop(0)
-                            self._planned_task_ids.discard(decision.task_id)
-                            continue
-                        task.assigned_server_id = decision.server_id
-                        task.eta_seconds = int(decision.estimated_duration)
-                        await repo.update_task_status(task, TaskStatus.DISPATCHED)
-                        to_start_tasks.append(task.task_id)
-
-                    sq.decisions.pop(0)
-                    self._planned_task_ids.discard(decision.task_id)
-                    free_slots[decision.server_id] -= 1
-                    break
-
-            # Phase B: work stealing — any server with free slots can steal
+            # Phase A: dispatch from PlanPool per-server queues
             for sp in available_profiles:
                 sid = sp.server_id
                 while free_slots.get(sid, 0) > 0:
-                    result = self._find_steal_candidate(sp, profile_map, work_map, inflight)
-                    if result is None:
+                    batch = self._plan_pool.pop_dispatchable(sid, 1)
+                    if not batch:
                         break
-                    decision, source_sq, est_stolen = result
+                    decision = batch[0]
 
                     if decision.kind == "segment":
                         seg_tuple = segment_items.get(decision.task_id)
                         if seg_tuple is None or decision.task_id in inflight:
-                            source_sq.decisions.remove(decision)
-                            self._planned_task_ids.discard(decision.task_id)
                             continue
                         seg, parent_task = seg_tuple
-                        active_count = await seg_repo.count_active_segments(parent_task.task_id)
-                        steal_max = min(len(available_profiles), settings.segment_max_parallel_per_task)
-                        if active_count >= steal_max:
-                            source_sq.decisions.remove(decision)
-                            self._planned_task_ids.discard(decision.task_id)
-                            continue
+                        seg.run_generation += 1
                         await seg_repo.update_segment_status(
                             seg, SegmentStatus.DISPATCHED, server_id=sid,
                         )
@@ -825,70 +794,119 @@ class BackgroundTaskRunner:
                         task = regular_tasks.get(decision.task_id)
                         if (task is None or task.task_id in inflight
                                 or not task.can_transition_to(TaskStatus.DISPATCHED)):
-                            source_sq.decisions.remove(decision)
-                            self._planned_task_ids.discard(decision.task_id)
                             continue
+                        task.run_generation += 1
+                        task.assigned_server_id = sid
+                        task.eta_seconds = int(decision.estimated_duration)
+                        await repo.update_task_status(task, TaskStatus.DISPATCHED)
+                        to_start_tasks.append(task.task_id)
+
+                    free_slots[sid] -= 1
+
+            # Phase B: work stealing — idle servers steal from busy server tails
+            for sp in available_profiles:
+                sid = sp.server_id
+                while free_slots.get(sid, 0) > 0:
+                    result = self._find_steal_candidate(sp, profile_map, work_map, inflight)
+                    if result is None:
+                        break
+                    decision, source_server, est_stolen, source_remaining, estimated_gain = result
+
+                    self._plan_pool.remove(decision.task_id)
+
+                    if decision.kind == "segment":
+                        seg_tuple = segment_items.get(decision.task_id)
+                        if seg_tuple is None or decision.task_id in inflight:
+                            continue
+                        seg, parent_task = seg_tuple
+                        active_count = await seg_repo.count_active_segments(parent_task.task_id)
+                        steal_max = min(len(available_profiles), settings.segment_max_parallel_per_task)
+                        if active_count >= steal_max:
+                            continue
+                        seg.run_generation += 1
+                        await seg_repo.update_segment_status(
+                            seg, SegmentStatus.DISPATCHED, server_id=sid,
+                        )
+                        await session.refresh(parent_task, ["status"])
+                        if parent_task.status == TaskStatus.QUEUED.value:
+                            if parent_task.can_transition_to(TaskStatus.DISPATCHED):
+                                parent_task.assigned_server_id = sid
+                                await repo.update_task_status(parent_task, TaskStatus.DISPATCHED)
+                        elif not parent_task.assigned_server_id:
+                            parent_task.assigned_server_id = sid
+                        to_start_segments.append(seg.segment_id)
+                    else:
+                        task = regular_tasks.get(decision.task_id)
+                        if (task is None or task.task_id in inflight
+                                or not task.can_transition_to(TaskStatus.DISPATCHED)):
+                            continue
+                        task.run_generation += 1
                         task.assigned_server_id = sid
                         task.eta_seconds = int(est_stolen)
                         await repo.update_task_status(task, TaskStatus.DISPATCHED)
                         to_start_tasks.append(task.task_id)
 
-                    source_sq.decisions.remove(decision)
-                    self._planned_task_ids.discard(decision.task_id)
+                    target_free_slots_before = free_slots.get(sid, 0)
                     free_slots[sid] -= 1
+                    event_task_id = decision.parent_task_id or decision.task_id
+                    session.add(TaskEvent(
+                        event_id=str(ULID()),
+                        task_id=event_task_id,
+                        from_status=None,
+                        to_status=TaskStatus.DISPATCHED.value,
+                        payload_json=json.dumps({
+                            "event_type": "work_steal",
+                            "work_id": decision.task_id,
+                            "kind": decision.kind,
+                            "parent_task_id": decision.parent_task_id,
+                            "from_server": source_server,
+                            "to_server": sid,
+                            "target_free_slots_before": target_free_slots_before,
+                            "source_remaining_before_sec": round(source_remaining, 1),
+                            "est_original_sec": round(decision.estimated_duration, 1),
+                            "est_stolen_sec": round(est_stolen, 1),
+                            "estimated_gain_sec": round(estimated_gain, 1),
+                            "reason": "idle_slot_positive_gain",
+                        }, ensure_ascii=False),
+                    ))
                     logger.info("work_steal",
                                 work_id=decision.task_id,
                                 kind=decision.kind,
-                                from_server=source_sq.server_id,
+                                parent_task_id=decision.parent_task_id,
+                                from_server=source_server,
                                 to_server=sid,
+                                target_free_slots_before=target_free_slots_before,
+                                source_remaining_before_sec=f"{source_remaining:.1f}",
                                 est_original=f"{decision.estimated_duration:.1f}s",
-                                est_stolen=f"{est_stolen:.1f}s")
-
-            # Cleanup exhausted queues
-            self._slot_queues = {k: sq for k, sq in self._slot_queues.items() if sq.decisions}
+                                est_stolen=f"{est_stolen:.1f}s",
+                                estimated_gain_sec=f"{estimated_gain:.1f}",
+                                reason="idle_slot_positive_gain")
 
             if not to_start_tasks and not to_start_segments:
                 return
 
             # Post-dispatch invariant: verify no server exceeds max_concurrency
-            # by re-counting from DB before committing.
-            # Exclude segmented parent tasks (same set used in running_count
-            # above) — parents never hold real server slots.
-            post_task_where = [
-                Task.status.in_([TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING]),
-            ]
-            if segmented_parent_ids:
-                post_task_where.append(Task.task_id.not_in(segmented_parent_ids))
-            post_count_stmt = (
-                select(Task.assigned_server_id, func.count())
-                .where(*post_task_where)
-                .group_by(Task.assigned_server_id)
-            )
-            post_running: dict[str, int] = dict(
-                (await session.execute(post_count_stmt)).all()
-            )
-            post_seg_stmt = (
-                select(TaskSegment.assigned_server_id, func.count())
-                .where(TaskSegment.status.in_([
-                    SegmentStatus.DISPATCHED, SegmentStatus.TRANSCRIBING,
-                ]))
-                .group_by(TaskSegment.assigned_server_id)
-            )
-            for sid, cnt in (await session.execute(post_seg_stmt)).all():
-                if sid:
-                    post_running[sid] = post_running.get(sid, 0) + cnt
+            post_running = await self._count_server_active_work(session)
 
+            overcommitted: dict[str, tuple[int, int]] = {}
             for sid, count in post_running.items():
                 limit = max_concurrency_map.get(sid)
                 if limit is not None and count > limit:
+                    overcommitted[sid] = (count, limit)
+
+            if overcommitted:
+                await session.rollback()
+                self._clear_plan_pool()
+                for sid, (count, limit) in overcommitted.items():
                     logger.error(
-                        "slot_overcommit_invariant_violated",
+                        "slot_overcommit_dispatch_blocked",
                         server_id=sid,
                         active_count=count,
                         max_concurrency=limit,
                         dispatched_tasks=len(to_start_tasks),
                         dispatched_segments=len(to_start_segments),
                     )
+                return
 
             await session.commit()
 
@@ -900,6 +918,53 @@ class BackgroundTaskRunner:
             await self._mark_inflight(segment_id)
             asyncio.create_task(self._execute_segment(segment_id), name=f"asr-seg-{segment_id}")
 
+    async def _count_server_active_work(self, session) -> dict[str, int]:
+        """Count real server slot usage.
+
+        Whole-file tasks occupy slots. Segmented parent tasks are logical
+        containers, so only their active TaskSegment rows occupy slots.
+        """
+        active_segmented_task_ids = (
+            select(TaskSegment.task_id).distinct()
+            .where(TaskSegment.status.in_([
+                SegmentStatus.PENDING,
+                SegmentStatus.DISPATCHED,
+                SegmentStatus.TRANSCRIBING,
+                SegmentStatus.SUCCEEDED,
+            ]))
+        )
+
+        whole_task_stmt = (
+            select(Task.assigned_server_id, func.count())
+            .where(
+                Task.status.in_([TaskStatus.DISPATCHED, TaskStatus.TRANSCRIBING]),
+                Task.assigned_server_id.is_not(None),
+                Task.task_id.not_in(active_segmented_task_ids),
+            )
+            .group_by(Task.assigned_server_id)
+        )
+        counts: dict[str, int] = {
+            sid: count for sid, count in (await session.execute(whole_task_stmt)).all()
+            if sid
+        }
+
+        segment_stmt = (
+            select(TaskSegment.assigned_server_id, func.count())
+            .where(
+                TaskSegment.status.in_([
+                    SegmentStatus.DISPATCHED,
+                    SegmentStatus.TRANSCRIBING,
+                ]),
+                TaskSegment.assigned_server_id.is_not(None),
+            )
+            .group_by(TaskSegment.assigned_server_id)
+        )
+        for sid, count in (await session.execute(segment_stmt)).all():
+            if sid:
+                counts[sid] = counts.get(sid, 0) + count
+
+        return counts
+
     async def _execute_task(self, task_id: str) -> None:
         server = None
         try:
@@ -907,6 +972,7 @@ class BackgroundTaskRunner:
             if dispatch_info is None:
                 return
             task, server, file_record = dispatch_info
+            expected_generation = task.run_generation
 
             if not task.can_transition_to(TaskStatus.TRANSCRIBING):
                 return
@@ -958,21 +1024,31 @@ class BackgroundTaskRunner:
                 await self._mark_task_failed(task_id, result.error)
                 return
 
+            audio_duration = 0.0
+            if file_record and hasattr(file_record, "duration_sec") and file_record.duration_sec:
+                audio_duration = file_record.duration_sec
+
             if not result.text or not result.text.strip():
                 logger.warning(
                     "asr_empty_text",
                     task_id=task_id,
                     server_id=server.server_id,
+                    duration_sec=audio_duration,
                     hint="Silent audio or no speech detected",
                 )
+                if self._should_retry_empty_result(audio_duration):
+                    await breaker_registry.get(server.server_id).record_failure()
+                    await self._mark_task_failed(
+                        task_id,
+                        f"Empty ASR result for {audio_duration:.1f}s audio",
+                        error_code="EMPTY_RESULT",
+                    )
+                    return
                 await breaker_registry.get(server.server_id).record_success()
                 result.text = ""
             else:
                 await breaker_registry.get(server.server_id).record_success()
 
-            audio_duration = 0.0
-            if file_record and hasattr(file_record, "duration_sec") and file_record.duration_sec:
-                audio_duration = file_record.duration_sec
             if audio_duration > 0 and task_started_at:
                 actual_sec = (datetime.now(timezone.utc) - task_started_at).total_seconds()
                 global_scheduler.calibrate_after_completion(
@@ -980,6 +1056,7 @@ class BackgroundTaskRunner:
                     audio_duration_sec=audio_duration,
                     actual_duration_sec=actual_sec,
                     predicted_duration_sec=float(task.eta_seconds) if task.eta_seconds is not None else None,
+                    work_kind="task",
                 )
 
             raw = result.raw if isinstance(result.raw, dict) and result.raw else {}
@@ -987,6 +1064,12 @@ class BackgroundTaskRunner:
                 raw["text"] = result.text
             if "mode" not in raw:
                 raw["mode"] = result.mode
+
+            if await self._is_stale_run(task_id, expected_generation):
+                logger.warning("stale_task_result_discarded",
+                               task_id=task_id,
+                               expected_gen=expected_generation)
+                return
 
             await save_result(task_id, to_json(raw), "json")
             await save_result(task_id, to_txt(raw), "txt")
@@ -1086,26 +1169,38 @@ class BackgroundTaskRunner:
             user_id = task.user_id
             await session.commit()
         await rate_limiter.record_task_completed(user_id)
-        if not any(sq.decisions for sq in self._slot_queues.values()):
-            self._clear_slot_queues()
+        if not self._plan_pool:
+            self._clear_plan_pool()
         self._request_dispatch()
         if pending_delivery:
             await self._callback_worker.try_deliver(*pending_delivery)
 
-    async def _mark_task_failed(self, task_id: str, message: str) -> None:
+    async def _mark_task_failed(
+        self,
+        task_id: str,
+        message: str,
+        *,
+        error_code: str = "TRANSCRIBE_ERROR",
+    ) -> None:
         pending_delivery = None
         async with async_session_factory() as session:
             repo = TaskRepository(session)
             task = await repo.get_task(task_id)
             if task is None:
                 return
-            task.error_code = "TRANSCRIBE_ERROR"
+            task.error_code = error_code
             task.error_message = message[:2000]
             is_terminal = task.retry_count >= settings.max_retry_count
             if task.can_transition_to(TaskStatus.FAILED):
                 event = await repo.update_task_status(task, TaskStatus.FAILED)
                 if is_terminal:
-                    outbox = await self._callback_worker.enqueue(session, task, event.event_id, TaskStatus.FAILED, error_message=message[:2000])
+                    outbox = await self._callback_worker.enqueue(
+                        session,
+                        task,
+                        event.event_id,
+                        TaskStatus.FAILED,
+                        error_message=message[:2000],
+                    )
                     if outbox is not None:
                         pending_delivery = (outbox.outbox_id, task.callback_secret)
             user_id = task.user_id
@@ -1115,8 +1210,8 @@ class BackgroundTaskRunner:
                            retry_count=task.retry_count)
         if is_terminal:
             await rate_limiter.record_task_completed(user_id)
-        if not any(sq.decisions for sq in self._slot_queues.values()):
-            self._clear_slot_queues()
+        if not self._plan_pool:
+            self._clear_plan_pool()
         self._request_dispatch()
         if pending_delivery:
             await self._callback_worker.try_deliver(*pending_delivery)
@@ -1133,6 +1228,7 @@ class BackgroundTaskRunner:
             if info is None:
                 return
             segment, parent_task, server = info
+            expected_seg_gen = segment.run_generation
 
             async with async_session_factory() as session:
                 repo = TaskRepository(session)
@@ -1217,22 +1313,50 @@ class BackgroundTaskRunner:
                 await self._mark_segment_failed(segment_id, result.error)
                 return
 
+            seg_audio_duration = segment.duration_ms / 1000.0
+
             if not result.text or not result.text.strip():
+                if self._should_retry_empty_result(seg_audio_duration, is_segment=True):
+                    await breaker_registry.get(server.server_id).record_failure()
+                    await self._mark_segment_failed(
+                        segment_id,
+                        f"Empty ASR result for {seg_audio_duration:.1f}s segment",
+                    )
+                    return
                 await breaker_registry.get(server.server_id).record_success()
                 result.text = ""
             else:
                 await breaker_registry.get(server.server_id).record_success()
 
-            seg_audio_duration = segment.duration_ms / 1000.0
             if seg_audio_duration > 0 and segment_started_at:
                 actual_sec = (datetime.now(timezone.utc) - segment_started_at).total_seconds()
-                predicted_sec = global_scheduler.rtf_tracker.get_p90(server.server_id) * seg_audio_duration
+                server_profile = ServerProfile(
+                    server_id=server.server_id,
+                    host=server.host,
+                    port=server.port,
+                    max_concurrency=server.max_concurrency,
+                    rtf_baseline=server.rtf_baseline,
+                    throughput_rtf=server.throughput_rtf,
+                    penalty_factor=server.penalty_factor,
+                )
+                predicted_sec = global_scheduler.estimate_processing_time(
+                    seg_audio_duration,
+                    server_profile,
+                    work_kind="segment",
+                )
                 global_scheduler.calibrate_after_completion(
                     server_id=server.server_id,
                     audio_duration_sec=seg_audio_duration,
                     actual_duration_sec=actual_sec,
                     predicted_duration_sec=predicted_sec if predicted_sec > 0 else None,
+                    work_kind="segment",
                 )
+
+            if await self._is_stale_segment_run(segment_id, expected_seg_gen):
+                logger.warning("stale_segment_result_discarded",
+                               segment_id=segment_id,
+                               expected_gen=expected_seg_gen)
+                return
 
             raw = result.raw if isinstance(result.raw, dict) and result.raw else {}
             if "text" not in raw:
@@ -1250,6 +1374,18 @@ class BackgroundTaskRunner:
             await self._mark_segment_failed(segment_id, str(e))
         finally:
             await self._unmark_inflight(segment_id)
+
+    @staticmethod
+    def _should_retry_empty_result(
+        audio_duration_sec: float | None,
+        *,
+        is_segment: bool = False,
+    ) -> bool:
+        threshold = (
+            EMPTY_RESULT_RETRY_MIN_SEGMENT_SEC if is_segment
+            else EMPTY_RESULT_RETRY_MIN_AUDIO_SEC
+        )
+        return (audio_duration_sec or 0.0) >= threshold
 
     async def _load_segment_dispatch_info(
         self, segment_id: str,
@@ -1355,6 +1491,13 @@ class BackgroundTaskRunner:
                         pending_delivery = (outbox.outbox_id, task.callback_secret)
                     user_id = task.user_id
                     parent_failed = True
+                    orphan_count = await self._fail_orphan_segments(
+                        seg_repo, segment.task_id, exclude_id=segment_id,
+                    )
+                    if orphan_count > 0:
+                        logger.info("orphan_segments_failed_with_parent",
+                                    task_id=segment.task_id,
+                                    count=orphan_count)
                 await session.commit()
                 logger.warning("segment_retry_exhausted",
                                segment_id=segment_id,
@@ -1364,11 +1507,57 @@ class BackgroundTaskRunner:
 
         if parent_failed and user_id:
             await rate_limiter.record_task_completed(user_id)
-        if not any(sq.decisions for sq in self._slot_queues.values()):
-            self._clear_slot_queues()
+        if not self._plan_pool:
+            self._clear_plan_pool()
         self._request_dispatch()
         if pending_delivery:
             await self._callback_worker.try_deliver(*pending_delivery)
+
+    async def _is_stale_run(self, task_id: str, expected_generation: int) -> bool:
+        """Return True if the task's run_generation has advanced past expected."""
+        async with async_session_factory() as session:
+            task = await TaskRepository(session).get_task(task_id)
+            if task is None:
+                return True
+            return task.run_generation != expected_generation
+
+    async def _is_stale_segment_run(self, segment_id: str, expected_generation: int) -> bool:
+        """Return True if the segment's run_generation has advanced past expected."""
+        async with async_session_factory() as session:
+            seg = await SegmentRepository(session).get_segment(segment_id)
+            if seg is None:
+                return True
+            return seg.run_generation != expected_generation
+
+    @staticmethod
+    async def _fail_orphan_segments(
+        seg_repo: SegmentRepository,
+        task_id: str,
+        *,
+        exclude_id: str | None = None,
+    ) -> int:
+        """Mark all non-terminal segments of a failed parent as FAILED.
+
+        Prevents orphan PENDING/DISPATCHED/TRANSCRIBING segments from
+        lingering in the database after the parent task has been declared
+        failed, which would otherwise pollute dispatch queries.
+        """
+        from datetime import datetime, timezone as _tz
+        segments = await seg_repo.list_segments_by_task(task_id)
+        terminal = (SegmentStatus.SUCCEEDED, SegmentStatus.FAILED)
+        count = 0
+        for seg in segments:
+            if seg.segment_id == exclude_id:
+                continue
+            if seg.status in (s.value for s in terminal):
+                continue
+            seg.status = SegmentStatus.FAILED.value
+            seg.error_message = "Parent task failed"
+            seg.completed_at = datetime.now(_tz.utc)
+            count += 1
+        if count > 0:
+            await seg_repo._session.flush()
+        return count
 
     # ------------------------------------------------------------------
     # Transcription helpers
@@ -1492,21 +1681,29 @@ class BackgroundTaskRunner:
         work_map: dict[str, object],
         inflight: set[str],
         max_candidates_per_queue: int = 3,
-    ) -> tuple[ScheduleDecision, SlotQueue, float] | None:
+    ) -> tuple[ScheduleDecision, str, float, float, float] | None:
         """Find the best work item to steal for an idle server.
 
-        Scans other servers' queue tails, checking up to max_candidates_per_queue
-        items per queue to find the candidate with the greatest improvement.
-        Returns (decision, source_queue, est_processing_time_on_idle) or None.
+        Scans PlanPool tails of other servers, checking up to
+        max_candidates_per_queue items per server to find the candidate
+        with the greatest improvement.
+        Returns (decision, source_server_id, est_processing_time_on_idle,
+        source_remaining_time, estimated_gain) or None.
         """
-        best: tuple[ScheduleDecision, SlotQueue, float] | None = None
+        best: tuple[ScheduleDecision, str, float, float, float] | None = None
         best_improvement = 0.0
 
-        for sq in self._slot_queues.values():
-            if sq.server_id == idle_profile.server_id or not sq.decisions:
+        for source_sid in list(self._plan_pool.server_ids):
+            if source_sid == idle_profile.server_id:
+                continue
+            source_profile = profile_map.get(source_sid)
+            if source_profile is None:
+                continue
+            q = self._plan_pool.get_queue_snapshot(source_sid)
+            if not q:
                 continue
             checked = 0
-            for idx_from_end, decision in enumerate(reversed(sq.decisions)):
+            for idx_from_end, decision in enumerate(reversed(q)):
                 if checked >= max_candidates_per_queue:
                     break
                 if decision.task_id in inflight:
@@ -1515,44 +1712,47 @@ class BackgroundTaskRunner:
                     continue
                 checked += 1
                 est_stolen = global_scheduler.estimate_processing_time(
-                    decision.audio_duration_sec, idle_profile)
-                decision_idx = len(sq.decisions) - 1 - idx_from_end
+                    decision.audio_duration_sec,
+                    idle_profile,
+                    work_kind=decision.kind,
+                )
+                decision_idx = len(q) - 1 - idx_from_end
                 source_remaining = (
-                    sum(d.estimated_duration for d in sq.decisions[:decision_idx])
+                    sum(d.estimated_duration for d in q[:decision_idx])
                     + decision.estimated_duration
                 )
                 improvement = source_remaining - est_stolen
-                if improvement > 0 and improvement > best_improvement:
-                    best = (decision, sq, est_stolen)
+                min_gain = max(10.0, decision.estimated_duration * 0.15)
+                if improvement > min_gain and improvement > best_improvement:
+                    best = (decision, source_sid, est_stolen, source_remaining, improvement)
                     best_improvement = improvement
         return best
 
     def _check_queue_imbalance(self, available_server_ids: frozenset[str]) -> bool:
-        """Detect if remaining slot queue workload is significantly imbalanced.
+        """Detect true workload imbalance across PlanPool queues.
 
-        Triggers re-plan when:
-        1. A server that was part of the active plan has exhausted its queue
-           (removed by cleanup) while other planned servers still have work.
-        2. The ratio of max-to-min remaining work across planned servers
-           exceeds REPLAN_IMBALANCE_RATIO.
+        Returns True only for genuine imbalance that warrants a global replan.
+        Distinguishes 'true_imbalance' from 'structural_queue_empty'.
         """
-        if not self._slot_queues:
+        if not self._plan_pool:
             return False
 
-        server_remaining: dict[str, float] = {}
-        for sq in self._slot_queues.values():
-            total = sum(d.estimated_duration for d in sq.decisions)
-            server_remaining[sq.server_id] = server_remaining.get(sq.server_id, 0.0) + total
-
-        has_backlog = any(v > 0.0 for v in server_remaining.values())
-        if not has_backlog:
+        server_remaining = self._plan_pool.server_remaining_sec()
+        if not server_remaining or not any(v > 0.0 for v in server_remaining.values()):
             return False
 
         exhausted_ids = (
             self._planned_available_server_ids - set(server_remaining.keys())
         ) & available_server_ids
         if exhausted_ids:
-            logger.info("queue_imbalance_idle_server",
+            total_remaining = sum(server_remaining.values())
+            if total_remaining < 30.0:
+                logger.debug("structural_queue_empty",
+                             exhausted=list(exhausted_ids),
+                             remaining_sec=f"{total_remaining:.1f}",
+                             hint="low backlog, work steal preferred over replan")
+                return False
+            logger.info("true_imbalance_idle_server",
                         exhausted=list(exhausted_ids),
                         remaining={sid: f"{v:.1f}s" for sid, v in server_remaining.items()})
             return True
@@ -1561,7 +1761,7 @@ class BackgroundTaskRunner:
         if len(positives) >= 2:
             ratio = max(positives) / min(positives)
             if ratio > REPLAN_IMBALANCE_RATIO:
-                logger.info("queue_imbalance_ratio",
+                logger.info("true_imbalance_ratio",
                             ratio=f"{ratio:.2f}",
                             threshold=f"{REPLAN_IMBALANCE_RATIO:.1f}",
                             remaining={sid: f"{v:.1f}s" for sid, v in server_remaining.items()})
@@ -1569,9 +1769,8 @@ class BackgroundTaskRunner:
 
         return False
 
-    def _clear_slot_queues(self) -> None:
-        self._slot_queues.clear()
-        self._planned_task_ids.clear()
+    def _clear_plan_pool(self) -> None:
+        self._plan_pool.clear()
         self._planned_available_server_ids = frozenset()
 
     @staticmethod

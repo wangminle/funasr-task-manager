@@ -62,6 +62,7 @@ class Task(Base):
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(Text)
     retry_count: Mapped[int] = mapped_column(SmallInteger, default=0)
+    run_generation: Mapped[int] = mapped_column(SmallInteger, default=0)
     callback_url: Mapped[str | None] = mapped_column(Text)
     callback_secret: Mapped[str | None] = mapped_column(String(128))
 

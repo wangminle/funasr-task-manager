@@ -18,6 +18,7 @@ from app.storage.repository import FileRepository, TaskRepository
 from app.storage.file_manager import read_result
 from app.config import settings
 from app.observability.logging import get_logger
+from app.services.progress import calculate_eta
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
@@ -84,6 +85,15 @@ async def _enrich_task_responses(
         resp = TaskResponse.model_validate(t)
         if t.task_id in summaries:
             resp.segment_info = summaries[t.task_id]
+        if t.status in (TaskStatus.QUEUED.value, TaskStatus.DISPATCHED.value):
+            resp.queue_eta_seconds = t.eta_seconds
+        elif t.status == TaskStatus.TRANSCRIBING.value:
+            duration = t.file.duration_sec if t.file and t.file.duration_sec else None
+            resp.running_eta_seconds = calculate_eta(
+                t.status,
+                started_at=t.started_at,
+                duration_sec=duration,
+            )
         responses.append(resp)
     return responses
 

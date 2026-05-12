@@ -3,7 +3,8 @@
 import pytest
 
 from app.services.scheduler import (
-    ETACalibrationTracker, RTFTracker, ServerProfile, TaskScheduler, DEFAULT_RTF,
+    ETACalibrationTracker, PlanPool, RTFTracker, ScheduleDecision,
+    ServerProfile, TaskScheduler, DEFAULT_RTF,
 )
 
 
@@ -767,3 +768,220 @@ class TestETACalibrationIntegration:
         assert sched.eta_tracker.get_factor("s1") == 0.8, (
             "Stable workload with calibrated predictions should not drift factor"
         )
+
+    def test_segment_eta_uses_segment_rtf_and_fixed_overhead(self):
+        """Segment ETA should use segment-specific RTF and overhead, not whole-file RTF."""
+        sched = TaskScheduler()
+        srv = _make_server("s1", rtf=0.5, running=0)
+
+        for _ in range(3):
+            sched.calibrate_after_completion(
+                "s1", audio_duration_sec=600, actual_duration_sec=300,
+                predicted_duration_sec=300, work_kind="task",
+            )
+            sched.calibrate_after_completion(
+                "s1", audio_duration_sec=600, actual_duration_sec=60,
+                predicted_duration_sec=60, work_kind="segment",
+            )
+
+        whole_eta = sched.estimate_processing_time(600, srv, work_kind="task")
+        segment_eta = sched.estimate_processing_time(600, srv, work_kind="segment")
+
+        assert whole_eta == pytest.approx(305.0)
+        assert segment_eta == pytest.approx(68.0)
+
+
+@pytest.mark.unit
+class TestPlanPool:
+    """Verify PlanPool merge, pop, remove, steal operations."""
+
+    def _decision(self, task_id: str, server_id: str, duration: float = 10.0,
+                  eft: float = 10.0) -> ScheduleDecision:
+        return ScheduleDecision(
+            task_id=task_id, server_id=server_id, slot_index=0,
+            estimated_start=0.0, estimated_duration=duration,
+            estimated_finish=eft, queue_position=1, audio_duration_sec=duration * 5,
+        )
+
+    def test_merge_adds_new_items(self):
+        pool = PlanPool()
+        d1 = self._decision("t-1", "srv-1", eft=10.0)
+        d2 = self._decision("t-2", "srv-1", eft=20.0)
+        added = pool.merge([d1, d2])
+        assert added == 2
+        assert len(pool) == 2
+        assert pool.contains("t-1")
+        assert pool.contains("t-2")
+
+    def test_merge_skips_duplicates(self):
+        pool = PlanPool()
+        d1 = self._decision("t-1", "srv-1")
+        pool.merge([d1])
+        added = pool.merge([d1, self._decision("t-2", "srv-1")])
+        assert added == 1
+        assert len(pool) == 2
+
+    def test_pop_dispatchable_respects_budget(self):
+        pool = PlanPool()
+        pool.merge([
+            self._decision("t-1", "srv-1", eft=10.0),
+            self._decision("t-2", "srv-1", eft=20.0),
+            self._decision("t-3", "srv-1", eft=30.0),
+        ])
+        items = pool.pop_dispatchable("srv-1", 2)
+        assert len(items) == 2
+        assert items[0].task_id == "t-1"
+        assert items[1].task_id == "t-2"
+        assert len(pool) == 1
+        assert not pool.contains("t-1")
+
+    def test_pop_dispatchable_zero_budget(self):
+        pool = PlanPool()
+        pool.merge([self._decision("t-1", "srv-1")])
+        assert pool.pop_dispatchable("srv-1", 0) == []
+        assert len(pool) == 1
+
+    def test_remove_by_task_id(self):
+        pool = PlanPool()
+        pool.merge([
+            self._decision("t-1", "srv-1"),
+            self._decision("t-2", "srv-1"),
+        ])
+        removed = pool.remove("t-1")
+        assert removed is not None
+        assert removed.task_id == "t-1"
+        assert len(pool) == 1
+        assert not pool.contains("t-1")
+
+    def test_remove_nonexistent_returns_none(self):
+        pool = PlanPool()
+        assert pool.remove("t-999") is None
+
+    def test_steal_tail(self):
+        pool = PlanPool()
+        pool.merge([
+            self._decision("t-1", "srv-1", eft=10.0),
+            self._decision("t-2", "srv-1", eft=20.0),
+        ])
+        stolen = pool.steal_tail("srv-1")
+        assert stolen is not None
+        assert stolen.task_id == "t-2"
+        assert len(pool) == 1
+
+    def test_steal_from_empty_returns_none(self):
+        pool = PlanPool()
+        assert pool.steal_tail("srv-1") is None
+
+    def test_server_remaining_sec(self):
+        pool = PlanPool()
+        pool.merge([
+            self._decision("t-1", "srv-1", duration=10.0),
+            self._decision("t-2", "srv-1", duration=20.0),
+            self._decision("t-3", "srv-2", duration=30.0),
+        ])
+        remaining = pool.server_remaining_sec()
+        assert remaining["srv-1"] == pytest.approx(30.0)
+        assert remaining["srv-2"] == pytest.approx(30.0)
+
+    def test_replace_clears_and_rebuilds(self):
+        pool = PlanPool()
+        pool.merge([self._decision("t-old", "srv-1")])
+        pool.replace([self._decision("t-new", "srv-2")])
+        assert not pool.contains("t-old")
+        assert pool.contains("t-new")
+        assert len(pool) == 1
+
+    def test_bool_and_clear(self):
+        pool = PlanPool()
+        assert not pool
+        pool.merge([self._decision("t-1", "srv-1")])
+        assert pool
+        pool.clear()
+        assert not pool
+        assert len(pool) == 0
+
+    def test_merge_maintains_eft_order_with_existing_backlog(self):
+        """Inserting items with earlier EFT into a queue with later EFT
+        must place them before the existing items, not after."""
+        pool = PlanPool()
+        pool.merge([self._decision("t-late", "srv-1", eft=100.0)])
+        pool.merge([self._decision("t-early", "srv-1", eft=50.0)])
+
+        items = pool.pop_dispatchable("srv-1", 10)
+        assert [d.task_id for d in items] == ["t-early", "t-late"]
+
+    def test_merge_interleaves_correctly(self):
+        """Multiple merges should produce a globally sorted queue."""
+        pool = PlanPool()
+        pool.merge([
+            self._decision("t-a", "srv-1", eft=10.0),
+            self._decision("t-c", "srv-1", eft=30.0),
+        ])
+        pool.merge([
+            self._decision("t-b", "srv-1", eft=20.0),
+            self._decision("t-d", "srv-1", eft=25.0),
+        ])
+        items = pool.pop_dispatchable("srv-1", 10)
+        assert [d.task_id for d in items] == ["t-a", "t-b", "t-d", "t-c"]
+
+    def test_merge_after_partial_pop_preserves_order(self):
+        """After popping some items, new merge still lands in sorted position."""
+        pool = PlanPool()
+        pool.merge([
+            self._decision("t-1", "srv-1", eft=10.0),
+            self._decision("t-2", "srv-1", eft=30.0),
+            self._decision("t-3", "srv-1", eft=50.0),
+        ])
+        pool.pop_dispatchable("srv-1", 1)
+        pool.merge([self._decision("t-new", "srv-1", eft=20.0)])
+
+        items = pool.pop_dispatchable("srv-1", 10)
+        assert [d.task_id for d in items] == ["t-new", "t-2", "t-3"]
+
+    def test_merge_segments_into_existing_task_backlog(self):
+        """Segment decisions merged after whole-file decisions are sorted correctly."""
+        pool = PlanPool()
+        pool.merge([
+            self._decision("t-whole-1", "srv-1", eft=60.0),
+            self._decision("t-whole-2", "srv-1", eft=120.0),
+        ])
+        pool.merge([
+            ScheduleDecision(
+                task_id="seg-1", server_id="srv-1", slot_index=0,
+                estimated_start=0.0, estimated_duration=5.0,
+                estimated_finish=5.0, queue_position=1,
+                audio_duration_sec=30.0, kind="segment", parent_task_id="t-parent",
+            ),
+            ScheduleDecision(
+                task_id="seg-2", server_id="srv-1", slot_index=0,
+                estimated_start=5.0, estimated_duration=5.0,
+                estimated_finish=10.0, queue_position=2,
+                audio_duration_sec=30.0, kind="segment", parent_task_id="t-parent",
+            ),
+        ])
+        items = pool.pop_dispatchable("srv-1", 10)
+        efts = [d.estimated_finish for d in items]
+        assert efts == sorted(efts), f"Expected sorted EFTs, got {efts}"
+        assert items[0].task_id == "seg-1"
+        assert items[1].task_id == "seg-2"
+
+    def test_iter_server_tails(self):
+        pool = PlanPool()
+        pool.merge([
+            self._decision("t-1", "srv-1", duration=10.0, eft=10.0),
+            self._decision("t-2", "srv-1", duration=20.0, eft=30.0),
+            self._decision("t-3", "srv-2", duration=15.0, eft=15.0),
+        ])
+        tails = pool.iter_server_tails("srv-2")
+        assert len(tails) == 2
+        sids = [sid for sid, _, _ in tails]
+        assert all(s == "srv-1" for s in sids)
+
+    def test_server_queue_len(self):
+        pool = PlanPool()
+        pool.merge([
+            self._decision("t-1", "srv-1", eft=10.0),
+            self._decision("t-2", "srv-1", eft=20.0),
+        ])
+        assert pool.server_queue_len("srv-1") == 2
+        assert pool.server_queue_len("srv-unknown") == 0

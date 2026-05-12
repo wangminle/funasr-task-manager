@@ -318,6 +318,7 @@ def _download_group_results(c, group_id, formats, output_dir):
         "failed": group_stats.get("failed", len(failed)),
         "formats_exported": formats,
         "output_directory": str(output_dir),
+        "scheduling": group_stats.get("scheduling", {}),
         "items": summary_items,
     }
     summary_path = output_dir / "batch-summary.json"

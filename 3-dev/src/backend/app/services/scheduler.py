@@ -18,6 +18,7 @@ Scheduling algorithm:
 
 from __future__ import annotations
 
+import bisect
 import math
 import statistics
 from collections import defaultdict, deque
@@ -30,6 +31,7 @@ logger = get_logger(__name__)
 
 DEFAULT_RTF = 0.3
 DEFAULT_OVERHEAD = 5.0
+DEFAULT_SEGMENT_OVERHEAD = 8.0
 RTF_WINDOW_SIZE = 50
 CALIBRATION_THRESHOLD = 0.3
 PENALTY_INCREASE_RATE = 0.2
@@ -60,25 +62,38 @@ class ETACalibrationTracker:
     ):
         self._history_size = history_size
         self._change_threshold = change_threshold
-        self._history: dict[str, deque[tuple[float, float]]] = {}
-        self._factors: dict[str, float] = {}
+        self._history: dict[tuple[str, str], deque[tuple[float, float]]] = {}
+        self._factors: dict[tuple[str, str], float] = {}
 
-    def record(self, server_id: str, predicted: float, actual: float) -> None:
+    @staticmethod
+    def _key(server_id: str, work_kind: str = "task") -> tuple[str, str]:
+        return (server_id, work_kind or "task")
+
+    def record(
+        self,
+        server_id: str,
+        predicted: float,
+        actual: float,
+        *,
+        work_kind: str = "task",
+    ) -> None:
         if predicted <= 0 or actual <= 0:
             return
-        window = self._history.get(server_id)
+        key = self._key(server_id, work_kind)
+        window = self._history.get(key)
         if window is None:
             window = deque(maxlen=self._history_size)
-            self._history[server_id] = window
+            self._history[key] = window
         window.append((predicted, actual))
         if len(window) >= self._history_size:
-            self._recalc(server_id)
+            self._recalc(server_id, work_kind)
 
-    def get_factor(self, server_id: str) -> float:
-        return self._factors.get(server_id, 1.0)
+    def get_factor(self, server_id: str, work_kind: str = "task") -> float:
+        return self._factors.get(self._key(server_id, work_kind), 1.0)
 
-    def _recalc(self, server_id: str) -> None:
-        window = self._history.get(server_id)
+    def _recalc(self, server_id: str, work_kind: str = "task") -> None:
+        key = self._key(server_id, work_kind)
+        window = self._history.get(key)
         if not window or len(window) < self._history_size:
             return
         ratios = [actual / predicted for predicted, actual in window]
@@ -87,12 +102,13 @@ class ETACalibrationTracker:
             stepped = round(avg_ratio / ETA_CAL_STEP) * ETA_CAL_STEP
             stepped = round(stepped, 1)
             clamped = max(ETA_CAL_MIN_FACTOR, min(ETA_CAL_MAX_FACTOR, stepped))
-            old = self._factors.get(server_id, 1.0)
-            self._factors[server_id] = clamped
+            old = self._factors.get(key, 1.0)
+            self._factors[key] = clamped
             if old != clamped:
                 logger.info(
                     "eta_calibration_factor_updated",
                     server_id=server_id,
+                    work_kind=work_kind,
                     old_factor=f"{old:.1f}",
                     new_factor=f"{clamped:.1f}",
                     avg_ratio=f"{avg_ratio:.3f}",
@@ -100,8 +116,12 @@ class ETACalibrationTracker:
 
     def clear(self, server_id: str | None = None) -> None:
         if server_id:
-            self._history.pop(server_id, None)
-            self._factors.pop(server_id, None)
+            for key in list(self._history):
+                if key[0] == server_id:
+                    self._history.pop(key, None)
+            for key in list(self._factors):
+                if key[0] == server_id:
+                    self._factors.pop(key, None)
         else:
             self._history.clear()
             self._factors.clear()
@@ -140,6 +160,162 @@ class SlotQueue:
     decisions: list[ScheduleDecision] = field(default_factory=list)
 
 
+class PlanPool:
+    """Persistent work pool that survives across dispatch cycles.
+
+    Each server has a sorted list of ScheduleDecisions ordered by
+    estimated_finish (ascending). Head = next to dispatch, tail = steal
+    candidate. Supports incremental sorted merge and budget-based pop.
+
+    Uses list (not deque) to allow bisect-based sorted insertion.
+    Queue sizes are O(tasks_per_server) so list performance is fine.
+    """
+
+    def __init__(self) -> None:
+        self._queues: dict[str, list[ScheduleDecision]] = {}
+        self._task_index: dict[str, str] = {}
+
+    @property
+    def task_ids(self) -> set[str]:
+        return set(self._task_index.keys())
+
+    @property
+    def server_ids(self) -> frozenset[str]:
+        return frozenset(
+            sid for sid, q in self._queues.items() if q
+        )
+
+    def __len__(self) -> int:
+        return sum(len(q) for q in self._queues.values())
+
+    def __bool__(self) -> bool:
+        return any(self._queues.values())
+
+    def contains(self, task_id: str) -> bool:
+        return task_id in self._task_index
+
+    def server_queue_len(self, server_id: str) -> int:
+        q = self._queues.get(server_id)
+        return len(q) if q else 0
+
+    def merge(self, decisions: list[ScheduleDecision]) -> int:
+        """Merge new decisions into the pool, maintaining EFT sort order.
+
+        Items already in the pool (by task_id) are skipped.
+        New items are inserted at the correct sorted position using bisect.
+        Returns the count of newly added items.
+        """
+        added = 0
+        for d in decisions:
+            if d.task_id in self._task_index:
+                continue
+            q = self._queues.get(d.server_id)
+            if q is None:
+                q = []
+                self._queues[d.server_id] = q
+            eft_keys = [x.estimated_finish for x in q]
+            idx = bisect.bisect_right(eft_keys, d.estimated_finish)
+            q.insert(idx, d)
+            self._task_index[d.task_id] = d.server_id
+            added += 1
+        return added
+
+    def replace(self, decisions: list[ScheduleDecision]) -> None:
+        """Full replace: clear all queues and rebuild from decisions."""
+        self.clear()
+        self.merge(decisions)
+
+    def pop_dispatchable(self, server_id: str, budget: int) -> list[ScheduleDecision]:
+        """Pop up to `budget` items from the head of a server's queue."""
+        q = self._queues.get(server_id)
+        if not q or budget <= 0:
+            return []
+        n = min(budget, len(q))
+        result = q[:n]
+        del q[:n]
+        for item in result:
+            self._task_index.pop(item.task_id, None)
+        if not q:
+            del self._queues[server_id]
+        return result
+
+    def remove(self, task_id: str) -> ScheduleDecision | None:
+        """Remove a specific task from the pool by task_id."""
+        sid = self._task_index.pop(task_id, None)
+        if sid is None:
+            return None
+        q = self._queues.get(sid)
+        if q is None:
+            return None
+        for i, d in enumerate(q):
+            if d.task_id == task_id:
+                del q[i]
+                if not q:
+                    del self._queues[sid]
+                return d
+        return None
+
+    def peek_tail(self, server_id: str) -> ScheduleDecision | None:
+        """Look at the last (lowest-priority) item in a server queue."""
+        q = self._queues.get(server_id)
+        return q[-1] if q else None
+
+    def steal_tail(self, server_id: str) -> ScheduleDecision | None:
+        """Pop the last item from a server queue (for work stealing)."""
+        q = self._queues.get(server_id)
+        if not q:
+            return None
+        item = q.pop()
+        self._task_index.pop(item.task_id, None)
+        if not q:
+            del self._queues[server_id]
+        return item
+
+    def iter_server_tails(
+        self, exclude_server: str, max_per_server: int = 3,
+    ) -> list[tuple[str, ScheduleDecision, float]]:
+        """Yield (server_id, decision, remaining_sec) from tails of other servers.
+
+        Used by work-steal to scan candidates across all servers.
+        Returns items from the tail (lowest priority) of each server queue.
+        """
+        result: list[tuple[str, ScheduleDecision, float]] = []
+        for sid, q in self._queues.items():
+            if sid == exclude_server or not q:
+                continue
+            remaining = sum(d.estimated_duration for d in q)
+            for d in reversed(q[-max_per_server:]):
+                result.append((sid, d, remaining))
+        return result
+
+    def get_queue_snapshot(self, server_id: str) -> tuple[ScheduleDecision, ...]:
+        """Return a read-only snapshot of a server's queue."""
+        q = self._queues.get(server_id)
+        return tuple(q) if q else ()
+
+    def server_tail_finish(self) -> dict[str, float]:
+        """Return the estimated_finish of the last item per server queue.
+
+        Used as backlog offset when merging incremental scheduling results
+        so that new items don't leapfrog existing backlog.
+        """
+        return {
+            sid: q[-1].estimated_finish
+            for sid, q in self._queues.items() if q
+        }
+
+    def server_remaining_sec(self) -> dict[str, float]:
+        """Total estimated duration per server queue."""
+        return {
+            sid: sum(d.estimated_duration for d in q)
+            for sid, q in self._queues.items() if q
+        }
+
+    def clear(self) -> None:
+        self._queues.clear()
+        self._task_index.clear()
+
+
 @dataclass
 class ServerProfile:
     server_id: str
@@ -151,6 +327,7 @@ class ServerProfile:
     penalty_factor: float = 0.1
     status: str = "ONLINE"
     running_tasks: int = 0
+    segment_fixed_overhead_sec: float = DEFAULT_SEGMENT_OVERHEAD
 
 
 class RTFTracker:
@@ -158,40 +335,59 @@ class RTFTracker:
 
     def __init__(self, window_size: int = RTF_WINDOW_SIZE):
         self._window_size = window_size
-        self._data: dict[str, deque[float]] = {}
-        self._consecutive_fast: dict[str, int] = defaultdict(int)
+        self._data: dict[tuple[str, str], deque[float]] = {}
+        self._consecutive_fast: dict[tuple[str, str], int] = defaultdict(int)
 
-    def _get_window(self, server_id: str) -> deque[float]:
-        window = self._data.get(server_id)
+    @staticmethod
+    def _key(server_id: str, work_kind: str = "task") -> tuple[str, str]:
+        return (server_id, work_kind or "task")
+
+    def _get_window(self, server_id: str, work_kind: str = "task") -> deque[float]:
+        key = self._key(server_id, work_kind)
+        window = self._data.get(key)
         if window is None:
             window = deque(maxlen=self._window_size)
-            self._data[server_id] = window
+            self._data[key] = window
         return window
 
-    def record(self, server_id: str, actual_rtf: float) -> None:
-        self._get_window(server_id).append(actual_rtf)
+    def record(self, server_id: str, actual_rtf: float, work_kind: str = "task") -> None:
+        self._get_window(server_id, work_kind).append(actual_rtf)
 
-    def get_p90(self, server_id: str, default: float = DEFAULT_RTF) -> float:
-        window = self._data.get(server_id)
+    def get_p90(
+        self,
+        server_id: str,
+        default: float = DEFAULT_RTF,
+        work_kind: str = "task",
+    ) -> float:
+        window = self._data.get(self._key(server_id, work_kind))
         if not window or len(window) < 3:
             return default
         sorted_vals = sorted(window)
         idx = int(math.ceil(0.9 * len(sorted_vals))) - 1
         return sorted_vals[max(idx, 0)]
 
-    def get_mean(self, server_id: str, default: float = DEFAULT_RTF) -> float:
-        window = self._data.get(server_id)
+    def get_mean(
+        self,
+        server_id: str,
+        default: float = DEFAULT_RTF,
+        work_kind: str = "task",
+    ) -> float:
+        window = self._data.get(self._key(server_id, work_kind))
         if not window:
             return default
         return statistics.mean(window)
 
-    def get_window_size(self, server_id: str) -> int:
-        return len(self._data.get(server_id, []))
+    def get_window_size(self, server_id: str, work_kind: str = "task") -> int:
+        return len(self._data.get(self._key(server_id, work_kind), []))
 
     def clear(self, server_id: str | None = None) -> None:
         if server_id:
-            self._data.pop(server_id, None)
-            self._consecutive_fast.pop(server_id, None)
+            for key in list(self._data):
+                if key[0] == server_id:
+                    self._data.pop(key, None)
+            for key in list(self._consecutive_fast):
+                if key[0] == server_id:
+                    self._consecutive_fast.pop(key, None)
         else:
             self._data.clear()
             self._consecutive_fast.clear()
@@ -204,20 +400,22 @@ class TaskScheduler:
         self.rtf_tracker = RTFTracker()
         self.eta_tracker = ETACalibrationTracker()
 
-    def get_effective_rtf(self, server: ServerProfile) -> float:
+    def get_effective_rtf(self, server: ServerProfile, work_kind: str = "task") -> float:
         """Get effective RTF for a server, applying concurrency penalty."""
         base_rtf = self.rtf_tracker.get_p90(
             server.server_id,
             default=server.rtf_baseline or DEFAULT_RTF,
+            work_kind=work_kind,
         )
         penalty = 1.0 + server.penalty_factor * server.running_tasks
         return base_rtf * penalty
 
-    def get_base_rtf(self, server: ServerProfile) -> float:
+    def get_base_rtf(self, server: ServerProfile, work_kind: str = "task") -> float:
         """Get base RTF for a server WITHOUT concurrency penalty (for pure capacity comparison)."""
         return self.rtf_tracker.get_p90(
             server.server_id,
             default=server.rtf_baseline or DEFAULT_RTF,
+            work_kind=work_kind,
         )
 
     def get_throughput_speed(self, server: ServerProfile) -> float:
@@ -238,16 +436,24 @@ class TaskScheduler:
         self,
         audio_duration_sec: float,
         server: ServerProfile,
-        overhead: float = DEFAULT_OVERHEAD,
+        overhead: float | None = None,
+        *,
+        work_kind: str = "task",
     ) -> float:
         """Estimate total processing time for a task on a server.
 
         Applies the per-server ETA calibration factor when available,
         so estimates converge toward observed reality over time.
         """
-        rtf = self.get_effective_rtf(server)
+        rtf = self.get_effective_rtf(server, work_kind=work_kind)
+        if overhead is None:
+            overhead = (
+                server.segment_fixed_overhead_sec
+                if work_kind == "segment"
+                else DEFAULT_OVERHEAD
+            )
         raw = audio_duration_sec * rtf + overhead
-        factor = self.eta_tracker.get_factor(server.server_id)
+        factor = self.eta_tracker.get_factor(server.server_id, work_kind=work_kind)
         return raw * factor
 
     def _allocate_quotas(
@@ -347,10 +553,11 @@ class TaskScheduler:
         task_estimates = []
         for t in tasks:
             dur = t.get("audio_duration_sec", 0) or 0
+            work_kind = t.get("kind", "task")
             best_time = float("inf")
             best_server_id = online_servers[0].server_id
             for srv in online_servers:
-                est = self.estimate_processing_time(dur, srv)
+                est = self.estimate_processing_time(dur, srv, work_kind=work_kind)
                 if est < best_time:
                     best_time = est
                     best_server_id = srv.server_id
@@ -373,10 +580,21 @@ class TaskScheduler:
 
             best_slot = min(
                 eligible_slots,
-                key=lambda s: s.earliest_free + self.estimate_processing_time(dur, server_map[s.server_id]),
+                key=lambda s: (
+                    s.earliest_free
+                    + self.estimate_processing_time(
+                        dur,
+                        server_map[s.server_id],
+                        work_kind=task_info.get("kind", "task"),
+                    )
+                ),
             )
             srv = server_map[best_slot.server_id]
-            est_duration = self.estimate_processing_time(dur, srv)
+            est_duration = self.estimate_processing_time(
+                dur,
+                srv,
+                work_kind=task_info.get("kind", "task"),
+            )
 
             decision = ScheduleDecision(
                 task_id=task_info["task_id"],
@@ -486,7 +704,7 @@ class TaskScheduler:
         for srv in online_servers:
             if srv.running_tasks >= srv.max_concurrency:
                 continue
-            est = self.estimate_processing_time(audio_duration_sec, srv)
+            est = self.estimate_processing_time(audio_duration_sec, srv, work_kind=kind)
             finish = est
             if finish < best_finish:
                 best_finish = finish
@@ -494,7 +712,7 @@ class TaskScheduler:
 
         if best_server is None:
             best_server = min(online_servers, key=lambda s: s.running_tasks / max(s.max_concurrency, 1))
-            best_finish = self.estimate_processing_time(audio_duration_sec, best_server)
+            best_finish = self.estimate_processing_time(audio_duration_sec, best_server, work_kind=kind)
 
         return ScheduleDecision(
             task_id=task_id,
@@ -514,17 +732,20 @@ class TaskScheduler:
         actual_duration_sec: float,
         predicted_duration_sec: float | None = None,
         current_penalty_factor: float = 0.1,
+        work_kind: str = "task",
     ) -> dict:
         """Called after a task completes. Updates RTF stats and returns calibration info.
 
         Returns dict with: new_rtf_p90, deviation, penalty_adjustment, new_penalty_factor
         """
+        work_kind = work_kind or "task"
         actual_rtf = actual_duration_sec / audio_duration_sec if audio_duration_sec > 0 else DEFAULT_RTF
-        self.rtf_tracker.record(server_id, actual_rtf)
+        self.rtf_tracker.record(server_id, actual_rtf, work_kind=work_kind)
 
-        new_p90 = self.rtf_tracker.get_p90(server_id)
+        new_p90 = self.rtf_tracker.get_p90(server_id, work_kind=work_kind)
         result = {
             "server_id": server_id,
+            "work_kind": work_kind,
             "actual_rtf": actual_rtf,
             "new_rtf_p90": new_p90,
             "deviation": None,
@@ -533,10 +754,10 @@ class TaskScheduler:
         }
 
         if predicted_duration_sec and predicted_duration_sec > 0:
-            current_factor = self.eta_tracker.get_factor(server_id)
+            current_factor = self.eta_tracker.get_factor(server_id, work_kind=work_kind)
             raw_predicted = predicted_duration_sec / current_factor if current_factor != 1.0 else predicted_duration_sec
-            self.eta_tracker.record(server_id, raw_predicted, actual_duration_sec)
-            result["eta_calibration_factor"] = self.eta_tracker.get_factor(server_id)
+            self.eta_tracker.record(server_id, raw_predicted, actual_duration_sec, work_kind=work_kind)
+            result["eta_calibration_factor"] = self.eta_tracker.get_factor(server_id, work_kind=work_kind)
 
             deviation = actual_duration_sec / predicted_duration_sec
             result["deviation"] = deviation
@@ -549,27 +770,31 @@ class TaskScheduler:
                 logger.warning(
                     "eta_calibration_penalty_increase",
                     server_id=server_id,
+                    work_kind=work_kind,
                     deviation=f"{deviation:.2f}",
                     new_penalty=f"{new_pf:.3f}",
                 )
             elif deviation < (1.0 - CALIBRATION_THRESHOLD):
                 tracker = self.rtf_tracker
-                tracker._consecutive_fast[server_id] += 1
-                if tracker._consecutive_fast[server_id] >= CONSECUTIVE_FAST_THRESHOLD:
+                fast_key = (server_id, work_kind)
+                tracker._consecutive_fast[fast_key] += 1
+                if tracker._consecutive_fast[fast_key] >= CONSECUTIVE_FAST_THRESHOLD:
                     adjustment = -current_penalty_factor * PENALTY_DECREASE_RATE
                     new_pf = max(0.01, current_penalty_factor + adjustment)
                     result["penalty_adjustment"] = adjustment
                     result["new_penalty_factor"] = new_pf
-                    tracker._consecutive_fast[server_id] = 0
+                    tracker._consecutive_fast[fast_key] = 0
                     logger.info(
                         "eta_calibration_penalty_decrease",
                         server_id=server_id,
+                        work_kind=work_kind,
                         new_penalty=f"{new_pf:.3f}",
                     )
 
         logger.info(
             "task_completion_calibrated",
             server_id=server_id,
+            work_kind=work_kind,
             actual_rtf=f"{actual_rtf:.3f}",
             new_p90=f"{new_p90:.3f}",
         )

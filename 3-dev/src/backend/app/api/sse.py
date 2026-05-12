@@ -79,6 +79,13 @@ async def _progress_stream(
                     started_at=task.started_at,
                     duration_sec=file_duration,
                 )
+                running_eta = eta if task.status == TaskStatus.TRANSCRIBING else None
+                queue_eta = (
+                    task.eta_seconds
+                    if task.status in (TaskStatus.QUEUED, TaskStatus.DISPATCHED)
+                    else None
+                )
+                display_eta = running_eta if running_eta is not None else (queue_eta if queue_eta is not None else eta)
                 message = format_progress_message(task.status, progress)
 
                 current_status = task.status
@@ -96,7 +103,9 @@ async def _progress_stream(
                     "event_type": "status_change" if status_changed else "progress_update",
                     "status": current_status,
                     "progress": round(progress, 4),
-                    "eta_seconds": eta,
+                    "eta_seconds": display_eta,
+                    "running_eta_seconds": running_eta,
+                    "queue_eta_seconds": queue_eta,
                     "message": message,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }

@@ -132,6 +132,18 @@ class TestSegmentSummarySchema:
         assert "segments" in data
         assert data["segments"]["total"] == 2
 
+    def test_task_response_exposes_eta_breakdown_fields(self):
+        resp = TaskResponse(
+            task_id="T1", user_id="U1", file_id="F1", status="TRANSCRIBING",
+            progress=0.5, language="zh",
+            created_at="2026-01-01T00:00:00Z",
+            eta_seconds=120,
+            running_eta_seconds=70,
+            queue_eta_seconds=50,
+        )
+        assert resp.running_eta_seconds == 70
+        assert resp.queue_eta_seconds == 50
+
 
 # ---------------------------------------------------------------------------
 # End-to-end merge pipeline (merge → format → validate)

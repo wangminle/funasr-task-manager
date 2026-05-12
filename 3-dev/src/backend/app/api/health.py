@@ -1,6 +1,7 @@
 """Health check, Prometheus metrics, and system diagnostics endpoints."""
 
 import time
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -33,12 +34,17 @@ def _format_uptime() -> str:
     return "".join(parts)
 
 
+_started_at = datetime.now(timezone.utc).isoformat()
+
+
 @router.get("/health")
 async def health_check() -> dict:
-    from app.main import get_schema_ok
+    from app.main import get_schema_ok, get_git_sha
     return {
         "status": "ok",
         "version": settings.app_version,
+        "git_sha": get_git_sha(),
+        "started_at": _started_at,
         "service": settings.app_name,
         "schema_ok": get_schema_ok(),
         "uptime": _format_uptime(),

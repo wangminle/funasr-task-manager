@@ -48,6 +48,8 @@ class TaskResponse(BaseModel):
     status: str
     progress: float
     eta_seconds: int | None = None
+    running_eta_seconds: int | None = None
+    queue_eta_seconds: int | None = None
     language: str
     assigned_server_id: str | None = None
     result_path: str | None = None
