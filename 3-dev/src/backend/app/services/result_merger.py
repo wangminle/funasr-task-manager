@@ -101,10 +101,20 @@ def merge_segment_results(
                 keep_end_ms=seg_input.keep_end_ms,
             )
             all_ts.extend(filtered)
+            filtered_text = "".join(ts.text for ts in filtered)
+            if filtered_text:
+                all_text_parts.append(filtered_text)
+            continue
 
         text = raw.get("text", "")
         if text:
             all_text_parts.append(text)
+            has_text_only_fallback = True
+        elif parsed:
+            fallback_text = "".join(ts.text for ts in parsed)
+            if fallback_text:
+                all_text_parts.append(fallback_text)
+                has_text_only_fallback = True
         if not has_real_ts and text:
             has_text_only_fallback = True
 

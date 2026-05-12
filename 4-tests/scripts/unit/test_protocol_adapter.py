@@ -100,6 +100,28 @@ class TestShouldComplete:
         result = adapter.parse_result(raw)
         assert result.is_complete is False
 
+    def test_online_stamp_sents_not_complete_without_is_final(self, adapter):
+        raw = json.dumps({
+            "text": "",
+            "stamp_sents": [{"text_seg": "部分", "ts": [0, 300]}],
+            "mode": "online",
+            "is_final": False,
+        })
+        result = adapter.parse_result(raw)
+        assert result.text == "部分"
+        assert result.is_complete is False
+
+    def test_2pass_online_stamp_sents_not_complete_without_is_final(self, adapter):
+        raw = json.dumps({
+            "text": "",
+            "stamp_sents": [{"text_seg": "部分", "ts": [0, 300]}],
+            "mode": "2pass-online",
+            "is_final": False,
+        })
+        result = adapter.parse_result(raw)
+        assert result.text == "部分"
+        assert result.is_complete is False
+
 
 @pytest.mark.unit
 class TestCoerceBool:

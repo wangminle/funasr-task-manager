@@ -115,3 +115,10 @@ class TestStampSentsSpacingRemoval:
         ]}
         segs = parse_timestamp_segments(raw)
         assert segs[0].text == "各位股民，"
+
+    def test_english_word_spaces_preserved(self):
+        raw = {"stamp_sents": [
+            {"text_seg": "hello world", "punc": "", "ts": [0, 2000]},
+        ]}
+        segs = parse_timestamp_segments(raw)
+        assert segs[0].text == "hello world"

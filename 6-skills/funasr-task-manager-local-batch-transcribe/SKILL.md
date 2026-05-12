@@ -7,7 +7,7 @@ description: >
   mentions scanning directories, inbox, or wants to retry failed items.
 ---
 
-> **适配项目版本**：V0.4.14-Build0353-20260509
+> **适配项目版本**：V0.4.21-Build0427-20260512
 
 # 服务器本地文件批量转写
 

@@ -7,7 +7,7 @@ description: >
   transcription output, or results need re-delivery for an existing task.
 ---
 
-> **适配项目版本**：V0.4.14-Build0353-20260509
+> **适配项目版本**：V0.4.21-Build0427-20260512
 
 # 结果交付与质量初筛
 

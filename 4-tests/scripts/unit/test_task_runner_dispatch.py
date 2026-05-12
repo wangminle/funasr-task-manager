@@ -875,6 +875,148 @@ class TestRetryFailedToQueued:
             assert task.status == TaskStatus.DISPATCHED.value
             assert task.assigned_server_id == "srv-retry"
 
+    async def test_segment_retry_exhausted_with_parent_retry_left_skips_failed_callback(
+        self, db_engine, monkeypatch,
+    ):
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "segment_max_retry_count", 1)
+        monkeypatch.setattr(settings, "max_retry_count", 3)
+
+        enqueue_calls: list[tuple[str, str]] = []
+        deliver_calls: list[str] = []
+        completed_users: list[str] = []
+
+        async def _record_completed(user_id: str):
+            completed_users.append(user_id)
+
+        monkeypatch.setattr(
+            "app.services.task_runner.rate_limiter.record_task_completed",
+            _record_completed,
+        )
+
+        async with session_factory() as session:
+            session.add(_file("f-seg-retry", duration_sec=600.0))
+            task = _task("t-seg-retry", "f-seg-retry", TaskStatus.TRANSCRIBING)
+            task.retry_count = 0
+            task.callback_url = "https://example.com/callback"
+            task.callback_secret = "secret"
+            session.add(task)
+            session.add(TaskSegment(
+                segment_id="seg-retry",
+                task_id="t-seg-retry",
+                segment_index=0,
+                source_start_ms=0,
+                source_end_ms=600000,
+                keep_start_ms=0,
+                keep_end_ms=600000,
+                storage_path="/tmp/seg-retry.wav",
+                status=SegmentStatus.TRANSCRIBING,
+                retry_count=1,
+            ))
+            await session.commit()
+
+        class FakeCallbackWorker:
+            async def enqueue(self, _session, task, _event_id, status, error_message=None):
+                enqueue_calls.append((task.task_id, status.value))
+                return SimpleNamespace(outbox_id="outbox-seg-retry")
+
+            async def try_deliver(self, outbox_id, _secret):
+                deliver_calls.append(outbox_id)
+
+        runner = BackgroundTaskRunner()
+        runner._callback_worker = FakeCallbackWorker()
+
+        await runner._mark_segment_failed("seg-retry", "boom")
+        await runner._retry_failed_tasks()
+
+        async with session_factory() as session:
+            retried = (await session.execute(
+                select(Task).where(Task.task_id == "t-seg-retry")
+            )).scalar_one()
+            remaining_segments = list((await session.execute(
+                select(TaskSegment).where(TaskSegment.task_id == "t-seg-retry")
+            )).scalars().all())
+
+        assert retried.status == TaskStatus.QUEUED.value
+        assert retried.retry_count == 1
+        assert retried.error_code is None
+        assert enqueue_calls == []
+        assert deliver_calls == []
+        assert completed_users == []
+        assert remaining_segments == []
+
+    async def test_segment_retry_exhausted_without_parent_retry_sends_failed_callback(
+        self, db_engine, monkeypatch,
+    ):
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "segment_max_retry_count", 1)
+        monkeypatch.setattr(settings, "max_retry_count", 1)
+
+        enqueue_calls: list[tuple[str, str]] = []
+        deliver_calls: list[str] = []
+        completed_users: list[str] = []
+
+        async def _record_completed(user_id: str):
+            completed_users.append(user_id)
+
+        monkeypatch.setattr(
+            "app.services.task_runner.rate_limiter.record_task_completed",
+            _record_completed,
+        )
+
+        async with session_factory() as session:
+            session.add(_file("f-seg-final", duration_sec=600.0))
+            task = _task("t-seg-final", "f-seg-final", TaskStatus.TRANSCRIBING)
+            task.retry_count = 1
+            task.callback_url = "https://example.com/callback"
+            task.callback_secret = "secret"
+            session.add(task)
+            session.add(TaskSegment(
+                segment_id="seg-final",
+                task_id="t-seg-final",
+                segment_index=0,
+                source_start_ms=0,
+                source_end_ms=600000,
+                keep_start_ms=0,
+                keep_end_ms=600000,
+                storage_path="/tmp/seg-final.wav",
+                status=SegmentStatus.TRANSCRIBING,
+                retry_count=1,
+            ))
+            await session.commit()
+
+        class FakeCallbackWorker:
+            async def enqueue(self, _session, task, _event_id, status, error_message=None):
+                enqueue_calls.append((task.task_id, status.value))
+                return SimpleNamespace(outbox_id="outbox-seg-final")
+
+            async def try_deliver(self, outbox_id, _secret):
+                deliver_calls.append(outbox_id)
+
+        runner = BackgroundTaskRunner()
+        runner._callback_worker = FakeCallbackWorker()
+
+        await runner._mark_segment_failed("seg-final", "boom")
+
+        async with session_factory() as session:
+            failed = (await session.execute(
+                select(Task).where(Task.task_id == "t-seg-final")
+            )).scalar_one()
+
+        assert failed.status == TaskStatus.FAILED.value
+        assert failed.error_code == "SEGMENT_RETRY_EXHAUSTED"
+        assert enqueue_calls == [("t-seg-final", TaskStatus.FAILED.value)]
+        assert deliver_calls == ["outbox-seg-final"]
+        assert completed_users == ["test-user"]
+
 
 @pytest.mark.unit
 class TestSegmentedParentSlotDeadlock:

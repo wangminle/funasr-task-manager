@@ -6,16 +6,16 @@
 ## 版本要求
 
 <!-- cli_min_version: 0.1.0 -->
-<!-- project_version: V0.4.14-Build0353-20260509 -->
+<!-- project_version: V0.4.21-Build0427-20260512 -->
 
 | 组件 | 当前版本 | 最低版本 | 说明 |
 |------|---------|---------|------|
-| 项目版本 | `V0.4.14-Build0353` | — | 含 57 项 bug 修复、迁移 005、安全/并发/前端修复 |
-| CLI (`python -m cli`) | `0.1.0` | `>= 0.1.0` | 需要 `notify` 子命令（含 `send`、`send-file`、`auth-check`）和 `--receive-id-type` 参数 |
+| 项目版本 | `V0.4.21-Build0427` | — | 含调度器重写、SSE/Dispatch 优化、任务 API 增强与迁移 007 |
+| CLI (`python -m cli`) | `0.4.21` | `>= 0.1.0` | 需要 `notify` 子命令（含 `send`、`send-file`、`auth-check`）和 `--receive-id-type` 参数 |
 | Backend API | — | `>= 1.0.0` | 需要 `/health`、`/tasks`、`/task-groups` 端点 |
 | Python | — | `>= 3.11` | CLI 依赖 `match` 语法和 `asyncio` 特性；pyproject.toml 声明 `requires-python = ">=3.11"` |
-| ffprobe / ffmpeg | — | `>= 5.0` | 音视频预检和转码；V0.4.14 修复：`shutil.which("ffprobe")` 预检，避免未安装时抛异常 |
-| Alembic 迁移 | `005` | head | V0.4.14 新增 `005_fix_nullable_and_defaults.py`，修复 nullable/server_default 不一致 |
+| ffprobe / ffmpeg | — | `>= 5.0` | 音视频预检和转码；当前工作流要求预检阶段可用 `ffprobe`，避免未安装时直接转写失败 |
+| Alembic 迁移 | `007` | head | 当前 head 包含 `007_add_run_generation.py`，运行最新后端前需迁移至 head |
 
 > **版本检查时机**：`funasr-task-manager-init` Phase 7.5 会自动检查 CLI 版本一致性。若版本不满足，Agent 应提示用户重新执行部署同步。
 
@@ -115,8 +115,10 @@
 调度算法（按优先级）：
 1. **LPT（最长处理时间优先）** — 长音频优先分配到快节点
 2. **EFT（最早完成时间）** — 选预计最早空闲的节点
-3. **Work Stealing** — 空闲节点从忙碌节点队列偷任务
+3. **Work Stealing** — 空闲节点从忙碌节点队列尾部窃取预估收益为正的任务；若候选 segment 已达到父任务段级并发上限，本轮跳过该候选继续寻找其它候选
 4. **运行时 RTF 校准** — 根据实际转写速度动态调整节点权重
+
+批次调度统计由 `GET /api/v1/task-groups/{group_id}` 的 `scheduling` 字段返回。`idle_slot_seconds` 的口径是 `wall_clock × ONLINE+enabled 总并发 - busy_processing_seconds`，完全空闲但可用的服务器也计入总 slot；当前无可用服务器时，退回按本批次已分配过的服务器容量估算。
 
 ### 任务状态流转
 

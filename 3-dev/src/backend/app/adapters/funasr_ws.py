@@ -167,7 +167,12 @@ class FunASRWebSocketAdapter(BaseAdapter):
             return True
 
         stamp_sents = data.get("stamp_sents")
-        if stamp_sents and isinstance(stamp_sents, list) and len(stamp_sents) > 0:
+        if (
+            stamp_sents
+            and isinstance(stamp_sents, list)
+            and len(stamp_sents) > 0
+            and not mode
+        ):
             return True
 
         return False

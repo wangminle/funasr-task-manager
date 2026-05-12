@@ -192,6 +192,51 @@ class TestMergeSegmentResults:
         assert "正文。" in texts
         assert "继续。" in texts
         assert texts.count("重叠区。") == 0
+        assert result["text"] == "正文。继续。"
+
+    def test_text_rebuilt_from_filtered_stamp_sents_when_top_level_text_missing(self):
+        raw0 = json.dumps({
+            "stamp_sents": [
+                {"text_seg": "第一句", "punc": "。", "ts": [0, 1000]},
+            ],
+            "mode": "offline",
+        })
+        raw1 = json.dumps({
+            "stamp_sents": [
+                {"text_seg": "第二句", "punc": "。", "ts": [400, 1400]},
+            ],
+            "mode": "offline",
+        })
+
+        inputs = [
+            SegmentInput(0, 0, 0, 620_000, raw0),
+            SegmentInput(1, 619_600, 620_000, 1_241_000, raw1),
+        ]
+
+        result, status = merge_segment_results(inputs)
+
+        assert status == MERGE_STATUS_OK
+        assert result["text"] == "第一句。第二句。"
+
+    def test_text_excludes_overlap_filtered_out_of_stamp_sents(self):
+        raw0 = _raw([
+            {"text_seg": "正文", "punc": "。", "ts": [0, 2000]},
+            {"text_seg": "重叠区", "punc": "。", "ts": [620_000, 620_300]},
+        ])
+        raw1 = _raw([
+            {"text_seg": "重叠区", "punc": "。", "ts": [0, 300]},
+            {"text_seg": "继续", "punc": "。", "ts": [400, 800]},
+        ])
+
+        inputs = [
+            SegmentInput(0, 0, 0, 620_000, raw0),
+            SegmentInput(1, 619_600, 620_000, 1_241_000, raw1),
+        ]
+
+        result, status = merge_segment_results(inputs)
+
+        assert status == MERGE_STATUS_OK
+        assert result["text"] == "正文。继续。"
 
     def test_monotonic_timestamps(self):
         """Merged timestamps must be monotonically non-decreasing."""

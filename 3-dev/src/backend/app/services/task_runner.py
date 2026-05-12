@@ -1492,14 +1492,15 @@ class BackgroundTaskRunner:
                     )
                     task.error_message = error_msg
                     event = await repo.update_task_status(task, TaskStatus.FAILED)
-                    outbox = await self._callback_worker.enqueue(
-                        session, task, event.event_id, TaskStatus.FAILED,
-                        error_message=error_msg,
-                    )
-                    if outbox is not None:
-                        pending_delivery = (outbox.outbox_id, task.callback_secret)
-                    user_id = task.user_id
-                    parent_failed = True
+                    if task.retry_count >= settings.max_retry_count:
+                        outbox = await self._callback_worker.enqueue(
+                            session, task, event.event_id, TaskStatus.FAILED,
+                            error_message=error_msg,
+                        )
+                        if outbox is not None:
+                            pending_delivery = (outbox.outbox_id, task.callback_secret)
+                        user_id = task.user_id
+                        parent_failed = True
                     orphan_count = await self._fail_orphan_segments(
                         seg_repo, segment.task_id, exclude_id=segment_id,
                     )

@@ -55,6 +55,12 @@ PENDING → PREPROCESSING → QUEUED → DISPATCHED → TRANSCRIBING → SUCCEED
 
 长音频（超过 `segment_level` 对应触发阈值，即 target × 1.2）在 PREPROCESSING 阶段自动 VAD 切分为多个内部 segment。切分采用双向交替搜索策略（后→前→后），搜索步长按档位比例设定（10m=60s, 20m=120s, 30m=180s）。segment 独立调度执行，全部完成后合并结果。父任务状态对外不变。触发阈值：10m=720s（<12分钟不拆）、20m=1440s（<24分钟不拆）、30m=2160s（<36分钟不拆）。
 
+### 调度统计口径
+
+调度器使用 LPT/EFT + 槽位队列预规划 + work stealing。分段任务参与同一 PlanPool，但受单个父任务的段级并发上限约束；若 work stealing 的最佳 segment 候选暂时达到上限，调度器会在本轮跳过它继续寻找其它候选。
+
+批次概况接口 `GET /api/v1/task-groups/{id}` 的 `scheduling.idle_slot_seconds` 按 `wall_clock × ONLINE+enabled 总并发 - busy_processing_seconds` 估算，完全空闲但可用的服务器也计入总 slot；当前无可用服务器时，退回按本批次已分配过的服务器容量估算。
+
 ### 服务器状态
 
 - `ONLINE`：正常

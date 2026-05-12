@@ -11,6 +11,17 @@ class TimestampSegment:
     text: str
 
 
+def _normalize_stamp_sent_text(text_seg: str, punc: str) -> str:
+    if " " not in text_seg:
+        return f"{text_seg}{punc}"
+
+    parts = text_seg.split()
+    if parts and all(len(part) == 1 for part in parts):
+        return f"{''.join(parts)}{punc}"
+
+    return f"{text_seg}{punc}"
+
+
 def parse_timestamp_segments(raw_result: dict) -> list[TimestampSegment]:
     """Extract timestamp segments from ASR result."""
     segments: list[TimestampSegment] = []
@@ -43,7 +54,7 @@ def parse_timestamp_segments(raw_result: dict) -> list[TimestampSegment]:
                 segments.append(TimestampSegment(
                     start_ms=start_ms,
                     end_ms=end_ms,
-                    text=(text_seg + punc).replace(" ", ""),
+                    text=_normalize_stamp_sent_text(text_seg, punc),
                 ))
         return segments
 

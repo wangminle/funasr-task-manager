@@ -8,7 +8,7 @@ description: >
   sub-agent so the main agent can continue accepting new tasks.
 ---
 
-> **适配项目版本**：V0.4.14-Build0353-20260509
+> **适配项目版本**：V0.4.21-Build0427-20260512
 
 # 批量转写进度监控（子 Agent 专用）
 
