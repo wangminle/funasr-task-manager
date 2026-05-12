@@ -773,9 +773,12 @@ class BackgroundTaskRunner:
                         break
                     decision = batch[0]
 
+                    if decision.task_id not in work_map or decision.task_id in inflight:
+                        continue
+
                     if decision.kind == "segment":
                         seg_tuple = segment_items.get(decision.task_id)
-                        if seg_tuple is None or decision.task_id in inflight:
+                        if seg_tuple is None:
                             continue
                         seg, parent_task = seg_tuple
                         seg.run_generation += 1
@@ -806,22 +809,26 @@ class BackgroundTaskRunner:
             # Phase B: work stealing — idle servers steal from busy server tails
             for sp in available_profiles:
                 sid = sp.server_id
+                skipped_steal_ids: set[str] = set()
                 while free_slots.get(sid, 0) > 0:
-                    result = self._find_steal_candidate(sp, profile_map, work_map, inflight)
+                    result = self._find_steal_candidate(
+                        sp, profile_map, work_map, inflight,
+                        excluded_task_ids=skipped_steal_ids,
+                    )
                     if result is None:
                         break
                     decision, source_server, est_stolen, source_remaining, estimated_gain = result
 
-                    self._plan_pool.remove(decision.task_id)
-
                     if decision.kind == "segment":
                         seg_tuple = segment_items.get(decision.task_id)
                         if seg_tuple is None or decision.task_id in inflight:
+                            self._plan_pool.remove(decision.task_id)
                             continue
                         seg, parent_task = seg_tuple
                         active_count = await seg_repo.count_active_segments(parent_task.task_id)
                         steal_max = min(len(available_profiles), settings.segment_max_parallel_per_task)
                         if active_count >= steal_max:
+                            skipped_steal_ids.add(decision.task_id)
                             continue
                         seg.run_generation += 1
                         await seg_repo.update_segment_status(
@@ -839,6 +846,7 @@ class BackgroundTaskRunner:
                         task = regular_tasks.get(decision.task_id)
                         if (task is None or task.task_id in inflight
                                 or not task.can_transition_to(TaskStatus.DISPATCHED)):
+                            self._plan_pool.remove(decision.task_id)
                             continue
                         task.run_generation += 1
                         task.assigned_server_id = sid
@@ -846,6 +854,7 @@ class BackgroundTaskRunner:
                         await repo.update_task_status(task, TaskStatus.DISPATCHED)
                         to_start_tasks.append(task.task_id)
 
+                    self._plan_pool.remove(decision.task_id)
                     target_free_slots_before = free_slots.get(sid, 0)
                     free_slots[sid] -= 1
                     event_task_id = decision.parent_task_id or decision.task_id
@@ -1681,6 +1690,7 @@ class BackgroundTaskRunner:
         work_map: dict[str, object],
         inflight: set[str],
         max_candidates_per_queue: int = 3,
+        excluded_task_ids: set[str] | None = None,
     ) -> tuple[ScheduleDecision, str, float, float, float] | None:
         """Find the best work item to steal for an idle server.
 
@@ -1692,6 +1702,7 @@ class BackgroundTaskRunner:
         """
         best: tuple[ScheduleDecision, str, float, float, float] | None = None
         best_improvement = 0.0
+        excluded_task_ids = excluded_task_ids or set()
 
         for source_sid in list(self._plan_pool.server_ids):
             if source_sid == idle_profile.server_id:
@@ -1706,6 +1717,8 @@ class BackgroundTaskRunner:
             for idx_from_end, decision in enumerate(reversed(q)):
                 if checked >= max_candidates_per_queue:
                     break
+                if decision.task_id in excluded_task_ids:
+                    continue
                 if decision.task_id in inflight:
                     continue
                 if work_map.get(decision.task_id) is None:
@@ -1722,7 +1735,10 @@ class BackgroundTaskRunner:
                     + decision.estimated_duration
                 )
                 improvement = source_remaining - est_stolen
-                min_gain = max(10.0, decision.estimated_duration * 0.15)
+                if decision.kind == "segment":
+                    min_gain = max(5.0, decision.estimated_duration * 0.10)
+                else:
+                    min_gain = max(10.0, decision.estimated_duration * 0.15)
                 if improvement > min_gain and improvement > best_improvement:
                     best = (decision, source_sid, est_stolen, source_remaining, improvement)
                     best_improvement = improvement

@@ -1,11 +1,14 @@
 """Task-group scheduling summary tests."""
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from app.api.task_groups import _group_stats
-from app.models import File, Task, TaskEvent, TaskSegment, TaskStatus, SegmentStatus
+from app.models import (
+    File, ServerInstance, Task, TaskEvent, TaskSegment, TaskStatus, SegmentStatus,
+)
 
 
 @pytest.mark.unit
@@ -79,9 +82,61 @@ async def test_group_stats_include_work_steal_and_cross_server_segment_metrics(d
 
     stats = await _group_stats(db_session, "grp-1", "test")
 
-    assert stats["scheduling"] == {
-        "work_steal_count": 2,
-        "work_steal_estimated_gain_sec": 20.0,
-        "est_stolen_total_sec": 14.0,
-        "cross_server_segment_tasks": 1,
-    }
+    sched = stats["scheduling"]
+    assert sched["work_steal_count"] == 2
+    assert sched["work_steal_estimated_gain_sec"] == 20.0
+    assert sched["est_stolen_total_sec"] == 14.0
+    assert sched["cross_server_segment_tasks"] == 1
+    assert "idle_slot_seconds" in sched
+
+
+@pytest.mark.unit
+async def test_idle_slot_seconds_counts_fully_idle_available_servers(db_session):
+    start = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+    end = start + timedelta(seconds=100)
+
+    db_session.add_all([
+        ServerInstance(
+            server_id="srv-busy",
+            host="127.0.0.1",
+            port=10095,
+            protocol_version="v2_new",
+            max_concurrency=1,
+            status="ONLINE",
+            enabled=True,
+        ),
+        ServerInstance(
+            server_id="srv-idle",
+            host="127.0.0.1",
+            port=10096,
+            protocol_version="v2_new",
+            max_concurrency=1,
+            status="ONLINE",
+            enabled=True,
+        ),
+        File(
+            file_id="file-one",
+            user_id="test",
+            original_name="one.wav",
+            storage_path="/tmp/one.wav",
+            size_bytes=100,
+            duration_sec=100,
+            status="META_READY",
+        ),
+        Task(
+            task_id="task-one",
+            user_id="test",
+            file_id="file-one",
+            task_group_id="grp-idle",
+            status=TaskStatus.SUCCEEDED,
+            progress=1.0,
+            assigned_server_id="srv-busy",
+            started_at=start,
+            completed_at=end,
+        ),
+    ])
+    await db_session.commit()
+
+    stats = await _group_stats(db_session, "grp-idle", "test")
+
+    assert stats["scheduling"]["idle_slot_seconds"] == 100.0

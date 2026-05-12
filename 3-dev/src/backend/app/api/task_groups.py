@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import delete as sql_delete, func, select
 
 from app.deps import CurrentUser, DbSession
-from app.models import File, Task, TaskEvent, TaskSegment, TaskStatus
+from app.models import File, ServerInstance, Task, TaskEvent, TaskSegment, TaskStatus
 from app.config import settings
 from app.storage.file_manager import read_result
 from app.observability.logging import get_logger
@@ -44,10 +44,11 @@ async def list_group_tasks(
     stmt = base.order_by(Task.created_at.asc()).offset((page - 1) * page_size).limit(page_size)
     tasks = list((await db.execute(stmt)).scalars().all())
 
-    from app.schemas.task import TaskResponse
+    from app.api.tasks import _enrich_task_responses
+    items = await _enrich_task_responses(tasks, db)
     return {
         "task_group_id": group_id,
-        "items": [TaskResponse.model_validate(t) for t in tasks],
+        "items": items,
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -253,12 +254,92 @@ async def _group_scheduling_stats(db, group_id: str, user_id: str) -> dict:
         .having(func.count(func.distinct(TaskSegment.assigned_server_id)) > 1)
     )).all()
 
+    idle_slot_sec = await _compute_idle_slot_seconds(db, task_ids_subquery)
+
     return {
         "work_steal_count": work_steal_count,
         "work_steal_estimated_gain_sec": round(estimated_gain, 1),
         "est_stolen_total_sec": round(est_stolen_total, 1),
         "cross_server_segment_tasks": len(cross_server_rows),
+        "idle_slot_seconds": round(idle_slot_sec, 1) if idle_slot_sec is not None else None,
     }
+
+
+async def _compute_idle_slot_seconds(db, task_ids_subquery) -> float | None:
+    """Estimate idle slot-seconds from task/segment timelines.
+
+    idle = (wall_clock × total_server_slots) − busy_processing_seconds
+    Returns None if the batch has no timing data yet.
+    """
+    task_time_rows = (await db.execute(
+        select(Task.task_id, Task.started_at, Task.completed_at, Task.assigned_server_id)
+        .where(
+            Task.task_id.in_(select(task_ids_subquery.c.task_id)),
+            Task.started_at.isnot(None),
+            Task.completed_at.isnot(None),
+        )
+    )).all()
+
+    seg_time_rows = (await db.execute(
+        select(
+            TaskSegment.task_id, TaskSegment.started_at,
+            TaskSegment.completed_at, TaskSegment.assigned_server_id,
+        )
+        .where(
+            TaskSegment.task_id.in_(select(task_ids_subquery.c.task_id)),
+            TaskSegment.started_at.isnot(None),
+            TaskSegment.completed_at.isnot(None),
+        )
+    )).all()
+
+    if not task_time_rows and not seg_time_rows:
+        return None
+
+    segmented_task_ids = {s.task_id for s in seg_time_rows}
+    all_starts: list = []
+    all_ends: list = []
+    busy_sec = 0.0
+
+    for t in task_time_rows:
+        all_starts.append(t.started_at)
+        all_ends.append(t.completed_at)
+        if t.task_id not in segmented_task_ids:
+            busy_sec += (t.completed_at - t.started_at).total_seconds()
+
+    for s in seg_time_rows:
+        all_starts.append(s.started_at)
+        all_ends.append(s.completed_at)
+        busy_sec += (s.completed_at - s.started_at).total_seconds()
+
+    if not all_starts or not all_ends:
+        return None
+
+    wall_clock = (max(all_ends) - min(all_starts)).total_seconds()
+    if wall_clock <= 0:
+        return 0.0
+
+    total_slots = (await db.execute(
+        select(func.sum(ServerInstance.max_concurrency))
+        .where(
+            ServerInstance.status == "ONLINE",
+            ServerInstance.enabled.is_(True),
+        )
+    )).scalar() or 0
+
+    if total_slots <= 0:
+        server_ids = {t.assigned_server_id for t in task_time_rows if t.assigned_server_id}
+        server_ids |= {s.assigned_server_id for s in seg_time_rows if s.assigned_server_id}
+        if not server_ids:
+            return None
+        total_slots = (await db.execute(
+            select(func.sum(ServerInstance.max_concurrency))
+            .where(ServerInstance.server_id.in_(list(server_ids)))
+        )).scalar() or 0
+
+    if total_slots <= 0:
+        return None
+
+    return max(0.0, wall_clock * total_slots - busy_sec)
 
 
 async def _json_results(tasks) -> JSONResponse:

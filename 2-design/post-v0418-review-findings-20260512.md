@@ -107,7 +107,7 @@ Phase A 从 PlanPool `pop_dispatchable()` 弹出一个 decision 后，如果该 
 
 ---
 
-## 修复优先级
+## 修复优先级（原始 A-E）
 
 | 优先级 | 问题 | 理由 |
 |--------|------|------|
@@ -115,3 +115,93 @@ Phase A 从 PlanPool `pop_dispatchable()` 弹出一个 decision 后，如果该 
 | P1 | E | 数据清洁性，且是 A 的前置清理 |
 | P1 | D | 防御性增强，避免重启后资源浪费 |
 | P2 | C | 自愈性问题，延迟 1 秒可接受 |
+
+---
+
+## 修复状态追踪（截至 2026-05-12 13:00）
+
+| 问题 | 状态 | 说明 |
+|------|------|------|
+| A | ✅ 已修复 | `_retry_failed_tasks()` 已有 `SEGMENT_RETRY_EXHAUSTED` elif 分支（L216-230），删除旧 segment 并回退到 QUEUED 作为整文件重试 |
+| B | ✅ 已修复 | `_count_server_active_work()` 排除条件只含活跃状态（PENDING/DISPATCHED/TRANSCRIBING/SUCCEEDED），全 FAILED 的 segment 不在排除列表中；且整文件降级时 `delete_segments_by_task` 会清除全部 segment 记录 |
+| C | 🔧 待修复 | PlanPool pop 后 item 不在 work_map 中时丢失 — stale_purge 覆盖大部分场景但仍有边界窗口 |
+| D | ✅ 已修复 | `run_generation` 字段已存在于 Task 和 TaskSegment 模型上，`_is_stale_run` / `_is_stale_segment_run` 已在使用 |
+| E | ✅ 已修复 | `_fail_orphan_segments()` 已存在（L1532-1555），并在 `_mark_segment_failed` 中调用（L1494） |
+
+---
+
+## V0.4.19 批量转写验证发现的新问题
+
+> 日期：2026-05-12
+> 验证依据：47 文件批量转写（727.8min 音频，11.4min 挂钟，63.7x 实时，19 次 work steal）
+
+---
+
+## 问题 F [中等严重度]：list_group_tasks 未返回 segment_info
+
+### 现象
+
+47 个任务通过 task-group API 查询时全部显示 `segment_info=null`，但实际 15 个文件有分段（共 63 段）。
+
+### 根因
+
+`task_groups.py` 的 `list_group_tasks` 端点直接使用 `TaskResponse.model_validate(t)` 而未调用 `_enrich_task_responses()`：
+
+```python
+# task_groups.py L48
+"items": [TaskResponse.model_validate(t) for t in tasks],
+```
+
+而 `tasks.py` 的 `list_tasks` 和 `get_task` 都调用了 `_enrich_task_responses()` 来填充 `segment_info`、`queue_eta_seconds`、`running_eta_seconds`。
+
+### 修复方案
+
+在 `list_group_tasks` 中导入并调用 `_enrich_task_responses`，与 `list_tasks` 保持一致。
+
+---
+
+## 问题 G [低严重度]：idle_slot_seconds 指标未实现
+
+### 现象
+
+设计文档（§5.5）将 `idle_slot_seconds` 列为 work steal 成效指标之一，但代码中没有实现。`_group_scheduling_stats` 返回的 `est_stolen_total_sec` 被误读为 idle 时间。
+
+### 修复方案
+
+在 `_group_scheduling_stats` 中基于任务时间线计算 idle_slot_seconds：
+
+```
+total_capacity = wall_clock_sec × total_slots
+busy_time = sum(completed_at - started_at) for all tasks/segments
+idle_slot_seconds = total_capacity - busy_time
+```
+
+---
+
+## 问题 H [低严重度]：segment 级 work steal 阈值偏高
+
+### 现象
+
+19 次工作窃取全部是 `kind=task`，无 `kind=segment` 窃取。`_find_steal_candidate` 对所有 kind 统一使用 `min_gain = max(10.0, est * 0.15)` 阈值。对于 ~10min 段长、RTF ~0.07 的 segment（estimated_duration ~42s），15% 阈值 = 6.3s，门槛取 max(10, 6.3) = 10s。
+
+### 分析
+
+初始 PlanPool 分配对 segment 已较均匀（LPT+EFT），加上 segment 时长差异小，大部分候选的 improvement 未能超过 10s。但对于极长文件（如 195min/17 段），段级窃取可以进一步减少尾部等待。
+
+### 修复方案
+
+为 segment 类型的候选降低阈值：`max(5.0, est * 0.10)`，让空闲服务器更积极地拉取分段任务。
+
+---
+
+## 更新修复优先级
+
+| 优先级 | 问题 | 理由 |
+|--------|------|------|
+| ~~P0~~ | ~~A + B~~ | ✅ 已修复 |
+| ~~P1~~ | ~~E~~ | ✅ 已修复 |
+| ~~P1~~ | ~~D~~ | ✅ 已修复 |
+| P1 | F（segment_info API） | 功能缺失，影响外部可见的分段诊断信息 |
+| P1 | G（idle_slot_seconds） | 可观测性指标缺失，影响调度效率评估 |
+| P2 | C（PlanPool pop 丢失） | 自愈性问题，stale_purge 已覆盖主要场景 |
+| P2 | H（segment steal 阈值） | 优化项，当前不影响正确性 |

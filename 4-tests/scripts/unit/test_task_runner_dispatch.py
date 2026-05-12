@@ -234,6 +234,102 @@ class TestPlanPoolDispatch:
 class TestWorkStealing:
     """Verify work stealing dispatches tasks to idle servers."""
 
+    async def test_segment_limit_does_not_block_other_steal_candidates(
+        self, db_engine, monkeypatch,
+    ):
+        """A segment already at per-task parallel limit should be skipped
+        so the idle slot can steal another eligible task.
+        """
+        from app.config import settings
+        from app.services.scheduler import ScheduleDecision
+        from app.storage.repository import SegmentRepository
+
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+        monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
+        monkeypatch.setattr(settings, "segment_max_parallel_per_task", 1)
+
+        async with session_factory() as session:
+            session.add(_server("idle", 1, rtf=0.1))
+            session.add(_server("source", 1, rtf=0.5))
+            session.add(_file("file-running", duration_sec=120.0))
+            running = _task("running-on-source", "file-running", TaskStatus.DISPATCHED)
+            running.assigned_server_id = "source"
+            session.add(running)
+
+            session.add(_file("file-parent", duration_sec=600.0))
+            session.add(_task("parent-task", "file-parent", TaskStatus.QUEUED))
+            session.add(TaskSegment(
+                segment_id="seg-blocked",
+                task_id="parent-task",
+                segment_index=0,
+                source_start_ms=0,
+                source_end_ms=600000,
+                keep_start_ms=0,
+                keep_end_ms=600000,
+                storage_path="/tmp/seg-blocked.wav",
+                status=SegmentStatus.PENDING,
+            ))
+
+            session.add(_file("file-stealable", duration_sec=600.0))
+            session.add(_task("task-stealable", "file-stealable", TaskStatus.QUEUED))
+            await session.commit()
+
+        segment_decision = ScheduleDecision(
+            "seg-blocked", "source", 0, 0.0, 200.0, 200.0, 1, 600.0,
+            kind="segment", parent_task_id="parent-task",
+        )
+        task_decision = ScheduleDecision(
+            "task-stealable", "source", 0, 200.0, 250.0, 450.0, 2, 600.0,
+            kind="task",
+        )
+
+        monkeypatch.setattr(
+            "app.services.task_runner.global_scheduler.schedule_batch",
+            lambda _work_items, _profiles: [segment_decision, task_decision],
+        )
+
+        count_calls = 0
+        original_count_active = SegmentRepository.count_active_segments
+
+        async def _count_active(self, task_id):
+            nonlocal count_calls
+            if task_id == "parent-task":
+                count_calls += 1
+                return 0 if count_calls == 1 else 1
+            return await original_count_active(self, task_id)
+
+        monkeypatch.setattr(SegmentRepository, "count_active_segments", _count_active)
+
+        find_results = [
+            (segment_decision, "source", 60.0, 200.0, 140.0),
+            (task_decision, "source", 70.0, 450.0, 380.0),
+        ]
+
+        def _find_candidate(*_args, **_kwargs):
+            return find_results.pop(0) if find_results else None
+
+        runner = BackgroundTaskRunner()
+        monkeypatch.setattr(runner, "_find_steal_candidate", _find_candidate)
+        started: list[str] = []
+        monkeypatch.setattr(runner, "_execute_task", lambda tid: started.append(tid) or asyncio.sleep(0))
+
+        await runner._dispatch_queued_tasks()
+        await asyncio.sleep(0)
+
+        async with session_factory() as session:
+            stolen = (await session.execute(
+                select(Task).where(Task.task_id == "task-stealable")
+            )).scalar_one()
+            blocked = (await session.execute(
+                select(TaskSegment).where(TaskSegment.segment_id == "seg-blocked")
+            )).scalar_one()
+
+        assert stolen.status == TaskStatus.DISPATCHED.value
+        assert stolen.assigned_server_id == "idle"
+        assert blocked.status == SegmentStatus.PENDING.value
+        assert "task-stealable" in started
+
     async def test_idle_server_steals_from_busy_queue(self, db_engine, monkeypatch):
         """A fast server that finishes early should steal tasks from a slower server's queue."""
         session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
