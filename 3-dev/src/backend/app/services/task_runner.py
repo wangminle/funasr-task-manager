@@ -39,6 +39,7 @@ logger = get_logger(__name__)
 
 REPLAN_IMBALANCE_RATIO = 1.5
 REPLAN_COOLDOWN_SEC = 5.0
+SERVERS_CHANGED_COOLDOWN_SEC = 3.0
 EMPTY_RESULT_RETRY_MIN_AUDIO_SEC = 30.0
 EMPTY_RESULT_RETRY_MIN_SEGMENT_SEC = 10.0
 
@@ -702,9 +703,14 @@ class BackgroundTaskRunner:
             now = time.monotonic()
             cooldown_elapsed = now - self._last_replan_time >= REPLAN_COOLDOWN_SEC
 
+            servers_changed_cooldown_ok = (
+                now - self._last_replan_time >= SERVERS_CHANGED_COOLDOWN_SEC
+            )
+
             needs_replan = False
             replan_reason = ""
-            if servers_changed:
+            if servers_changed and (servers_changed_cooldown_ok
+                                    or not self._planned_available_server_ids):
                 needs_replan = True
                 replan_reason = "servers_changed"
             elif has_unplanned and not self._plan_pool:
@@ -725,8 +731,12 @@ class BackgroundTaskRunner:
                 if decisions:
                     self._plan_pool.replace(decisions)
                     self._planned_available_server_ids = current_available_ids
+                elif not self._plan_pool:
+                    self._planned_available_server_ids = current_available_ids
                 else:
-                    self._clear_plan_pool()
+                    logger.debug("replan_returned_empty_keeping_existing_plan",
+                                 pool_size=len(self._plan_pool))
+                    self._planned_available_server_ids = current_available_ids
                 self._last_replan_time = now
             elif new_work and not cooldown_elapsed:
                 inc_decisions = global_scheduler.schedule_batch(new_work, available_profiles)
@@ -905,7 +915,7 @@ class BackgroundTaskRunner:
 
             if overcommitted:
                 await session.rollback()
-                self._clear_plan_pool()
+                self._clear_plan_pool(reset_server_ids=False)
                 for sid, (count, limit) in overcommitted.items():
                     logger.error(
                         "slot_overcommit_dispatch_blocked",
@@ -1179,7 +1189,7 @@ class BackgroundTaskRunner:
             await session.commit()
         await rate_limiter.record_task_completed(user_id)
         if not self._plan_pool:
-            self._clear_plan_pool()
+            self._clear_plan_pool(reset_server_ids=False)
         self._request_dispatch()
         if pending_delivery:
             await self._callback_worker.try_deliver(*pending_delivery)
@@ -1220,7 +1230,7 @@ class BackgroundTaskRunner:
         if is_terminal:
             await rate_limiter.record_task_completed(user_id)
         if not self._plan_pool:
-            self._clear_plan_pool()
+            self._clear_plan_pool(reset_server_ids=False)
         self._request_dispatch()
         if pending_delivery:
             await self._callback_worker.try_deliver(*pending_delivery)
@@ -1518,7 +1528,7 @@ class BackgroundTaskRunner:
         if parent_failed and user_id:
             await rate_limiter.record_task_completed(user_id)
         if not self._plan_pool:
-            self._clear_plan_pool()
+            self._clear_plan_pool(reset_server_ids=False)
         self._request_dispatch()
         if pending_delivery:
             await self._callback_worker.try_deliver(*pending_delivery)
@@ -1731,15 +1741,16 @@ class BackgroundTaskRunner:
                     work_kind=decision.kind,
                 )
                 decision_idx = len(q) - 1 - idx_from_end
-                source_remaining = (
+                duration_based = (
                     sum(d.estimated_duration for d in q[:decision_idx])
                     + decision.estimated_duration
                 )
+                source_remaining = max(duration_based, decision.estimated_finish)
                 improvement = source_remaining - est_stolen
                 if decision.kind == "segment":
-                    min_gain = max(5.0, decision.estimated_duration * 0.10)
+                    min_gain = max(2.0, decision.estimated_duration * 0.05)
                 else:
-                    min_gain = max(10.0, decision.estimated_duration * 0.15)
+                    min_gain = max(3.0, decision.estimated_duration * 0.05)
                 if improvement > min_gain and improvement > best_improvement:
                     best = (decision, source_sid, est_stolen, source_remaining, improvement)
                     best_improvement = improvement
@@ -1786,9 +1797,10 @@ class BackgroundTaskRunner:
 
         return False
 
-    def _clear_plan_pool(self) -> None:
+    def _clear_plan_pool(self, *, reset_server_ids: bool = True) -> None:
         self._plan_pool.clear()
-        self._planned_available_server_ids = frozenset()
+        if reset_server_ids:
+            self._planned_available_server_ids = frozenset()
 
     @staticmethod
     def _parse_segment_level(options_json: str | None) -> str:

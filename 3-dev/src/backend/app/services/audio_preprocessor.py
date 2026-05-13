@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 import shutil
@@ -249,7 +250,8 @@ def _is_canonical_wav(info: dict) -> bool:
 
 def _canonical_output_path(original_path: str) -> Path:
     src = Path(original_path)
-    return src.parent / f"{src.stem}_canonical.wav"
+    path_hash = hashlib.sha256(str(src.resolve()).encode()).hexdigest()[:12]
+    return settings.temp_dir / f"{src.stem}_{path_hash}_canonical.wav"
 
 
 async def ensure_canonical_wav(audio_path: str) -> str:

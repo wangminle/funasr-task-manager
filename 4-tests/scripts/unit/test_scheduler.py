@@ -134,7 +134,7 @@ class TestCapacityAwareScheduling:
         assert longest_task.server_id == "fast", "Longest task should go to fastest server"
 
     def test_running_tasks_reduce_available_slots(self):
-        """Servers with running tasks should have fewer slots available."""
+        """Free server gets priority via earlier EFT; full server still gets backlog quota."""
         sched = TaskScheduler()
         tasks = [
             {"task_id": "t1", "audio_duration_sec": 600},
@@ -143,16 +143,22 @@ class TestCapacityAwareScheduling:
         full = _make_server("full", concurrency=2, running=2)
         free = _make_server("free", concurrency=2, running=0)
         decisions = sched.schedule_batch(tasks, [full, free])
-        assert all(d.server_id == "free" for d in decisions)
+        assert len(decisions) == 2
+        servers_used = {d.server_id for d in decisions}
+        free_tasks = [d for d in decisions if d.server_id == "free"]
+        assert len(free_tasks) >= 1, "Free server should get at least one task"
+        assert "free" in servers_used
 
-    def test_all_slots_occupied_returns_empty(self):
-        """If all server slots are occupied, return empty schedule."""
+    def test_all_slots_occupied_still_plans_backlog(self):
+        """Even when all slots are occupied, schedule_batch produces a plan
+        with virtual slots so the backlog is distributed across servers."""
         sched = TaskScheduler()
         tasks = [{"task_id": "t1", "audio_duration_sec": 600}]
         full1 = _make_server("s1", concurrency=2, running=2)
         full2 = _make_server("s2", concurrency=2, running=2)
         decisions = sched.schedule_batch(tasks, [full1, full2])
-        assert decisions == []
+        assert len(decisions) == 1
+        assert decisions[0].estimated_start > 0, "Task should be queued for a future slot"
 
     def test_simulated_full_batch_scenario(self):
         """Simulate the real full E2E scenario: 8 files across 3 servers.
@@ -835,6 +841,31 @@ class TestPlanPool:
         assert len(pool) == 1
         assert not pool.contains("t-1")
 
+    def test_pop_dispatchable_skips_future_virtual_slot_items(self):
+        """A task planned for a future occupied slot must not consume a
+        currently free sibling slot ahead of an immediate task."""
+        pool = PlanPool()
+        pool.merge([
+            ScheduleDecision(
+                task_id="future-short", server_id="srv-1", slot_index=0,
+                estimated_start=185.0, estimated_duration=6.0,
+                estimated_finish=191.0, queue_position=2,
+                audio_duration_sec=1.0,
+            ),
+            ScheduleDecision(
+                task_id="immediate-long", server_id="srv-1", slot_index=1,
+                estimated_start=0.0, estimated_duration=1005.0,
+                estimated_finish=1005.0, queue_position=1,
+                audio_duration_sec=1000.0,
+            ),
+        ])
+
+        items = pool.pop_dispatchable("srv-1", 1)
+
+        assert [d.task_id for d in items] == ["immediate-long"]
+        assert pool.contains("future-short")
+        assert not pool.contains("immediate-long")
+
     def test_pop_dispatchable_zero_budget(self):
         pool = PlanPool()
         pool.merge([self._decision("t-1", "srv-1")])
@@ -959,11 +990,11 @@ class TestPlanPool:
                 audio_duration_sec=30.0, kind="segment", parent_task_id="t-parent",
             ),
         ])
-        items = pool.pop_dispatchable("srv-1", 10)
-        efts = [d.estimated_finish for d in items]
+        snapshot = pool.get_queue_snapshot("srv-1")
+        efts = [d.estimated_finish for d in snapshot]
         assert efts == sorted(efts), f"Expected sorted EFTs, got {efts}"
-        assert items[0].task_id == "seg-1"
-        assert items[1].task_id == "seg-2"
+        assert snapshot[0].task_id == "seg-1"
+        assert snapshot[1].task_id == "seg-2"
 
     def test_iter_server_tails(self):
         pool = PlanPool()

@@ -635,7 +635,8 @@ class TestPlanInvalidationOnCompletion:
     async def test_plan_cleared_on_task_success_when_pool_empty(
         self, db_engine, monkeypatch,
     ):
-        """When PlanPool is empty, completion clears the plan for next replan."""
+        """When PlanPool is empty, completion clears the pool but preserves
+        _planned_available_server_ids to avoid spurious servers_changed."""
         session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
         monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
 
@@ -650,7 +651,7 @@ class TestPlanInvalidationOnCompletion:
         await runner._mark_task_succeeded("t-done2")
 
         assert not runner._plan_pool
-        assert runner._planned_available_server_ids == frozenset()
+        assert runner._planned_available_server_ids == frozenset({"srv-1"})
         assert runner._dispatch_event.is_set()
 
 

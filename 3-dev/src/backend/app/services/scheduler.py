@@ -226,13 +226,24 @@ class PlanPool:
         self.merge(decisions)
 
     def pop_dispatchable(self, server_id: str, budget: int) -> list[ScheduleDecision]:
-        """Pop up to `budget` items from the head of a server's queue."""
+        """Pop up to `budget` items that are eligible for immediate dispatch."""
         q = self._queues.get(server_id)
         if not q or budget <= 0:
             return []
-        n = min(budget, len(q))
-        result = q[:n]
-        del q[:n]
+
+        selected_indices: list[int] = []
+        for idx, item in enumerate(q):
+            if item.estimated_start <= IMMEDIATE_START_TOLERANCE:
+                selected_indices.append(idx)
+                if len(selected_indices) >= budget:
+                    break
+
+        if not selected_indices:
+            selected_indices = list(range(min(budget, len(q))))
+
+        result = [q[idx] for idx in selected_indices]
+        for idx in reversed(selected_indices):
+            del q[idx]
         for item in result:
             self._task_index.pop(item.task_id, None)
         if not q:
@@ -468,6 +479,12 @@ class TaskScheduler:
         quota distributes the ENTIRE batch by this speed ratio so the slot
         queue shape reflects true throughput proportions.
 
+        Quotas use **total** server capacity (max_concurrency), not current
+        free slots.  This is a structural backlog distribution — decoupled
+        from instantaneous slot availability — so that a replan never
+        collapses all tasks onto the one server that happens to have a free
+        slot at that instant.
+
         Quotas are purely proportional to server speed with no minimum guarantee.
         Slow servers may receive 0 tasks when their speed share rounds down.
         Rounding remainders go to the fastest server first.
@@ -475,13 +492,8 @@ class TaskScheduler:
         if not servers or task_count <= 0:
             return {}
 
-        servers_with_slots = [s for s in servers
-                              if max(s.max_concurrency - s.running_tasks, 0) > 0]
-        if not servers_with_slots:
-            return {}
-
         speeds = {}
-        for s in servers_with_slots:
+        for s in servers:
             speeds[s.server_id] = self.get_throughput_speed(s)
 
         total_speed = sum(speeds.values())
@@ -533,11 +545,24 @@ class TaskScheduler:
 
         slots: list[ServerSlot] = []
         for srv in online_servers:
+            occupied = min(srv.running_tasks, srv.max_concurrency)
             free = max(srv.max_concurrency - srv.running_tasks, 0)
+
+            if occupied > 0:
+                base_rtf = self.get_base_rtf(srv)
+                avg_task_dur = 180.0
+                est_per_slot = avg_task_dur * base_rtf + DEFAULT_OVERHEAD
+                for i in range(occupied):
+                    slots.append(ServerSlot(
+                        server_id=srv.server_id,
+                        slot_index=i,
+                        earliest_free=est_per_slot * (occupied - i) / occupied,
+                    ))
+
             for i in range(free):
                 slots.append(ServerSlot(
                     server_id=srv.server_id,
-                    slot_index=srv.running_tasks + i,
+                    slot_index=occupied + i,
                 ))
 
         if not slots:
