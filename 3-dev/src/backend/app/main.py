@@ -237,6 +237,7 @@ def create_app() -> FastAPI:
     from app.api.sse import router as sse_router
     from app.api.stats import router as stats_router
     from app.api.alerts import router as alerts_router
+    from app.api.admin import router as admin_router
 
     app.include_router(health_router)
     app.include_router(files_router)
@@ -246,6 +247,7 @@ def create_app() -> FastAPI:
     app.include_router(sse_router)
     app.include_router(stats_router)
     app.include_router(alerts_router)
+    app.include_router(admin_router)
 
     return app
 

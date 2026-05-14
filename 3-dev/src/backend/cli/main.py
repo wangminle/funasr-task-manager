@@ -92,6 +92,7 @@ from cli.commands import system as _system_mod  # noqa: E402
 from cli.commands import config_cmd as _config_mod  # noqa: E402
 from cli.commands import notify as _notify_mod  # noqa: E402
 from cli.commands import task_group as _task_group_mod  # noqa: E402
+from cli.commands import admin as _admin_mod  # noqa: E402
 
 app.add_typer(_task_mod.app, name="task", help="任务管理")
 app.add_typer(_task_group_mod.app, name="task-group", help="任务组短命令（异步调度）")
@@ -99,6 +100,7 @@ app.add_typer(_file_mod.app, name="file", help="文件查询")
 app.add_typer(_server_mod.app, name="server", help="ASR 节点管理")
 app.add_typer(_config_mod.app, name="config", help="CLI 配置管理")
 app.add_typer(_notify_mod.app, name="notify", help="渠道实时通知（飞书）")
+app.add_typer(_admin_mod.app, name="admin", help="管理员诊断与急停")
 
 app.command(name="upload")(_upload_mod.upload)
 app.command(name="transcribe")(_transcribe_mod.transcribe)

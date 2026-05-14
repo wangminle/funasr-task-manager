@@ -7,7 +7,7 @@ description: >
   or agent needs to proactively guide a user into the transcription pipeline.
 ---
 
-> **适配项目版本**：V0.4.21-Build0427-20260512
+> **适配项目版本**：V0.4.24-Build0453-20260514
 
 # 音频入口与意图编排
 

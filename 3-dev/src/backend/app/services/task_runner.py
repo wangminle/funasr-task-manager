@@ -632,7 +632,8 @@ class BackgroundTaskRunner:
             available_profiles = []
             for sp in server_profiles:
                 cb = breaker_registry.get(sp.server_id)
-                if await cb.allow_request():
+                can_request = getattr(cb, "can_request", cb.allow_request)
+                if await can_request():
                     available_profiles.append(sp)
             if not available_profiles:
                 return
@@ -785,6 +786,11 @@ class BackgroundTaskRunner:
 
                     if decision.task_id not in work_map or decision.task_id in inflight:
                         continue
+                    cb = breaker_registry.get(sid)
+                    if not await cb.allow_request():
+                        self._plan_pool.merge([decision])
+                        logger.warning("dispatch_blocked_by_circuit_breaker", server_id=sid)
+                        break
 
                     if decision.kind == "segment":
                         seg_tuple = segment_items.get(decision.task_id)
@@ -828,6 +834,11 @@ class BackgroundTaskRunner:
                     if result is None:
                         break
                     decision, source_server, est_stolen, source_remaining, estimated_gain = result
+
+                    cb = breaker_registry.get(sid)
+                    if not await cb.allow_request():
+                        logger.warning("work_steal_blocked_by_circuit_breaker", server_id=sid)
+                        break
 
                     if decision.kind == "segment":
                         seg_tuple = segment_items.get(decision.task_id)
@@ -1447,6 +1458,31 @@ class BackgroundTaskRunner:
             if segment is None:
                 return
             task_id = segment.task_id
+            if segment.status not in (
+                SegmentStatus.DISPATCHED.value,
+                SegmentStatus.TRANSCRIBING.value,
+            ):
+                logger.warning(
+                    "segment_success_ignored_non_active",
+                    segment_id=segment_id,
+                    status=segment.status,
+                )
+                return
+
+            repo = TaskRepository(session)
+            task = await repo.get_task(task_id)
+            if task is None or task.status in (
+                TaskStatus.CANCELED.value,
+                TaskStatus.FAILED.value,
+                TaskStatus.SUCCEEDED.value,
+            ):
+                logger.warning(
+                    "segment_success_ignored_parent_terminal",
+                    segment_id=segment_id,
+                    task_id=task_id,
+                    parent_status=task.status if task else None,
+                )
+                return
 
             await seg_repo.update_segment_status(
                 segment, SegmentStatus.SUCCEEDED, raw_result_json=raw_result_json,
@@ -1455,8 +1491,6 @@ class BackgroundTaskRunner:
             total_keep = await seg_repo.total_keep_duration_ms(task_id)
             completed_keep = await seg_repo.sum_completed_duration_ms(task_id)
 
-            repo = TaskRepository(session)
-            task = await repo.get_task(task_id)
             if task and total_keep > 0:
                 progress = 0.20 + 0.75 * (completed_keep / total_keep)
                 task.progress = min(progress, 0.95)
@@ -1482,6 +1516,30 @@ class BackgroundTaskRunner:
             segment = await seg_repo.get_segment(segment_id)
             if segment is None:
                 return
+            repo = TaskRepository(session)
+            task = await repo.get_task(segment.task_id)
+            if segment.status not in (
+                SegmentStatus.DISPATCHED.value,
+                SegmentStatus.TRANSCRIBING.value,
+            ):
+                logger.warning(
+                    "segment_failure_ignored_non_active",
+                    segment_id=segment_id,
+                    status=segment.status,
+                )
+                return
+            if task is None or task.status in (
+                TaskStatus.CANCELED.value,
+                TaskStatus.FAILED.value,
+                TaskStatus.SUCCEEDED.value,
+            ):
+                logger.warning(
+                    "segment_failure_ignored_parent_terminal",
+                    segment_id=segment_id,
+                    task_id=segment.task_id,
+                    parent_status=task.status if task else None,
+                )
+                return
 
             if segment.retry_count < settings.segment_max_retry_count:
                 segment.error_message = message[:2000]
@@ -1492,8 +1550,6 @@ class BackgroundTaskRunner:
                             task_id=segment.task_id,
                             retry=segment.retry_count)
             else:
-                repo = TaskRepository(session)
-                task = await repo.get_task(segment.task_id)
                 if task and task.can_transition_to(TaskStatus.FAILED):
                     task.error_code = "SEGMENT_RETRY_EXHAUSTED"
                     error_msg = (

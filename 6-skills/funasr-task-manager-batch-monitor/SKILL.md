@@ -8,7 +8,7 @@ description: >
   sub-agent so the main agent can continue accepting new tasks.
 ---
 
-> **适配项目版本**：V0.4.21-Build0427-20260512
+> **适配项目版本**：V0.4.24-Build0453-20260514
 
 # 批量转写进度监控（子 Agent 专用）
 
@@ -211,6 +211,7 @@ python -m cli --output json task-group status {group_id}
 初始化:
   last_succeeded = 0
   last_failed = 0
+  last_canceled = 0
   last_heartbeat_time = now()
   start_time = now()
 
@@ -220,16 +221,25 @@ python -m cli --output json task-group status {group_id}
     send_user_notice(超时通知)
     进入 Step 5（强制下载已完成部分）
 
+  succeeded = 0
+  failed = 0
+  canceled = 0
+  in_progress = 0
+  total = 0
+  all_complete = true
+
   # 2b. 查询状态（每个 group 独立查询）
   for each group_id in task_group_ids:
     result = CLI: task-group status {group_id} --output json
-    累加 succeeded, failed, in_progress, total
+    累加 succeeded, failed, canceled, in_progress, total
+    all_complete = all_complete and result.is_complete
 
   # 2c. 判断是否有新进展
-  if succeeded != last_succeeded or failed != last_failed:
+  if succeeded != last_succeeded or failed != last_failed or canceled != last_canceled:
     send_user_notice(进度通知, 套用 monitor-templates §2)
     last_succeeded = succeeded
     last_failed = failed
+    last_canceled = canceled
     last_heartbeat_time = now()
 
   # 2d. 心跳检测（长时间无变化）
@@ -238,7 +248,7 @@ python -m cli --output json task-group status {group_id}
     last_heartbeat_time = now()
 
   # 2e. 判断是否全部完成
-  if succeeded + failed == total:
+  if all_complete:
     退出循环，进入 Step 3
 
   # 2f. 等待
@@ -260,6 +270,7 @@ python -m cli --output json task-group status {group_id}
   "total": 50,
   "succeeded": 35,
   "failed": 2,
+  "canceled": 1,
   "in_progress": 13,
   "is_complete": false
 }
@@ -293,7 +304,7 @@ python -m cli --output json task-group download {group_id} \
 
 | 退出条件 | 退出前动作 |
 |---------|----------|
-| 全部任务完成（succeeded + failed == total） | 下载结果 → 发完成汇总（含通知统计） |
+| 全部任务完成（`is_complete == true`，等价于 `succeeded + failed + canceled == total`） | 下载结果 → 发完成汇总（含通知统计） |
 | 超时（elapsed > timeout_sec） | 发超时汇总（含通知统计） → 下载已完成部分 |
 | 后端不可达（连续 3 次查询失败） | 发异常汇总（含通知统计） |
 | 全部 group 不存在 | 发错误汇总 |

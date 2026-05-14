@@ -8,7 +8,7 @@
 
 - **多服务器智能调度** — LPT + 最早完工时间预规划，空闲节点自动工作窃取
 - **长音频 VAD 分段并行** — 超过阈值的音频自动切分，分发到多台服务器并行转写，结果按时间戳合并
-- **AI Agent 原生支持** — 9 个配套 Skills，让 AI Agent（OpenClaw / Hermes / Cursor 等）开箱即用地完成聊天渠道转写和服务器本地批量转写全流程
+- **AI Agent 原生支持** — 10 个配套 Skills，让 AI Agent（OpenClaw / Hermes / Cursor 等）开箱即用地完成聊天渠道转写、服务器本地批量转写和急停恢复全流程
 
 ## 你想做什么？
 
@@ -97,7 +97,7 @@ python -m cli transcribe meeting.wav --format srt --output-dir ./runtime/storage
 
 ## Agent Skills 体系
 
-本项目为 AI Agent 提供了 **9 个配套 Skills**，安装到 Agent 平台（OpenClaw / Hermes / Cursor 等）后，Agent 可自主完成从环境检测到转写交付的全流程。
+本项目为 AI Agent 提供了 **10 个配套 Skills**，安装到 Agent 平台（OpenClaw / Hermes / Cursor 等）后，Agent 可自主完成从环境检测到转写交付和急停恢复的全流程。
 
 Agent 体系有两条主要入口：
 
@@ -114,6 +114,7 @@ Agent 体系有两条主要入口：
 | **channel-intake** | 意图识别、渠道文件下载（飞书/企微/Slack）、预检查、任务提交 | 用户发送音视频文件时 |
 | **local-batch-transcribe** | 扫描本地目录、生成清单、分 chunk 提交、委托子 Agent 监控、失败重试 | 用户要求批量转写本地目录/inbox 时 |
 | **batch-monitor** | 子 Agent 专用：绑定 task_group_id，定期查询进度并通过 message tool 播报 | 主 Agent 提交批量任务后委托 |
+| **emergency-stop** | 诊断 active slot、执行 dry-run 急停、取消活跃任务并释放僵尸 segment | 批次失控、取消后 slot 未释放或需要立即中止转写时 |
 | **media-preflight** | ffprobe 格式验证、时长检测、转码评估 | 文件上传到后端前 |
 | **result-delivery** | 任务状态轮询、结果拉取、质量初筛、格式化通知、文件附件发送 | 转写完成时 |
 | **server-benchmark** | ASR 节点性能校准（单线程 RTF + 梯度并发吞吐量） | 节点注册或定期校准时 |
@@ -150,7 +151,7 @@ Agent 体系有两条主要入口：
   result-delivery 格式规范 ← 复用结果摘要和附件交付模板
 ```
 
-协作规则：`init` 是所有入口的前置环境准备；`media-preflight` 可被两条入口复用；`result-delivery` 是任务创建后的结果出口；`server-benchmark`、`reset-test-db`、`web-e2e` 分别服务性能校准、测试环境和浏览器验证。聊天渠道任务与本地批量任务并发时，聊天渠道入口优先，本地批量入口暂停新提交并等待恢复。
+协作规则：`init` 是所有入口的前置环境准备；`media-preflight` 可被两条入口复用；`result-delivery` 是任务创建后的结果出口；`emergency-stop` 处理取消/急停后的 slot 恢复；`server-benchmark`、`reset-test-db`、`web-e2e` 分别服务性能校准、测试环境和浏览器验证。聊天渠道任务与本地批量任务并发时，聊天渠道入口优先，本地批量入口暂停新提交并等待恢复。
 
 ### 实时通知原语
 
@@ -168,7 +169,7 @@ Agent 体系有两条主要入口：
 
 ### 安装 Skills 到 Agent 平台
 
-运行 `init` Skill 的 Phase 6 即可一键安装所有 9 个 Skills 和共享工作流文件到目标平台：
+运行 `init` Skill 的 Phase 6 即可一键安装所有 10 个 Skills 和共享工作流文件到目标平台：
 
 - **OpenClaw**：`~/.openclaw/workspace-{name}/skills/`
 - **Hermes**：`~/.hermes/skills/`
@@ -481,6 +482,9 @@ python -m cli config list
 | POST | `/api/v1/servers/benchmark` | 对所有在线节点执行真实 benchmark 并刷新 RTF 基线 |
 | PATCH | `/api/v1/servers/{server_id}` | 更新节点配置 |
 | DELETE | `/api/v1/servers/{server_id}` | 注销节点 |
+| **管理员恢复** | | |
+| GET | `/api/v1/admin/active-slots` | 诊断服务器真实 active slot 占用和僵尸 segment |
+| POST | `/api/v1/admin/emergency-stop` | dry-run 或确认执行急停，取消活跃任务并释放 segment slot |
 | **系统** | | |
 | GET | `/health` | 健康检查 |
 | GET | `/api/v1/stats` | 系统统计 |
@@ -619,8 +623,8 @@ python -m cli doctor
 ├─────────────────────┬──────┬────────────────────────┤
 │ 检查项              │ 状态 │ 说明                    │
 ├─────────────────────┼──────┼────────────────────────┤
-│ database_schema     │  ✅  │ version 005            │
-│ alembic_version     │  ✅  │ 005_fix_nullable_defaults │
+│ database_schema     │  ✅  │ schema aligned         │
+│ alembic_version     │  ✅  │ version: 007_add_run_generation │
 │ ffprobe             │  ⚠️  │ not found              │
 │ upload_dir          │  ✅  │ runtime/storage/uploads writable │
 │ asr_servers         │  ✅  │ 2/2 online             │
@@ -652,7 +656,7 @@ API 使用静态 Token 认证，通过 `X-API-Key` 请求头传递：
 |-------|------|------|
 | `dev-token-user1` | user1 | 普通用户 |
 | `dev-token-user2` | user2 | 普通用户 |
-| `dev-token-admin` | admin | 管理员（含节点管理） |
+| `dev-token-admin` | admin | 管理员（含节点管理、active slot 诊断与急停恢复） |
 
 默认关闭认证（开发模式），生产环境需通过配置启用。
 
@@ -710,7 +714,7 @@ python -m cli config set api_key dev-token-user1
 CLI 会在输出和 JSON 摘要中列出失败的文件（`upload_failures` 字段），并以非零退出码（exit 1）退出。已成功上传的文件仍会正常转写，不会因为部分失败而全部放弃。
 
 **Q: 从旧版本数据库升级需要注意什么？**
-运行 `alembic upgrade head`。迁移 `002_fix_callback_outbox_schema` 会自动为已有记录回填 `outbox_id`（ULID）；`003_add_throughput_rtf` 会为 `server_instances` 表新增 `throughput_rtf` 和 `benchmark_concurrency` 列（nullable），已有服务器首次 benchmark 后自动填充；`004_create_task_segments` 会创建 `task_segments` 表，用于 VAD 分段并行转写的段级调度和状态跟踪；`005_fix_nullable_and_defaults` 修复 `task_events.from_status` nullable、`server_instances.status` 默认值，以及 `files`/`server_instances` 的 `updated_at` NOT NULL 对齐。
+运行 `alembic upgrade head`。迁移 `002_fix_callback_outbox_schema` 会自动为已有记录回填 `outbox_id`（ULID）；`003_add_throughput_rtf` 会为 `server_instances` 表新增 `throughput_rtf` 和 `benchmark_concurrency` 列（nullable），已有服务器首次 benchmark 后自动填充；`004_create_task_segments` 会创建 `task_segments` 表，用于 VAD 分段并行转写的段级调度和状态跟踪；`005_fix_nullable_and_defaults` 修复 `task_events.from_status` nullable、`server_instances.status` 默认值，以及 `files`/`server_instances` 的 `updated_at` NOT NULL 对齐；`006_add_server_enabled` 为服务器增加 `enabled` 开关，允许临时禁用节点且不被心跳覆盖；`007_add_run_generation` 为任务和分段增加 `run_generation`，避免取消/重试后的旧 worker 回写污染结果。
 
 ---
 
@@ -832,12 +836,12 @@ funasr-task-manager/
 │   ├── stop.sh  / stop.ps1
 │   ├── backend/
 │   │   ├── app/                       # FastAPI 应用
-│   │   │   ├── api/                   # 路由层（tasks, servers, task_groups, health）
+│   │   │   ├── api/                   # 路由层（tasks, servers, task_groups, admin, health）
 │   │   │   ├── models/                # SQLAlchemy ORM 模型
 │   │   │   ├── services/              # 业务逻辑（scheduler, task_runner, diagnostics）
 │   │   │   └── storage/               # 仓储层 + 文件管理
 │   │   ├── cli/                       # CLI 工具
-│   │   │   ├── commands/              # 子命令（transcribe, task, server, notify, system）
+│   │   │   ├── commands/              # 子命令（transcribe, task, server, admin, notify, system）
 │   │   │   ├── api_client.py          # HTTP API 客户端
 │   │   │   └── main.py                # 入口 + 全局选项
 │   │   └── alembic/                   # 数据库迁移
@@ -857,6 +861,7 @@ funasr-task-manager/
 │   ├── funasr-task-manager-channel-intake/     # 音频入口与意图编排（飞书/企微/Slack）
 │   ├── funasr-task-manager-local-batch-transcribe/ # 服务器本地文件批量转写
 │   ├── funasr-task-manager-batch-monitor/         # 子 Agent 批量任务进度监控
+│   ├── funasr-task-manager-emergency-stop/        # 急停与 active slot 清理
 │   ├── funasr-task-manager-media-preflight/    # 媒体文件预检查（格式/时长/转码评估）
 │   ├── funasr-task-manager-result-delivery/    # 结果交付与质量初筛
 │   ├── funasr-task-manager-server-benchmark/   # 服务器性能校准（RTF 基线/并发梯度）

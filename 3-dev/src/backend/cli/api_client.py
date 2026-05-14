@@ -209,6 +209,27 @@ class ASRClient:
     def diagnostics(self) -> dict:
         return self._check(self._request("get", "/api/v1/diagnostics")).json()
 
+    # --- admin ---
+    def active_slots(self) -> dict:
+        return self._check(self._request("get", "/api/v1/admin/active-slots")).json()
+
+    def emergency_stop(
+        self,
+        *,
+        scope: str = "all",
+        group_id: str | None = None,
+        dry_run: bool = True,
+        confirm: bool = False,
+    ) -> dict:
+        params: dict[str, Any] = {
+            "scope": scope,
+            "dry_run": str(dry_run).lower(),
+            "confirm": str(confirm).lower(),
+        }
+        if group_id:
+            params["group_id"] = group_id
+        return self._check(self._request("post", "/api/v1/admin/emergency-stop", params=params)).json()
+
     # --- servers ---
     def list_servers(self) -> list[dict]:
         return self._check(self._request("get", "/api/v1/servers")).json()

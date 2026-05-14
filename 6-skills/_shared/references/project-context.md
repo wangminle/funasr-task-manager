@@ -3,7 +3,7 @@
 > **唯一事实源**：各 skill 的 `references/project-context.md` 应 symlink 或引用此文件。
 > 仅在此处维护，避免多处同步。
 >
-> **适配项目版本**：V0.4.21-Build0427-20260512（Alembic 迁移至 007）
+> **适配项目版本**：V0.4.24-Build0453-20260514（Alembic 迁移至 007）
 
 ## 关键路径
 
@@ -40,6 +40,8 @@
 | GET | `/api/v1/servers` | 服务器列表 | **AdminUser** |
 | POST | `/api/v1/servers/{id}/benchmark` | 单节点 benchmark | **AdminUser** |
 | POST | `/api/v1/servers/benchmark` | 全量 benchmark（并发） | **AdminUser** |
+| GET | `/api/v1/admin/active-slots` | 诊断服务器真实 active slot 占用 | **AdminUser** |
+| POST | `/api/v1/admin/emergency-stop` | dry-run 或确认执行急停并释放 slot | **AdminUser** |
 
 ### 任务创建参数
 
@@ -89,6 +91,8 @@ PENDING → PREPROCESSING → QUEUED → DISPATCHED → TRANSCRIBING → SUCCEED
 
 ### 数据库迁移
 
-当前迁移链：`001` → `002` → `003` → `004` → `005`（head）
+当前迁移链：`001` → `002` → `003` → `004` → `005` → `006` → `007`（head）
 
 - `005_fix_nullable_and_defaults.py`：修复 `task_events.from_status` nullable、`server_instances.status` server_default、多表 `updated_at` nullable 不一致
+- `006_add_server_enabled.py`：为 `server_instances` 增加 `enabled` 开关，允许禁用节点且不被心跳覆盖
+- `007_add_run_generation.py`：为 `tasks` / `task_segments` 增加 `run_generation`，避免取消/重试后的旧 worker 回写污染结果

@@ -106,6 +106,28 @@ class TestCapacityAwareScheduling:
         decision_map = {d.task_id: d.server_id for d in decisions}
         assert decision_map["huge"] == "fast"
 
+    def test_same_parent_segments_prefer_distinct_servers(self):
+        """Segments from the same parent should spread before sharing a server."""
+        sched = TaskScheduler()
+        tasks = [
+            {
+                "task_id": f"seg-{i}",
+                "audio_duration_sec": 300,
+                "kind": "segment",
+                "parent_task_id": "parent-1",
+            }
+            for i in range(3)
+        ]
+        servers = [
+            _make_server("s-fast", concurrency=8, rtf=0.1),
+            _make_server("s-mid", concurrency=4, rtf=0.1),
+            _make_server("s-slow", concurrency=4, rtf=0.1),
+        ]
+
+        decisions = sched.schedule_batch(tasks, servers)
+
+        assert len({d.server_id for d in decisions}) == 3
+
     def test_balanced_distribution_three_servers(self):
         """With 3 heterogeneous servers, batch should distribute across all of them."""
         sched = TaskScheduler()

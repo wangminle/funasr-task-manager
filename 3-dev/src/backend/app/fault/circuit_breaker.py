@@ -89,6 +89,22 @@ class CircuitBreaker:
                 return False
             return False
 
+    async def can_request(self) -> bool:
+        """Return whether a request may be planned without consuming probe budget.
+
+        Dispatch planning calls this as a non-consuming visibility check. The
+        consuming gate remains allow_request()/pre_check(), which should be used
+        only when an actual outbound request is about to be attempted.
+        """
+        async with self._lock:
+            self._maybe_transition_to_half_open()
+
+            if self._state == CircuitState.CLOSED:
+                return True
+            if self._state == CircuitState.HALF_OPEN:
+                return self._half_open_calls < self.half_open_max_calls
+            return False
+
     async def pre_check(self) -> None:
         if not await self.allow_request():
             remaining = 0.0

@@ -6,12 +6,12 @@
 ## 版本要求
 
 <!-- cli_min_version: 0.1.0 -->
-<!-- project_version: V0.4.21-Build0427-20260512 -->
+<!-- project_version: V0.4.24-Build0453-20260514 -->
 
 | 组件 | 当前版本 | 最低版本 | 说明 |
 |------|---------|---------|------|
-| 项目版本 | `V0.4.21-Build0427` | — | 含调度器重写、SSE/Dispatch 优化、任务 API 增强与迁移 007 |
-| CLI (`python -m cli`) | `0.4.21` | `>= 0.1.0` | 需要 `notify` 子命令（含 `send`、`send-file`、`auth-check`）和 `--receive-id-type` 参数 |
+| 项目版本 | `V0.4.24-Build0453` | — | 含取消/急停恢复、admin active-slots、调度恢复修复与迁移 007 |
+| CLI (`python -m cli`) | `0.4.24` | `>= 0.1.0` | 需要 `notify` 子命令（含 `send`、`send-file`、`auth-check`）、`admin` 子命令和 `--receive-id-type` 参数 |
 | Backend API | — | `>= 1.0.0` | 需要 `/health`、`/tasks`、`/task-groups` 端点 |
 | Python | — | `>= 3.11` | CLI 依赖 `match` 语法和 `asyncio` 特性；pyproject.toml 声明 `requires-python = ">=3.11"` |
 | ffprobe / ffmpeg | — | `>= 5.0` | 音视频预检和转码；当前工作流要求预检阶段可用 `ffprobe`，避免未安装时直接转写失败 |

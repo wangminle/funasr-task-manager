@@ -285,12 +285,21 @@ async def cancel_task(task_id: str, db: DbSession, user_id: CurrentUser):
 
     from app.storage.repository import SegmentRepository
     seg_repo = SegmentRepository(db)
-    for cancel_status in (SegmentStatus.PENDING, SegmentStatus.DISPATCHED):
+    now = datetime.now(timezone.utc)
+    for cancel_status in (
+        SegmentStatus.PENDING,
+        SegmentStatus.DISPATCHED,
+        SegmentStatus.TRANSCRIBING,
+    ):
         segs = await seg_repo.list_segments_by_status(task_id, cancel_status)
         for seg in segs:
+            seg.run_generation += 1
             seg.status = SegmentStatus.FAILED
+            seg.assigned_server_id = None
+            seg.completed_at = now
             seg.error_message = "Parent task canceled"
 
+    task.run_generation += 1
     await task_repo.update_task_status(task, TaskStatus.CANCELED)
     await rate_limiter.record_task_completed(user_id)
     responses = await _enrich_task_responses([task], db)

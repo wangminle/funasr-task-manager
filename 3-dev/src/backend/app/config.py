@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     model_config = {"env_prefix": "ASR_", "env_file": ".env", "env_file_encoding": "utf-8"}
 
     app_name: str = "ASR Task Manager"
-    app_version: str = "0.4.21"
+    app_version: str = "0.4.24"
     debug: bool = False
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "console"
@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     stale_task_timeout_minutes: int = 10
     websocket_ping_interval_seconds: int = 20
     websocket_ping_timeout_seconds: int = 10
-    websocket_read_idle_timeout_seconds: int = 120
+    websocket_read_idle_timeout_seconds: int = 300
     segment_timeout_min_seconds: int = 120
     segment_timeout_audio_multiplier: float = 2.0
     max_retry_count: int = 3

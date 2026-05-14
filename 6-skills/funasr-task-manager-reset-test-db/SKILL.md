@@ -9,7 +9,7 @@ description: >
   "reset db", "clean state", "wipe data".
 ---
 
-> **适配项目版本**：V0.4.21-Build0427-20260512
+> **适配项目版本**：V0.4.24-Build0453-20260514
 
 # Reset ASR DB Before Test
 

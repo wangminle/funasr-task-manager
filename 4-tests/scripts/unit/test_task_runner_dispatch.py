@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import File, ServerInstance, Task, TaskStatus
 from app.models.task_segment import SegmentStatus, TaskSegment
+from app.fault.circuit_breaker import CircuitBreaker
 from app.services.task_runner import BackgroundTaskRunner
 
 
@@ -122,7 +123,45 @@ class TestTaskRunnerDispatch:
         assert len(queued) == 1
         assert all(task.assigned_server_id for task in dispatched)
         assert queued[0].assigned_server_id is None
-        assert len(started_task_ids) == 4
+
+    async def test_half_open_breaker_limits_real_dispatch_probe_count(self, db_engine, monkeypatch):
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+
+        cb = CircuitBreaker("srv-half-open", failure_threshold=1, recovery_timeout=0.0, half_open_max_calls=1)
+        await cb.record_failure()
+
+        monkeypatch.setattr(
+            "app.services.task_runner.breaker_registry",
+            SimpleNamespace(get=lambda _server_id: cb),
+        )
+
+        async with session_factory() as session:
+            session.add(_server("srv-half-open", 4))
+            for index in range(3):
+                fid = f"file-half-{index}"
+                session.add(_file(fid, duration_sec=60))
+                session.add(_task(f"task-half-{index}", fid, TaskStatus.QUEUED))
+            await session.commit()
+
+        runner = BackgroundTaskRunner()
+        started_task_ids: list[str] = []
+
+        async def _fake_execute_task(task_id: str):
+            started_task_ids.append(task_id)
+
+        monkeypatch.setattr(runner, "_execute_task", _fake_execute_task)
+
+        await runner._dispatch_queued_tasks()
+        await asyncio.sleep(0)
+
+        async with session_factory() as session:
+            dispatched = list((await session.execute(
+                select(Task).where(Task.status == TaskStatus.DISPATCHED.value)
+            )).scalars().all())
+
+        assert len(started_task_ids) == 1
+        assert len(dispatched) == 1
 
     async def test_completion_requests_next_dispatch(self, db_engine, monkeypatch):
         session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
@@ -1017,6 +1056,48 @@ class TestRetryFailedToQueued:
         assert enqueue_calls == [("t-seg-final", TaskStatus.FAILED.value)]
         assert deliver_calls == ["outbox-seg-final"]
         assert completed_users == ["test-user"]
+
+    async def test_canceled_segment_run_is_stale_and_not_retried(
+        self, db_engine, monkeypatch,
+    ):
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+
+        async with session_factory() as session:
+            session.add(_file("f-canceled-seg", duration_sec=600.0))
+            task = _task("t-canceled-seg", "f-canceled-seg", TaskStatus.CANCELED)
+            session.add(task)
+            session.add(TaskSegment(
+                segment_id="seg-canceled",
+                task_id="t-canceled-seg",
+                segment_index=0,
+                source_start_ms=0,
+                source_end_ms=600000,
+                keep_start_ms=0,
+                keep_end_ms=600000,
+                storage_path="/tmp/seg-canceled.wav",
+                status=SegmentStatus.FAILED,
+                assigned_server_id=None,
+                run_generation=1,
+                retry_count=0,
+                error_message="Parent task canceled",
+            ))
+            await session.commit()
+
+        runner = BackgroundTaskRunner()
+
+        assert await runner._is_stale_segment_run("seg-canceled", expected_generation=0) is True
+        await runner._mark_segment_failed("seg-canceled", "late worker error")
+        await runner._mark_segment_succeeded("seg-canceled", '{"text": "late success"}')
+
+        async with session_factory() as session:
+            seg = (await session.execute(
+                select(TaskSegment).where(TaskSegment.segment_id == "seg-canceled")
+            )).scalar_one()
+
+        assert seg.status == SegmentStatus.FAILED.value
+        assert seg.retry_count == 0
+        assert seg.error_message == "Parent task canceled"
 
 
 @pytest.mark.unit

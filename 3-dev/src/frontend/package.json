@@ -1,6 +1,6 @@
 {
   "name": "asr-task-manager-frontend",
-  "version": "0.4.21",
+  "version": "0.4.24",
   "private": true,
   "type": "module",
   "scripts": {

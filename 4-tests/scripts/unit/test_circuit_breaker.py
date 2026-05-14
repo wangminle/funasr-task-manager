@@ -70,6 +70,18 @@ class TestCircuitBreakerStates:
         assert cb.state == CircuitState.OPEN
 
     @pytest.mark.asyncio
+    async def test_can_request_does_not_consume_half_open_probe_budget(self):
+        cb = CircuitBreaker("s1", failure_threshold=2, recovery_timeout=0.01, half_open_max_calls=1)
+        await cb.record_failure()
+        await cb.record_failure()
+        await asyncio.sleep(0.02)
+
+        assert await cb.can_request() is True
+        assert await cb.can_request() is True
+        assert await cb.allow_request() is True
+        assert await cb.allow_request() is False
+
+    @pytest.mark.asyncio
     async def test_success_resets_failure_count(self):
         cb = CircuitBreaker("s1", failure_threshold=5)
         for _ in range(3):

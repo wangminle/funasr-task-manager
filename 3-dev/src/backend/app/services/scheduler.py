@@ -595,13 +595,30 @@ class TaskScheduler:
         task_estimates.sort(key=lambda x: x["estimated_duration"], reverse=True)
 
         decisions: list[ScheduleDecision] = []
+        parent_server_usage: dict[str, set[str]] = defaultdict(set)
         for pos, task_info in enumerate(task_estimates):
             dur = task_info.get("audio_duration_sec", 0) or 0
+            parent_task_id = task_info.get("parent_task_id")
 
             eligible_slots = [s for s in slots
                               if assigned_count.get(s.server_id, 0) < quotas.get(s.server_id, 0)]
             if not eligible_slots:
                 eligible_slots = slots
+            if parent_task_id:
+                used_by_parent = parent_server_usage[parent_task_id]
+                unused_quota_slots = [
+                    s for s in eligible_slots
+                    if s.server_id not in used_by_parent
+                ]
+                if unused_quota_slots:
+                    eligible_slots = unused_quota_slots
+                else:
+                    unused_any_slots = [
+                        s for s in slots
+                        if s.server_id not in used_by_parent
+                    ]
+                    if unused_any_slots:
+                        eligible_slots = unused_any_slots
 
             best_slot = min(
                 eligible_slots,
@@ -636,6 +653,8 @@ class TaskScheduler:
             decisions.append(decision)
             best_slot.earliest_free += est_duration
             assigned_count[best_slot.server_id] = assigned_count.get(best_slot.server_id, 0) + 1
+            if parent_task_id:
+                parent_server_usage[parent_task_id].add(best_slot.server_id)
 
         self._log_batch_plan(decisions, server_map, task_estimates)
         return decisions

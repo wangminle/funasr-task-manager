@@ -7,7 +7,7 @@ description: >
   mentions scanning directories, inbox, or wants to retry failed items.
 ---
 
-> **适配项目版本**：V0.4.21-Build0427-20260512
+> **适配项目版本**：V0.4.24-Build0453-20260514
 
 # 服务器本地文件批量转写
 
@@ -405,6 +405,50 @@ for each batch_id in batch_watchdog:
 | 子 Agent 已退出但结果未下载 | 执行 `task-group download`，补发结果 |
 | 子 Agent 异常退出 | `send_user_notice("⚠️ 批次 {batch_id} 的后台监控异常中断。当前进度：{status_summary}。你可以说\"重启监控\"来恢复。")` |
 | 全部完成但无汇总 | 补发完成汇总（使用 `progress-templates` 模板） |
+
+### Phase 5.6：用户主动取消/中止批次
+
+当用户明确要求"取消 / 停止 / 中止"正在运行的批次时，Agent 必须走取消流程，不能只终止监控子 Agent，也不能只停止心跳播报。
+
+#### 取消步骤
+
+1. 先通过 `send_user_notice()` 告知用户将取消哪个 `batch_id` / `task_group_id`。
+2. 查询批次内任务列表：
+
+```bash
+python -m cli --output json task list --group {group_id} --page-size 500
+```
+
+3. 对每个非终态任务执行取消：
+
+```bash
+python -m cli --output json task cancel {task_id}
+```
+
+4. 取消后立即重新查询：
+
+```bash
+python -m cli --output json task-group status {group_id}
+```
+
+5. 只有当 `is_complete == true`，或 `succeeded + failed + canceled == total` 时，才向用户报告"取消完成"。
+6. 如果仍有 `in_progress > 0`，必须报告"取消已提交但仍有活跃任务"，并继续每 10-30 秒检查，直到进入终态或超时。
+
+#### segment 清理校验
+
+后端取消接口必须释放分段任务的活跃 segment，包括 `PENDING`、`DISPATCHED`、`TRANSCRIBING`。Agent 侧取消后如发现某台服务器长期少 slot、某个 group 已取消但仍有 `TRANSCRIBING` segment，应按故障处理上报，不要反复新建批次掩盖问题。
+
+必要时使用只读诊断确认是否存在僵尸 segment：
+
+```sql
+SELECT s.segment_id, s.task_id, s.status, s.assigned_server_id, t.status AS parent_status
+FROM task_segments s
+JOIN tasks t ON t.task_id = s.task_id
+WHERE s.status IN ('DISPATCHED', 'TRANSCRIBING')
+  AND t.status IN ('CANCELED', 'FAILED', 'SUCCEEDED');
+```
+
+如果查询命中，说明后端取消/恢复流程存在 bug；Agent 应报告异常并请求人工确认后再做数据库修复。
 
 ### Phase 6：结果归档（由子 Agent 或主 Agent 完成）
 

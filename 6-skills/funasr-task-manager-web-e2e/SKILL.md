@@ -3,7 +3,7 @@ name: funasr-task-manager-web-e2e
 description: Build, run, or maintain browser-based end-to-end tests for the funasr-task-manager project. Use when Codex needs to simulate a real user dragging audio or video files into the web upload page, creating a batch of transcription tasks, waiting for scheduler execution, and validating that the system returns reasonable recognition results with saved test artifacts.
 ---
 
-> **适配项目版本**：V0.4.21-Build0427-20260512
+> **适配项目版本**：V0.4.24-Build0453-20260514
 
 # FunASR Task Manager 浏览器 E2E 测试
 
@@ -117,7 +117,7 @@ python 6-skills/funasr-task-manager-web-e2e/scripts/build_fixture_batch.py --lis
 6. 从批量创建响应中捕获 `task_group_id`，用于后续验证。
 7. 打开 `/tasks`。
 8. 轮询直到任务到达终态（SUCCEEDED / FAILED / CANCELED）。使用 [references/project-context.md](references/project-context.md) 中各 profile 对应的超时。后端也提供 SSE（`GET /api/v1/tasks/{id}/progress`），优先使用 5-10 秒间隔的 API 轮询。
-9. 通过 `GET /api/v1/task-groups/{group_id}` 验证批次完整性——确认 `succeeded + failed == total`。
+9. 通过 `GET /api/v1/task-groups/{group_id}` 验证批次完整性——确认 `is_complete == true`，或等价地确认 `succeeded + failed + canceled == total`。
 10. 以多种格式下载结果：`GET /api/v1/task-groups/{group_id}/results?format=txt`、`?format=json`、`?format=zip`。
 
 使用 Playwright 时优先通过 `input[type=file].setInputFiles(...)` 添加文件。
