@@ -154,8 +154,10 @@ OpenClaw 支持子 Agent 并发能力时，采用**主 Agent 调度 + 子 Agent 
 Hermes 若暴露 `message` tool（类似 OpenClaw），优先使用。否则 fallback 到 CLI：
 
 ```bash
-python -m cli notify send --text "⏳ Phase 4：正在提交..."
+python -m cli notify send --text "⏳ Phase 4：正在提交..." --chat-id "<chat_id>"
 ```
+
+私聊使用 `--receive-id-type open_id --chat-id "<open_id>"`。
 
 ### 进度监控实现
 

@@ -14,8 +14,9 @@
 >
 > CLI fallback（无 message tool 时）：
 > ```bash
-> python -m cli notify send --text "<模板渲染后的文本>"
+> python -m cli notify send --text "<模板渲染后的文本>" --chat-id "<chat_id>"
 > ```
+> 私聊使用 `--receive-id-type open_id --chat-id "<open_id>"`。Agent/Skill 不应依赖默认 `FEISHU_CHAT_ID`。
 >
 > **时序规则**：每条通知必须在下一个耗时操作（curl/上传/转写/轮询）**之前**发出并等待返回。
 
@@ -46,6 +47,15 @@
 批次 ID：{batch_id}
 任务组：{task_group_id}
 预计耗时：{eta_human}
+```
+
+**去重复用已有任务组**
+
+```text
+检测到相同文件和参数的活跃批次，已复用已有任务组。
+批次 ID：{batch_id}
+任务组：{task_group_id}
+复用任务数：{deduplicated_count}
 ```
 
 **大批量（多 chunk）**

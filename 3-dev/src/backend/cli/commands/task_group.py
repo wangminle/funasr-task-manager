@@ -18,7 +18,7 @@ from typing import Optional
 import typer
 
 from cli import output as out
-from cli.api_client import APIError
+from cli.api_client import APIError, DuplicateBatchError
 from cli.path_utils import detect_project_root, get_default_download_dir
 
 app = typer.Typer()
@@ -245,11 +245,15 @@ def submit(
         help="只提交指定块（从 0 开始）；不指定则提交全部",
     ),
     hotwords: Optional[str] = typer.Option(None, "--hotwords", help="热词，逗号分隔"),
+    force: bool = typer.Option(False, "--force", help="跳过去重检测，强制创建新批次"),
 ):
     """将 scan 结果提交到后端，返回 task_group_id。
 
     接收 scan 输出的 JSON（文件或 stdin），上传文件并创建任务。
     每个 chunk 产生一个独立的 task_group_id。秒级到分钟级返回（取决于文件大小）。
+
+    默认开启去重检测：30 分钟内对相同文件集的重复提交会被拦截，
+    返回已有批次的 task_group_id。使用 --force 跳过此检测。
     """
     from cli.main import get_ctx
     c = get_ctx(ctx)
@@ -338,7 +342,9 @@ def submit(
             for fid in file_ids
         ]
         try:
-            tasks = c.client.create_tasks(items_payload, segment_level=segment_level)
+            tasks = c.client.create_tasks(
+                items_payload, segment_level=segment_level, skip_dedup=force,
+            )
             group_id = tasks[0].get("task_group_id") if tasks else None
             submitted_groups.append({
                 "chunk_index": ci,
@@ -348,6 +354,18 @@ def submit(
             })
             if not c.quiet:
                 out.success(f"  块 {ci}: 已创建 {len(tasks)} 个任务 (group: {group_id})")
+        except DuplicateBatchError as dup:
+            submitted_groups.append({
+                "chunk_index": ci,
+                "task_group_id": dup.group_id,
+                "task_count": dup.task_count,
+                "deduplicated": True,
+            })
+            if not c.quiet:
+                out.info(
+                    f"  块 {ci}: [去重] 检测到重复批次，复用已有任务组 "
+                    f"{dup.group_id} ({dup.task_count} 个任务)"
+                )
         except APIError as e:
             submitted_groups.append({
                 "chunk_index": ci,
@@ -359,17 +377,30 @@ def submit(
                 out.error(f"  块 {ci}: 创建任务失败: {e.detail}")
 
     submit_elapsed = round(time.time() - submit_start, 2)
-    total_submitted = sum(g.get("task_count", 0) for g in submitted_groups)
+    total_submitted = sum(
+        g.get("task_count", 0) for g in submitted_groups if not g.get("deduplicated")
+    )
+    total_deduplicated = sum(
+        g.get("task_count", 0) for g in submitted_groups if g.get("deduplicated")
+    )
 
     result = {
         "total_files": len(selected_items),
         "total_uploaded": total_uploaded,
         "total_submitted": total_submitted,
+        "total_deduplicated": total_deduplicated,
         "upload_failures": len(upload_failures),
         "submit_elapsed_sec": submit_elapsed,
         "groups": submitted_groups,
         "failures": upload_failures if upload_failures else [],
     }
+
+    def _group_status(g: dict) -> str:
+        if g.get("error"):
+            return "失败"
+        if g.get("deduplicated"):
+            return "去重(复用已有)"
+        return "成功"
 
     out.render(
         c.output_format, data=result,
@@ -380,18 +411,20 @@ def submit(
                 g["chunk_index"],
                 g.get("task_group_id") or "-",
                 g.get("task_count", 0),
-                "失败" if g.get("error") else "成功",
+                _group_status(g),
             ]
             for g in submitted_groups
         ],
         footer=(
             f"共上传 {result['total_uploaded']} 个文件 · "
             f"创建 {result['total_submitted']} 个任务 · "
-            f"失败 {result['upload_failures']} · 耗时 {submit_elapsed}s"
+            + (f"去重 {total_deduplicated} 个 · " if total_deduplicated else "")
+            + f"失败 {result['upload_failures']} · 耗时 {submit_elapsed}s"
         ),
     )
 
-    if result["total_submitted"] == 0:
+    has_actionable = total_submitted > 0 or total_deduplicated > 0
+    if not has_actionable:
         raise typer.Exit(1)
 
 

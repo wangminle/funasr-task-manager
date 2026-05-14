@@ -49,8 +49,10 @@ description: >
 **CLI fallback（无 message tool 时）：**
 
 ```bash
-python -m cli notify send --text "⏳ tv-report-1.wav — 正在转写..."
+python -m cli notify send --text "⏳ tv-report-1.wav — 正在转写..." --chat-id "<chat_id>"
 ```
+
+私聊使用 `--receive-id-type open_id --chat-id "<open_id>"`。
 
 **时序要求**：轮询检测到状态变化后，**立即** `send_user_notice()` 发送通知，然后再继续下一轮轮询。不要累积多个状态变化再一起发送。
 
@@ -186,9 +188,9 @@ Agent 在完成每一批任务交付后，必须进行以下自检：
 
    **优先级 2：CLI `notify send-file`（无 message tool 时）**
    ```bash
-   python -m cli notify send-file --file "/tmp/funasr-task-manager/01KQ8QER.../会议录音-20260415_result.txt" --text "✅ 转写完成 — 会议录音-20260415_result.txt"
+   python -m cli notify send-file --file "/tmp/funasr-task-manager/01KQ8QER.../会议录音-20260415_result.txt" --text "✅ 转写完成 — 会议录音-20260415_result.txt" --chat-id "oc_xxx"
    ```
-   上述命令依赖 `FEISHU_CHAT_ID` 或 `notify.default_chat_id` 已配置；如果没有默认会话 ID，必须显式传入 `--chat-id "oc_xxx"`。
+   Agent/Skill 必须显式传入当前会话的 `--chat-id`。`FEISHU_CHAT_ID` 或 `notify.default_chat_id` 只适合本地手动调试的默认路由。
 
    显式指定会话：
    ```bash
@@ -197,7 +199,7 @@ Agent 在完成每一批任务交付后，必须进行以下自检：
 
    带回复线程：
    ```bash
-   python -m cli notify send-file --file "/tmp/funasr-task-manager/01KQ8QER.../会议录音-20260415_result.txt" --text "✅ 转写完成" --reply-to "om_xxx"
+   python -m cli notify send-file --file "/tmp/funasr-task-manager/01KQ8QER.../会议录音-20260415_result.txt" --text "✅ 转写完成" --chat-id "oc_xxx" --reply-to "om_xxx"
    ```
 
    **各渠道底层 API 参考**：

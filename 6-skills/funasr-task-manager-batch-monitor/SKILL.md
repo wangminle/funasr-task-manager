@@ -335,8 +335,10 @@ python -m cli --output json task-group download {group_id} \
 **CLI fallback（无 message tool 时）：**
 
 ```bash
-python -m cli notify send --text "<模板渲染后的文本>"
+python -m cli notify send --text "<模板渲染后的文本>" --chat-id "<chat_id>"
 ```
+
+私聊使用 `--receive-id-type open_id --chat-id "<open_id>"`。子 Agent 必须使用主 Agent 传入的 `notification_context`，不得依赖默认 `FEISHU_CHAT_ID`。
 
 ### 频率控制
 

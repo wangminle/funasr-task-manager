@@ -24,7 +24,7 @@
 > **实时通知规范（强制）**：所有阶段通知必须通过 `send_user_notice()` 实时推送，禁止仅输出普通 assistant 文本。详见 `6-skills/_shared/CHANNEL-NOTIFICATION.md`。
 >
 > - **OpenClaw/飞书环境**：优先调用 runtime 暴露的 `message` tool（`{"name": "message", "arguments": {"action": "send", "message": "..."}}`）
-> - **无 message tool 时**：调用 `python -m cli notify send --text "..."`
+> - **无 message tool 时**：调用 `python -m cli notify send --text "..." --chat-id <chat_id>`；私聊使用 `--receive-id-type open_id --chat-id <open_id>`
 > - **普通文本**：仅当运行在纯本地终端且用户直接看到实时输出时可用
 >
 > 背景：普通 assistant 文本在 OpenClaw/Hermes 等平台中被 turn 级缓冲，turn 结束后才推送到飞书，导致用户在处理期间看不到进度。`send_user_notice()` 通过工具调用副作用绕过缓冲，实现即时送达。
@@ -159,7 +159,7 @@ PENDING → PREPROCESSING → QUEUED → DISPATCHED → TRANSCRIBING → SUCCEED
 | 命令 | 用途 | 调用方 |
 |------|------|--------|
 | `python -m cli --output json task-group scan {dir}` | 扫描目录 → JSON 清单 | 主 Agent |
-| `python -m cli --output json task-group submit --manifest {file}` | 提交 → task_group_id | 主 Agent |
+| `python -m cli --output json task-group submit --manifest {file}` | 提交 → task_group_id；默认启用 30 分钟活跃批次去重 | 主 Agent |
 | `python -m cli --output json task-group status {group_id}` | 查询进度 → JSON | 子 Agent |
 | `python -m cli --output json task-group download {group_id}` | 下载结果 → 路径 | 子 Agent |
 

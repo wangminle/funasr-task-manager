@@ -1,16 +1,18 @@
 """Task management API endpoints."""
 
+import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import delete as sql_delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ulid import ULID
 
 from app.auth.rate_limiter import rate_limiter
 from app.deps import CurrentUser, DbSession
-from app.models import Task, TaskEvent, TaskSegment, TaskStatus, SegmentStatus
+from app.models import File, Task, TaskEvent, TaskSegment, TaskStatus, SegmentStatus
 from app.schemas.task import (
     SegmentSummary, TaskCreateRequest, TaskListResponse, TaskResponse,
 )
@@ -22,6 +24,95 @@ from app.services.progress import calculate_eta
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
+
+_DEDUP_WINDOW_MINUTES = 30
+_TERMINAL_STATUSES = {TaskStatus.SUCCEEDED.value, TaskStatus.FAILED.value, TaskStatus.CANCELED.value}
+
+
+def _batch_fingerprint(
+    file_parts: list[tuple[str, int, str, str]],
+    segment_level: str,
+) -> str:
+    """Deterministic fingerprint from sorted (name, size, language, options) + segment_level."""
+    sorted_parts = sorted(file_parts, key=lambda x: (x[0], x[1]))
+    lines = [f"segment_level={segment_level}"]
+    for name, size, lang, opts in sorted_parts:
+        lines.append(f"{name}:{size}:{lang}:{opts}")
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()[:32]
+
+
+async def _check_duplicate_batch(
+    db: AsyncSession,
+    user_id: str,
+    file_records: list[File],
+    body: TaskCreateRequest,
+) -> dict | None:
+    """Return existing group info if a recent active batch has the same files+params.
+
+    Compares fingerprints (sorted name:size:language:options + segment_level)
+    of the incoming request against all non-terminal task groups created by
+    the same user within the dedup window.
+    """
+    if not file_records:
+        return None
+
+    incoming_parts: list[tuple[str, int, str, str]] = []
+    for f, item in zip(file_records, body.items):
+        opts = json.dumps(dict(item.options) if item.options else {}, sort_keys=True)
+        incoming_parts.append((f.original_name, f.size_bytes, item.language or "auto", opts))
+    fingerprint = _batch_fingerprint(incoming_parts, body.segment_level.value)
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=_DEDUP_WINDOW_MINUTES)
+    item_count = len(file_records)
+
+    stmt = (
+        select(Task.task_group_id, func.count().label("cnt"))
+        .where(
+            Task.user_id == user_id,
+            Task.created_at >= cutoff,
+            Task.task_group_id.isnot(None),
+        )
+        .group_by(Task.task_group_id)
+        .having(func.count() == item_count)
+    )
+    candidates = (await db.execute(stmt)).all()
+
+    for group_id, cnt in candidates:
+        active_cnt = (await db.execute(
+            select(func.count()).where(
+                Task.task_group_id == group_id,
+                Task.status.notin_(list(_TERMINAL_STATUSES)),
+            )
+        )).scalar() or 0
+        if active_cnt == 0:
+            continue
+
+        existing_stmt = (
+            select(File.original_name, File.size_bytes, Task.language, Task.options_json)
+            .join(Task, Task.file_id == File.file_id)
+            .where(Task.task_group_id == group_id)
+        )
+        existing_rows = (await db.execute(existing_stmt)).all()
+        existing_parts: list[tuple[str, int, str, str]] = []
+        existing_segment_level = body.segment_level.value
+        for name, size, lang, opts_json in existing_rows:
+            opts = json.loads(opts_json) if opts_json else {}
+            seg = opts.pop("segment_level", None)
+            if seg:
+                existing_segment_level = seg
+            existing_parts.append((
+                name, size, lang or "auto",
+                json.dumps(opts, sort_keys=True),
+            ))
+        existing_fp = _batch_fingerprint(existing_parts, existing_segment_level)
+
+        if existing_fp == fingerprint:
+            return {
+                "existing_task_group_id": group_id,
+                "existing_task_count": cnt,
+            }
+
+    return None
 
 
 async def _batch_segment_summaries(
@@ -99,18 +190,44 @@ async def _enrich_task_responses(
 
 
 @router.post("", response_model=list[TaskResponse], status_code=201)
-async def create_tasks(body: TaskCreateRequest, db: DbSession, user_id: CurrentUser):
+async def create_tasks(
+    body: TaskCreateRequest, db: DbSession, user_id: CurrentUser,
+    skip_dedup: bool = Query(True, description="Skip duplicate batch detection (set false to enable)"),
+):
     task_count = len(body.items)
     await rate_limiter.check_task_limits(user_id, count=task_count)
 
     file_repo = FileRepository(db)
     task_repo = TaskRepository(db)
-    task_group_id = str(ULID())
-    created_tasks: list[Task] = []
+
+    file_records: list[File] = []
     for item in body.items:
         file_record = await file_repo.get_file(item.file_id, user_id)
         if file_record is None:
             raise HTTPException(status_code=404, detail=f"File not found: {item.file_id}")
+        file_records.append(file_record)
+
+    if not skip_dedup:
+        dup = await _check_duplicate_batch(db, user_id, file_records, body)
+        if dup is not None:
+            logger.warning(
+                "duplicate_batch_blocked",
+                user_id=user_id,
+                existing_group=dup["existing_task_group_id"],
+                file_count=task_count,
+            )
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "Duplicate batch detected: same files already being processed",
+                    "existing_task_group_id": dup["existing_task_group_id"],
+                    "existing_task_count": dup["existing_task_count"],
+                },
+            )
+
+    task_group_id = str(ULID())
+    created_tasks: list[Task] = []
+    for item, file_record in zip(body.items, file_records):
         merged_options = dict(item.options) if item.options else {}
         merged_options["segment_level"] = body.segment_level
         task = Task(

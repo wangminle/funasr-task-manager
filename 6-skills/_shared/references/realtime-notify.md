@@ -83,6 +83,8 @@ python -m cli config set notify.feishu_app_secret xxx
 python -m cli config set notify.default_chat_id oc_xxx
 ```
 
+`FEISHU_CHAT_ID` / `notify.default_chat_id` 仅作为本地手动调试默认路由。Agent/Skill 自动通知必须使用当前会话上下文显式传入 `--chat-id`；私聊还必须传入 `--receive-id-type open_id`。
+
 2. 验证凭据可用：
 
 ```bash
@@ -94,20 +96,20 @@ python -m cli notify auth-check
 ### 发送文本
 
 ```bash
-# 简单文本
-python -m cli notify send --text "⏳ 正在从飞书下载文件..."
+# 简单文本（Agent/Skill 必须显式指定目标）
+python -m cli notify send --text "⏳ 正在从飞书下载文件..." --chat-id oc_xxx
 
 # 指定目标会话（覆盖默认）
 python -m cli notify send --text "✅ 转写完成" --chat-id oc_xxx
 
 # 回复特定消息（线程内回复）
-python -m cli notify send --text "⏳ 处理中..." --reply-to om_xxx
+python -m cli notify send --text "⏳ 处理中..." --chat-id oc_xxx --reply-to om_xxx
 
 # 多行文本（避免 shell 转义问题）
-python -m cli notify send --text-file /tmp/notice.txt
+python -m cli notify send --text-file /tmp/notice.txt --chat-id oc_xxx
 
 # 从 stdin 读取
-echo "批量转写进度：35/50 已完成" | python -m cli notify send --stdin
+echo "批量转写进度：35/50 已完成" | python -m cli notify send --stdin --chat-id oc_xxx
 ```
 
 ### 退出码
@@ -150,19 +152,19 @@ Arguments: {"action": "send", "message": "..."}
 CLI 调用：
 
 ```bash
-python -m cli notify send --text "..." 
+python -m cli notify send --text "..." --chat-id oc_xxx
 ```
 
 工作目录：`3-dev/src/backend`
 
-如果是纯本地开发场景（用户直接看 Agent 输出），可退化为普通 assistant 文本。但如果配置了飞书凭据且有 `FEISHU_CHAT_ID`，应使用 CLI 发送。
+如果是纯本地开发场景（用户直接看 Agent 输出），可退化为普通 assistant 文本。但如果配置了飞书凭据且有当前会话的 `chat_id`，应使用 CLI 发送。不要让 Agent/Skill 依赖默认 `FEISHU_CHAT_ID` 自动路由。
 
 ### Codex
 
 CLI 调用（沙箱环境）：
 
 ```bash
-cd 3-dev/src/backend && python -m cli notify send --text "..."
+cd 3-dev/src/backend && python -m cli notify send --text "..." --chat-id oc_xxx
 ```
 
 注意 Codex 沙箱可能无法访问外网飞书 API。此时 soft-fail 会静默跳过。

@@ -535,7 +535,7 @@ python -m cli config set notify.default_chat_id "oc_xxxxxxxxxxxxxxxxxxxxxxxx"
 
 > **说明**：
 > - `notify.feishu_app_id` / `notify.feishu_app_secret`：与文件下载使用相同的飞书应用凭据即可
-> - `notify.default_chat_id`：Agent 发送通知的默认群聊 ID（从飞书群设置中获取）
+> - `notify.default_chat_id`：CLI 本地手动调试的默认群聊 ID（从飞书群设置中获取）；Agent/Skill 自动通知仍应显式传入本轮会话的 `--chat-id`
 > - 这些值存储在 `~/.asr-cli.yaml` 的 `notify:` 段落中
 
 验证配置是否正确：
@@ -551,10 +551,12 @@ python -m cli notify auth-check
 python -m cli notify send --text "🔔 通知系统测试：如果你看到这条消息，说明 notify 配置成功"
 ```
 
+> 这条测试命令用于验证刚配置的默认 `notify.default_chat_id`。Agent/Skill 工作流中的正式通知必须显式传入 `--chat-id`；私聊还必须传入 `--receive-id-type open_id`。
+
 > **注意**：
 > - 如果 Agent 运行在 OpenClaw 环境中，`send_user_notice()` 会优先使用平台自带的 `message` tool，CLI notify 仅作为 fallback
 > - 即使在 OpenClaw 环境中，也建议配置 CLI notify 凭据作为降级保障
-> - 环境变量 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_CHAT_ID` 可覆盖配置文件中的值
+> - 环境变量 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_CHAT_ID` 可覆盖配置文件中的值；`FEISHU_CHAT_ID` 仅作为本地默认路由，不作为 Agent/Skill 自动通知的隐式目标
 
 ### Phase 7.5：OpenClaw 部署同步检查（OpenClaw 环境强制）
 

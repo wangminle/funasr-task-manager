@@ -41,11 +41,11 @@ send_user_notice(text, filePath=None)
 
 **⚠ 路由验证（强制）：** 每条通知发送后，必须检查 `toolResult.chatId` 是否匹配预期目标（见下方"路由验证机制"）。
 
-### 优先级 2：CLI notify（显式路由）
+### 优先级 2：CLI notify（Agent 显式路由）
 
 条件：无 `message` tool，或 `message` tool 路由验证失败（见下方降级规则），或 `message` tool 连续失败且已配置飞书凭据。
 
-**发送文本（必须携带显式路由参数）：**
+**发送文本（Agent/Skill 必须携带显式路由参数）：**
 
 ```bash
 # 私聊
@@ -64,7 +64,7 @@ python -m cli notify send-file --file "<filePath>" --filename "<display_name>" -
 
 **成功判断：** exit 0 且 stdout 输出 `message_id=om_xxx`
 
-**重要**：CLI notify 调用**必须始终携带显式 `--chat-id` 和 `--receive-id-type`**，禁止依赖环境变量或配置文件中的默认值。这是防止路由错误的最后防线。
+**重要**：CLI 本身支持 `FEISHU_CHAT_ID` / `notify.default_chat_id` 作为本地手动调试的默认目标；但 Agent/Skill 调用 `send_user_notice()` 时必须始终携带显式 `--chat-id`，私聊还必须携带 `--receive-id-type open_id`。默认目标可能残留上一个 session 的会话，不能用于自动化通知。
 
 ### 优先级 3：普通 assistant 文本
 

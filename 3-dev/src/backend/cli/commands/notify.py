@@ -60,6 +60,17 @@ def _get_default_reply_to() -> str | None:
     return os.environ.get("FEISHU_REPLY_TO") or config_store.get("notify.default_reply_to") or None
 
 
+def _resolve_chat_id(chat_id: str | None, strict: bool) -> str | None:
+    """Return explicit --chat-id, or fall back to FEISHU_CHAT_ID / config."""
+    if chat_id:
+        return chat_id
+    default = _get_default_chat_id()
+    if default:
+        return default
+    _soft_fail("必须提供 --chat-id 或设置 FEISHU_CHAT_ID 环境变量", strict)
+    return None
+
+
 def _load_cached_token(app_id: str) -> str | None:
     """Load cached token if valid and matching app_id."""
     if not TOKEN_CACHE_PATH.exists():
@@ -384,17 +395,16 @@ def send(
         _soft_fail("通知内容为空，跳过发送", strict)
         return
 
-    resolved_reply_to = reply_to or (None if chat_id else _get_default_reply_to())
-    resolved_chat_id = chat_id or _get_default_chat_id()
-    if not resolved_chat_id and not resolved_reply_to:
-        _soft_fail("缺少 chat_id (设置 --chat-id / FEISHU_CHAT_ID / notify.default_chat_id，或提供 --reply-to)", strict)
+    resolved_chat_id = _resolve_chat_id(chat_id, strict)
+    if not resolved_chat_id:
         return
+    resolved_reply_to = reply_to
 
     if channel != "feishu":
         _soft_fail(f"渠道 '{channel}' 暂不支持，仅支持 feishu", strict)
         return
 
-    _do_send(content, resolved_chat_id or "", resolved_reply_to, strict, receive_id_type)
+    _do_send(content, resolved_chat_id, resolved_reply_to, strict, receive_id_type)
 
 
 @app.command(name="send-file")
@@ -420,11 +430,10 @@ def send_file(
         _soft_fail(f"渠道 '{channel}' 暂不支持，仅支持 feishu", strict)
         return
 
-    resolved_reply_to = reply_to or (None if chat_id else _get_default_reply_to())
-    resolved_chat_id = chat_id or _get_default_chat_id()
-    if not resolved_chat_id and not resolved_reply_to:
-        _soft_fail("缺少 chat_id (设置 --chat-id / FEISHU_CHAT_ID / notify.default_chat_id，或提供 --reply-to)", strict)
+    resolved_chat_id = _resolve_chat_id(chat_id, strict)
+    if not resolved_chat_id:
         return
+    resolved_reply_to = reply_to
 
     creds = _get_credentials()
     if not creds:
@@ -513,6 +522,4 @@ def auth_check(
         out.error(f"飞书凭据无效: 无法获取 tenant_access_token (app_id: {app_id})")
         raise typer.Exit(1)
 
-    chat_id = _get_default_chat_id()
-    chat_info = f", default_chat_id: {chat_id}" if chat_id else ", default_chat_id: 未设置"
-    typer.echo(f"飞书凭据有效 (app_id: {app_id}, token 已缓存{chat_info})")
+    typer.echo(f"飞书凭据有效 (app_id: {app_id}, token 已缓存)")

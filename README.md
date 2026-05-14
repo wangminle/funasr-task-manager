@@ -20,7 +20,7 @@
 │   ├── 查看批次进度              → python -m cli task list --group <group_id>
 │   ├── 下载批次结果              → python -m cli task result --group <group_id> --format txt,srt
 │   ├── 管理 ASR 服务器           → python -m cli server list / probe / benchmark
-│   ├── 发送渠道实时通知          → python -m cli notify send --text "..."
+│   ├── 发送渠道实时通知          → python -m cli notify send --text "..." --chat-id <chat_id>
 │   ├── 排查系统问题              → python -m cli doctor
 │   └── API 集成开发              → 阅读下方 API 参考
 │
@@ -159,12 +159,12 @@ Agent 体系有两条主要入口：
 适配优先级：
 
 1. 平台原生 `message` tool（OpenClaw / Hermes）：`{"action": "send", "message": "...", "filePath": "..."}`
-2. CLI fallback：`python -m cli notify send --text "..."` 或 `python -m cli notify send-file --file result.txt`
+2. CLI fallback：`python -m cli notify send --text "..." --chat-id <chat_id>` 或 `python -m cli notify send-file --file result.txt --chat-id <chat_id>`
 3. 普通 assistant 文本：仅限用户能直接看到实时输出的纯本地终端场景
 
 **路由验证**：`message` tool 无法指定投递目标，平台上下文在 session 切换时可能滞后。因此每条通知发出后都会验证返回的 `chatId` 是否匹配预期目标（群聊精确匹配 `chat_id`；私聊排除 `oc_` 前缀）。验证失败时自动锁定到 CLI notify 并使用显式路由参数重发，确保"从哪来回哪去"。详见 [通知原语规范](6-skills/_shared/NOTICE-PRIMITIVE.md)。
 
-`notify` CLI 当前支持飞书/Lark 文本通知、话题回复、文件附件、token 缓存、soft-fail / `--strict` 模式。详见下方 [notify — 渠道实时通知（飞书）](#notify--渠道实时通知飞书)。
+`notify` CLI 当前支持飞书/Lark 文本通知、话题回复、文件附件、token 缓存、soft-fail / `--strict` 模式。CLI 允许使用 `FEISHU_CHAT_ID` / `notify.default_chat_id` 作为本地默认目标；Agent/Skill 工作流必须优先传入本轮上下文里的显式 `--chat-id`，避免消息发到上一次会话。详见下方 [notify — 渠道实时通知（飞书）](#notify--渠道实时通知飞书)。
 
 ### 安装 Skills 到 Agent 平台
 
@@ -394,17 +394,17 @@ python -m cli server delete asr-01
 python -m cli notify auth-check
 
 # 发送文本
-python -m cli notify send --text "⏳ 正在从飞书下载文件..."
+python -m cli notify send --text "⏳ 正在从飞书下载文件..." --chat-id oc_xxxxxxxx
 
 # 从文件或 stdin 发送多行文本
-python -m cli notify send --text-file /tmp/notice.txt
-echo "批量转写进度：35/50 已完成" | python -m cli notify send --stdin
+python -m cli notify send --text-file /tmp/notice.txt --chat-id oc_xxxxxxxx
+echo "批量转写进度：35/50 已完成" | python -m cli notify send --stdin --chat-id oc_xxxxxxxx
 
 # 发送结果附件
-python -m cli notify send-file --file /tmp/result.txt --filename "会议记录.txt"
+python -m cli notify send-file --file /tmp/result.txt --filename "会议记录.txt" --chat-id oc_xxxxxxxx
 
 # 回复到指定飞书消息线程
-python -m cli notify send --text "处理中..." --reply-to om_xxxxxxxx
+python -m cli notify send --text "处理中..." --chat-id oc_xxxxxxxx --reply-to om_xxxxxxxx
 
 # 向用户私聊发送（使用 open_id）
 python -m cli notify send --text "转写已完成" --receive-id-type open_id --chat-id ou_xxxxxxxx
@@ -418,6 +418,8 @@ python -m cli notify send --text "转写已完成" --receive-id-type open_id --c
 | 飞书 App Secret | `FEISHU_APP_SECRET` | `notify.feishu_app_secret` |
 | 默认群聊 ID | `FEISHU_CHAT_ID` | `notify.default_chat_id` |
 | 默认回复消息 ID | `FEISHU_REPLY_TO` | `notify.default_reply_to` |
+
+默认群聊 ID 适合本地手动调试；Agent 自动通知应显式传入本次消息上下文中的 `--chat-id` / `--receive-id-type`。
 
 ### 系统命令
 
@@ -515,6 +517,11 @@ curl -X POST http://localhost:15797/api/v1/tasks \
     "items": [{"file_id": "FILE_ID", "language": "zh"}],
     "segment_level": "20m"
   }'
+
+# 开启重复批次检测（默认跳过；task-group submit 会自动启用）
+curl -X POST 'http://localhost:15797/api/v1/tasks?skip_dedup=false' \
+  -H "Content-Type: application/json" \
+  -d '{"items": [{"file_id": "FILE_ID", "language": "zh"}], "segment_level": "10m"}'
 
 # 查看批次状态
 curl http://localhost:15797/api/v1/task-groups/<group_id>
@@ -661,6 +668,9 @@ python -m cli config set api_key dev-token-user1
 
 **Q: 多文件转写是串行还是并行？**
 当你使用 `transcribe` 命令传入多个文件时，所有文件会一次性上传并创建为一个批次，后端调度器会将任务智能分配到所有在线 ASR 服务器并行处理。
+
+**Q: task-group submit 重复执行会怎样？**
+`task-group submit` 默认启用 30 分钟活跃批次去重。若相同文件名、大小、语言、热词/选项和 `segment_level` 的批次仍在运行，CLI 会复用已有 `task_group_id`，避免重复批次抢占服务器 slot。确实需要重新提交同一批文件时，加 `--force`。
 
 **Q: ffprobe 告警可以忽略吗？**
 可以。缺少 ffprobe 时，系统使用文件大小估算音频时长，调度精度略降。安装 ffmpeg 后会自动检测。

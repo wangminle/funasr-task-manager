@@ -47,7 +47,10 @@ description: >
 **CLI fallback（无 message tool 时）：**
 
 ```bash
-python -m cli notify send --text "我将扫描 runtime/agent-local-batch/inbox/ 中的待转写文件..."
+# 群聊
+python -m cli notify send --text "我将扫描 runtime/agent-local-batch/inbox/ 中的待转写文件..." --chat-id "<chat_id>" --reply-to "<reply_to_id>"
+# 私聊
+python -m cli notify send --text "我将扫描 runtime/agent-local-batch/inbox/ 中的待转写文件..." --receive-id-type open_id --chat-id "<open_id>"
 ```
 
 **时序要求**：每条通知必须在对应耗时操作**之前**发送并等待返回成功，然后再执行扫描/提交/轮询等操作。
@@ -143,8 +146,10 @@ curl -sf http://127.0.0.1:15797/health
 | 支持格式 | `.wav` `.mp3` `.mp4` `.flac` `.ogg` `.webm` `.m4a` `.aac` `.wma` `.mkv` `.avi` `.mov` `.pcm` |
 | 跳过隐藏文件 | 跳过以 `.` 开头的文件和系统临时文件（`Thumbs.db`、`.DS_Store`） |
 | 跳过未完成文件 | 文件大小为 0 或 mtime 在 10 秒内变化时暂不提交 |
-| 去重依据 | 文件名 + 文件大小(bytes) + mtime(unix timestamp)，拼接为 `{name}-{size}-{mtime_int}` |
+| 本地去重依据 | 文件名 + 文件大小(bytes) + mtime(unix timestamp)，拼接为 `{name}-{size}-{mtime_int}` |
 | 已完成跳过 | 同目录下最近 manifest 中标记 `SUCCEEDED` 且指纹未变化时跳过 |
+
+> 后端 `task-group submit` 还会启用 30 分钟活跃批次去重，依据为同一用户下的文件名、大小、语言、热词/选项和 `segment_level`。检测到重复时 CLI 返回已有 `task_group_id`，Agent 应当进入监控复用流程，而不是再次提交。
 
 创建批次清单：
 
@@ -209,6 +214,12 @@ python -m cli --output json task-group submit \
 ```
 
 返回 JSON 包含每个 chunk 的 `task_group_id`。
+
+默认去重行为：
+
+- 30 分钟内同一用户、相同文件集和相同识别参数仍有活跃批次时，CLI 会返回已有 `task_group_id`，`total_deduplicated > 0`，退出码仍为 0。
+- 确认需要重新创建独立批次时，追加 `--force`。
+- 如果 submit 命令异常退出、输出损坏或 JSON 解析失败，禁止直接重试。必须先查询近 30 分钟任务组或后端日志确认是否已经创建批次；找到了就复用并监控，确认未创建后再重试。
 
 **分 chunk 提交**（大批量场景）：
 

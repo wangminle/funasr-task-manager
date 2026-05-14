@@ -19,6 +19,15 @@ class APIError(Exception):
         super().__init__(f"HTTP {status_code}: {detail}")
 
 
+class DuplicateBatchError(APIError):
+    """HTTP 409: a recent active batch with the same files already exists."""
+
+    def __init__(self, group_id: str, task_count: int, detail: str = ""):
+        self.group_id = group_id
+        self.task_count = task_count
+        super().__init__(409, detail or f"Duplicate batch: existing group {group_id}")
+
+
 class ASRClient:
     """Thin HTTP client for the ASR Task Manager API."""
 
@@ -113,13 +122,27 @@ class ASRClient:
     # --- tasks ---
     def create_tasks(
         self, items: list[dict], callback: dict | None = None,
-        segment_level: str = "10m",
+        segment_level: str = "10m", skip_dedup: bool = True,
     ) -> list[dict]:
         body: dict[str, Any] = {"items": items}
         if callback:
             body["callback"] = callback
         body["segment_level"] = segment_level
-        return self._check(self._request("post", "/api/v1/tasks", json=body)).json()
+        params: dict[str, Any] = {}
+        if not skip_dedup:
+            params["skip_dedup"] = "false"
+        resp = self._request("post", "/api/v1/tasks", json=body, params=params or None)
+        if resp.status_code == 409:
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+            raise DuplicateBatchError(
+                group_id=data.get("existing_task_group_id", "unknown"),
+                task_count=data.get("existing_task_count", 0),
+                detail=data.get("detail", "Duplicate batch detected"),
+            )
+        return self._check(resp).json()
 
     def list_tasks(
         self, status: str | None = None, search: str | None = None,

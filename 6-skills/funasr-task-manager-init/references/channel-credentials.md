@@ -33,7 +33,7 @@ curl -s -X POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/int
 ## 飞书实时通知配置（notify 子系统）
 
 > 此配置用于 `send_user_notice()` 的 CLI fallback（`python -m cli notify send`）。
-> OpenClaw 环境优先使用平台 `message` tool，CLI notify 作为降级保障。
+> OpenClaw 环境优先使用平台 `message` tool，CLI notify 作为降级保障。CLI 支持默认路由用于本地手动调试；Agent/Skill 自动通知必须显式传入本轮会话的 `--chat-id`。
 
 ### 方式一：通过 CLI config 命令配置（推荐）
 
@@ -44,7 +44,7 @@ cd 3-dev/src/backend
 python -m cli config set notify.feishu_app_id "cli_xxxxxxxxxxxx"
 python -m cli config set notify.feishu_app_secret "xxxxxxxxxxxxxxxxxxxxxxxx"
 
-# 配置默认群聊 ID（Agent 发通知的目标群）
+# 配置默认群聊 ID（本地手动调试使用）
 python -m cli config set notify.default_chat_id "oc_xxxxxxxxxxxxxxxxxxxxxxxx"
 
 # （可选）配置默认回复消息 ID，用于话题内回复
@@ -70,7 +70,7 @@ export FEISHU_CHAT_ID=oc_xxxxxxxxxxxxxxxxxxxxxxxx
 export FEISHU_REPLY_TO=om_xxxxxxxxxxxxxxxxxxxxxxxx  # 可选
 ```
 
-> 环境变量优先级高于配置文件。Agent 启动脚本或 `.env` 文件中设置均可。
+> 环境变量优先级高于配置文件。`FEISHU_CHAT_ID` 适合本地手动调试；Agent/Skill 自动通知仍应从当前消息上下文显式传入 `--chat-id`，避免复用上一轮会话目标。
 
 ### 获取 chat_id 的方法
 
@@ -93,6 +93,8 @@ python -m cli notify send --text "🔔 通知系统测试消息"
 # 带回复消息 ID 的测试（发送到话题内）
 python -m cli notify send --text "话题内回复测试" --reply-to "om_xxxxxxxx"
 ```
+
+> 上述测试命令依赖默认 `notify.default_chat_id` 或 `FEISHU_CHAT_ID`。正式 Agent/Skill fallback 示例应写成 `python -m cli notify send --text "..." --chat-id "oc_xxx"`；私聊写成 `--receive-id-type open_id --chat-id "ou_xxx"`。
 
 ### 故障排查
 

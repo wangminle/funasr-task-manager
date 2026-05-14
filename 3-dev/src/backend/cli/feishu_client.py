@@ -45,16 +45,18 @@ class NotifyRoute:
         reply_to: str | None = None,
         receive_id_type: str = "chat_id",
     ) -> NotifyRoute:
-        """Resolve route from explicit args + environment/config defaults."""
-        resolved_reply_to = reply_to or (None if chat_id else _get_default_reply_to())
-        resolved_chat_id = chat_id or _get_default_chat_id()
-        if not resolved_chat_id and not resolved_reply_to:
+        """Resolve route from explicit args.
+
+        Do not fall back to FEISHU_CHAT_ID / notify.default_chat_id for sends:
+        notification routing must come from the current task's channel context.
+        """
+        if not chat_id:
             raise NotifyError(
-                "缺少 chat_id (设置 --chat-id / FEISHU_CHAT_ID / notify.default_chat_id，或提供 --reply-to)"
+                "必须显式提供 --chat-id；禁止依赖 FEISHU_CHAT_ID 或 notify.default_chat_id 自动路由"
             )
         return cls(
-            chat_id=resolved_chat_id or "",
-            reply_to=resolved_reply_to,
+            chat_id=chat_id,
+            reply_to=reply_to,
             receive_id_type=receive_id_type,
         )
 

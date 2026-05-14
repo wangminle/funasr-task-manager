@@ -63,8 +63,10 @@ Agent 在最终报告中应附上 `notice_log` 摘要，例如"本次共发送 7
 **CLI fallback（无 message tool 时）：**
 
 ```bash
-python -m cli notify send --text "收到 1 个音频文件：tv-report-1.wav"
+python -m cli notify send --text "收到 1 个音频文件：tv-report-1.wav" --chat-id "<chat_id>"
 ```
+
+私聊使用 `--receive-id-type open_id --chat-id "<open_id>"`。
 
 **时序要求**：每条通知必须在对应耗时操作**之前**发送，等待 toolResult 返回 `ok: true` 后再执行下一步。
 

@@ -67,7 +67,7 @@ else:
 | 私聊发消息 | `send --receive-id-type open_id --chat-id ou_xxx` |
 | 私聊发文件 | `send-file --file path --receive-id-type open_id --chat-id ou_xxx` |
 
-**⚠ 显式路由强制规则**：CLI notify 调用**必须始终携带显式 `--chat-id` 和 `--receive-id-type`**，禁止依赖环境变量（`FEISHU_CHAT_ID`）或配置文件（`notify.default_chat_id`）中的默认值。默认值可能残留上一个 session 的目标，导致消息发到错误会话。
+**⚠ Agent 显式路由强制规则**：CLI notify 命令本身支持 `FEISHU_CHAT_ID` / `notify.default_chat_id` 作为本地手动调试默认目标；但 Skill/Agent 自动通知必须始终携带显式 `--chat-id`，私聊还必须携带 `--receive-id-type open_id`。默认值可能残留上一个 session 的目标，导致消息发到错误会话。
 
 ---
 
@@ -77,7 +77,7 @@ else:
 
 ```
 优先级 1：平台原生 message tool（OpenClaw / Hermes）— 需通过路由验证
-优先级 2：CLI notify 命令（python -m cli notify send）— 必须携带显式路由参数
+优先级 2：CLI notify 命令（python -m cli notify send）— Agent 必须携带显式路由参数
 优先级 3：普通 assistant 文本（仅当确认运行在纯本地终端时）
 ```
 
@@ -131,22 +131,26 @@ else:
 **发送文本通知：**
 
 ```bash
-python -m cli notify send --text "⏳ 正在从飞书下载文件..."
+python -m cli notify send --text "⏳ 正在从飞书下载文件..." --chat-id <chat_id>
 ```
+
+私聊使用 `--receive-id-type open_id --chat-id <open_id>`。
 
 **发送多行/复杂文本（避免 shell 转义问题）：**
 
 ```bash
 echo "⏳ 文件预处理中...
   格式: WAV 16kHz 单声道
-  时长: 约 3 分钟" | python -m cli notify send --stdin
+  时长: 约 3 分钟" | python -m cli notify send --stdin --chat-id <chat_id>
 ```
 
 **发送文件附件：**
 
 ```bash
-python -m cli notify send-file --file /tmp/funasr-task-manager/results/会议录音.txt --filename "会议录音.txt"
+python -m cli notify send-file --file /tmp/funasr-task-manager/results/会议录音.txt --filename "会议录音.txt" --chat-id <chat_id>
 ```
+
+> 本地手动调试且已配置默认会话时，可以省略 `--chat-id`；Agent/Skill 发送通知和附件必须携带本次会话的显式路由参数。
 
 **退出码：** 默认 soft-fail（exit 0 + stderr warning）。主流程不因通知失败而中断。
 
