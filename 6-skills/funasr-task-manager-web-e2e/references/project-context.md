@@ -92,9 +92,11 @@
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/v1/task-groups/{group_id}` | 批次概况（total/succeeded/failed 等） |
-| GET | `/api/v1/task-groups/{group_id}/tasks` | 批次内任务列表 |
+| GET | `/api/v1/task-groups/{group_id}/tasks?page_size=500` | 批次内任务列表 |
 | GET | `/api/v1/task-groups/{group_id}/results?format=` | 批次结果（txt/json/srt/zip） |
 | DELETE | `/api/v1/task-groups/{group_id}` | 删除整批 |
+
+注意：`GET /api/v1/tasks` 默认分页大小为 20，浏览器 E2E 做批次完整性断言时必须使用批次端点，不要用默认任务列表推断总数。
 
 ### 节点管理 API
 

@@ -22,6 +22,7 @@ FFPROBE_BIN: str | None = None
 _MAX_CONVERSION_LOCKS = 500
 _conversion_locks: dict[str, asyncio.Lock] = {}
 _locks_guard: asyncio.Lock | None = None
+_WINDOWS_REPLACE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
 
 
 async def _get_path_lock(key: str) -> asyncio.Lock:
@@ -36,6 +37,47 @@ async def _get_path_lock(key: str) -> asyncio.Lock:
                     del _conversion_locks[k]
             _conversion_locks[key] = asyncio.Lock()
         return _conversion_locks[key]
+
+
+async def _replace_path_with_retry(src: str | Path, dst: str | Path, *, op_name: str) -> None:
+    """Atomically replace ``dst`` with ``src``, retrying transient Windows locks.
+
+    On Windows, an ffmpeg process or filesystem scanner can briefly keep a
+    handle open even after ``communicate()`` returns.  A short bounded retry
+    prevents long-audio segmentation from falling back to unsafe whole-file
+    transcription because of a momentary ``WinError 32``.
+    """
+    src_path = str(src)
+    dst_path = str(dst)
+    last_error: OSError | None = None
+
+    for attempt, delay in enumerate((0.0, *_WINDOWS_REPLACE_RETRY_DELAYS), start=1):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            os.replace(src_path, dst_path)
+            if attempt > 1:
+                logger.info(
+                    "atomic_replace_retry_ok",
+                    op=op_name,
+                    src=src_path,
+                    dst=dst_path,
+                    attempts=attempt,
+                )
+            return
+        except OSError as exc:
+            last_error = exc
+            logger.warning(
+                "atomic_replace_retry",
+                op=op_name,
+                src=src_path,
+                dst=dst_path,
+                attempt=attempt,
+                error=str(exc),
+            )
+
+    assert last_error is not None
+    raise last_error
 
 
 def _find_ffmpeg() -> str | None:
@@ -162,7 +204,7 @@ async def ensure_wav(audio_path: str) -> str:
             if tmp_stat.st_size == 0:
                 raise RuntimeError(f"ffmpeg produced empty output: {tmp_path}")
 
-            os.replace(tmp_path, str(out_path))
+            await _replace_path_with_retry(tmp_path, out_path, op_name="ensure_wav")
             logger.info("ffmpeg_conversion_ok", src=audio_path, dst=str(out_path), size=tmp_stat.st_size)
             return str(out_path)
         except BaseException:
@@ -314,7 +356,7 @@ async def ensure_canonical_wav(audio_path: str) -> str:
             if Path(tmp_path).stat().st_size == 0:
                 raise RuntimeError("ffmpeg produced empty canonical WAV output")
 
-            os.replace(tmp_path, str(out_path))
+            await _replace_path_with_retry(tmp_path, out_path, op_name="ensure_canonical_wav")
             logger.info("canonical_wav_ok", src=audio_path, dst=str(out_path))
             return str(out_path)
         except BaseException:
@@ -656,7 +698,7 @@ async def split_wav_segments(
                     f"ffmpeg produced empty output for segment {plan.segment_index}"
                 )
 
-            os.replace(tmp_path, str(final_path))
+            await _replace_path_with_retry(tmp_path, final_path, op_name="split_wav_segment")
             output_paths.append(str(final_path))
 
             logger.info(

@@ -6,6 +6,7 @@ from app.services.audio_preprocessor import (
     SilenceRange,
     SegmentPlan,
     _is_canonical_wav,
+    _replace_path_with_retry,
     _parse_silencedetect_output,
     _find_best_cut,
     plan_segments,
@@ -14,6 +15,31 @@ from app.services.audio_preprocessor import (
 # ---------------------------------------------------------------------------
 # _is_canonical_wav
 # ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+class TestAtomicReplaceRetry:
+    async def test_transient_replace_lock_retries(self, tmp_path, monkeypatch):
+        src = tmp_path / "src.wav"
+        dst = tmp_path / "dst.wav"
+        src.write_bytes(b"new")
+        dst.write_bytes(b"old")
+        real_replace = __import__("os").replace
+        calls = {"count": 0}
+
+        def flaky_replace(src_path, dst_path):
+            calls["count"] += 1
+            if calls["count"] < 3:
+                raise OSError(32, "file is locked")
+            return real_replace(src_path, dst_path)
+
+        monkeypatch.setattr("app.services.audio_preprocessor.os.replace", flaky_replace)
+
+        await _replace_path_with_retry(src, dst, op_name="test")
+
+        assert calls["count"] == 3
+        assert dst.read_bytes() == b"new"
+        assert not src.exists()
+
 
 @pytest.mark.unit
 class TestIsCanonicalWav:

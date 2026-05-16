@@ -1654,6 +1654,103 @@ class TestPreprocessingClaimTimeout:
         assert task.started_at is None, \
             "Stale preprocessing claim should have been released"
 
+    async def test_segmentation_failure_retries_preprocessing_without_whole_file(self, db_engine, monkeypatch):
+        from app.config import settings
+
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+
+        async with session_factory() as session:
+            session.add(_file("f-long", duration_sec=11_726))
+            task = _task("t-long", "f-long", TaskStatus.PREPROCESSING)
+            session.add(task)
+            await session.commit()
+
+        runner = BackgroundTaskRunner()
+
+        async def _fail_segments(*_args, **_kwargs):
+            raise OSError(32, "file is locked")
+
+        monkeypatch.setattr(runner, "_create_segments_for_task", _fail_segments)
+        runner.preprocessing_delay_seconds = 0
+
+        await runner._promote_preprocessing_tasks()
+
+        async with session_factory() as session:
+            task = (await session.execute(
+                select(Task).where(Task.task_id == "t-long")
+            )).scalar_one()
+
+        assert task.status == TaskStatus.PREPROCESSING.value
+        assert task.error_code == "SEGMENTATION_RETRY_PENDING"
+        assert task.retry_count == 1
+        assert task.retry_count < settings.max_retry_count
+        assert task.assigned_server_id is None
+
+    async def test_segmentation_failure_marks_failed_after_retry_limit(self, db_engine, monkeypatch):
+        from app.config import settings
+
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+        enqueue_calls: list[tuple[str, str, str | None]] = []
+        deliver_calls: list[str] = []
+        completed_users: list[str] = []
+
+        async def _record_completed(user_id: str):
+            completed_users.append(user_id)
+
+        monkeypatch.setattr(
+            "app.services.task_runner.rate_limiter.record_task_completed",
+            _record_completed,
+        )
+
+        async with session_factory() as session:
+            session.add(_file("f-long", duration_sec=11_726))
+            task = _task("t-long", "f-long", TaskStatus.PREPROCESSING)
+            task.retry_count = settings.max_retry_count
+            task.callback_url = "https://example.com/callback"
+            task.callback_secret = "secret"
+            session.add(task)
+            await session.commit()
+
+        runner = BackgroundTaskRunner()
+
+        class FakeCallbackWorker:
+            async def enqueue(self, _session, task, _event_id, status, error_message=None):
+                enqueue_calls.append((task.task_id, status.value, error_message))
+                return SimpleNamespace(outbox_id="outbox-segmentation-failed")
+
+            async def try_deliver(self, outbox_id, _secret):
+                deliver_calls.append(outbox_id)
+
+        runner._callback_worker = FakeCallbackWorker()
+
+        async def _fail_segments(*_args, **_kwargs):
+            raise OSError(32, "file is locked")
+
+        monkeypatch.setattr(runner, "_create_segments_for_task", _fail_segments)
+        runner.preprocessing_delay_seconds = 0
+
+        await runner._promote_preprocessing_tasks()
+
+        async with session_factory() as session:
+            task = (await session.execute(
+                select(Task).where(Task.task_id == "t-long")
+            )).scalar_one()
+
+        assert task.status == TaskStatus.FAILED.value
+        assert task.error_code == "SEGMENTATION_FAILED"
+        assert task.retry_count == settings.max_retry_count
+        assert task.assigned_server_id is None
+        assert task.started_at is None
+        assert enqueue_calls == [(
+            "t-long",
+            TaskStatus.FAILED.value,
+            task.error_message,
+        )]
+        assert deliver_calls == ["outbox-segmentation-failed"]
+        assert completed_users == ["test-user"]
+
 
 @pytest.mark.unit
 class TestFrozenTaskDetection:

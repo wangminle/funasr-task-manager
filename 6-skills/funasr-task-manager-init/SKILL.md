@@ -7,7 +7,7 @@ description: >
   services for the first time.
 ---
 
-> **适配项目版本**：V0.4.24-Build0453-20260514
+> **适配项目版本**：V0.4.25-Build0454-20260516
 
 # 环境初始化与启动
 

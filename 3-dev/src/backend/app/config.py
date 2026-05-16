@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     model_config = {"env_prefix": "ASR_", "env_file": ".env", "env_file_encoding": "utf-8"}
 
     app_name: str = "ASR Task Manager"
-    app_version: str = "0.4.24"
+    app_version: str = "0.4.25"
     debug: bool = False
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "console"

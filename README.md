@@ -228,6 +228,17 @@ runtime/storage/downloads/
 └── ...
 ```
 
+### 当前稳定性验证
+
+V0.4.25 已在 2026-05-16 使用同一组 45 个本地音视频文件做过连续两轮批量转写验证：
+
+| 批次 | 结果 | 总音频时长 | 墙钟耗时 | 加速比 | 异常 |
+|------|------|------------|----------|--------|------|
+| 第三轮 | 45/45 成功 | 486.72 分钟 | 426.5 秒 | 68.47x | 0 失败 / 0 重试 / 0 错误标记 |
+| 第四轮 | 45/45 成功 | 486.72 分钟 | 424.9 秒 | 68.73x | 0 失败 / 0 重试 / 0 错误标记 |
+
+两轮输出目录分别为 `runtime/agent-local-batch/outputs/local-20260516/` 和 `runtime/agent-local-batch/outputs/local-20260516-v2/`，均生成 45 个结果文件，文件名和内容哈希一致。该结论表示本地 45 文件批量转写主路径已较稳定；服务下线恢复、故障注入、更多超长文件混合批次仍需单独验证。
+
 ### API 批量模式
 
 一次请求提交多个任务：
@@ -464,7 +475,7 @@ python -m cli config list
 | GET | `/api/v1/files/{file_id}` | 查询文件元信息 |
 | **任务** | | |
 | POST | `/api/v1/tasks` | 创建转写任务（支持批量） |
-| GET | `/api/v1/tasks` | 任务列表（分页/状态筛选/搜索/按批次） |
+| GET | `/api/v1/tasks` | 任务列表（分页/状态筛选/搜索/按批次；默认 20，`page_size` 最大 500） |
 | GET | `/api/v1/tasks/{task_id}` | 任务详情 |
 | POST | `/api/v1/tasks/{task_id}/cancel` | 取消任务 |
 | GET | `/api/v1/tasks/{task_id}/result?format=` | 下载结果（json/txt/srt） |
@@ -683,7 +694,9 @@ python -m cli config set api_key dev-token-user1
 当前统一使用 `3-dev/benchmark/samples/` 下的 `test.mp4` 和 `tv-report-1.wav`（已纳入版本控制，克隆即可用）。`probe` 仅做 WebSocket 连通性探测，不发送真实音频、不计算 RTF；`benchmark` 使用上述两个真实样本执行端到端转写来测量 RTF。
 
 **Q: 如何查看某个批次的所有任务？**
-`python -m cli task list --group <group_id>` 或 `curl http://localhost:15797/api/v1/task-groups/<group_id>/tasks`
+优先使用批次端点：`python -m cli task list --group <group_id>` 或 `curl 'http://localhost:15797/api/v1/task-groups/<group_id>/tasks?page_size=500'`。
+
+注意：通用任务列表 `GET /api/v1/tasks` 默认分页大小是 20，只适合看最近任务。批量统计不要直接用默认 `/api/v1/tasks` 结果推断完整批次，否则 45/180 这类批次会被截断。
 
 **Q: 如何一次性下载所有结果？**
 `python -m cli task result --group <group_id> --format txt,srt` 会把所有格式下载到 `runtime/storage/downloads/` 并生成 `batch-summary.json` 摘要文件；如果你只想导出副本到别处，再显式指定 `--output-dir`。

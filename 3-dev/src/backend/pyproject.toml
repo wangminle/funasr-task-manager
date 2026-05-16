@@ -1,6 +1,6 @@
 [project]
 name = "asr-task-manager"
-version = "0.4.24"
+version = "0.4.25"
 description = "ASR Task Transit Adapter Layer - centralized offline speech transcription management"
 requires-python = ">=3.11"
 dependencies = [

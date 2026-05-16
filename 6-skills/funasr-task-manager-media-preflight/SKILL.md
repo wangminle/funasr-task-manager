@@ -7,7 +7,7 @@ description: >
   committing, or checking ffmpeg/ffprobe availability.
 ---
 
-> **适配项目版本**：V0.4.24-Build0453-20260514
+> **适配项目版本**：V0.4.25-Build0454-20260516
 
 # 媒体文件预检查
 

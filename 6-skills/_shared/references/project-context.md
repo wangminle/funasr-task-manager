@@ -3,7 +3,7 @@
 > **唯一事实源**：各 skill 的 `references/project-context.md` 应 symlink 或引用此文件。
 > 仅在此处维护，避免多处同步。
 >
-> **适配项目版本**：V0.4.24-Build0453-20260514（Alembic 迁移至 007）
+> **适配项目版本**：V0.4.25-Build0454-20260516（Alembic 迁移至 007）
 
 ## 关键路径
 
@@ -36,6 +36,7 @@
 | GET | `/api/v1/tasks/{id}/result` | 获取转写结果 | 普通 API Key |
 | GET | `/api/v1/tasks/{id}/progress` | SSE 实时进度 | 普通 API Key |
 | GET | `/api/v1/task-groups/{id}` | 批次概况 | 普通 API Key |
+| GET | `/api/v1/task-groups/{id}/tasks` | 批次任务列表 | 普通 API Key |
 | GET | `/api/v1/task-groups/{id}/results` | 批次结果（`format` 四选一：`json` / `txt` / `srt` / `zip`） | 普通 API Key |
 | GET | `/api/v1/servers` | 服务器列表 | **AdminUser** |
 | POST | `/api/v1/servers/{id}/benchmark` | 单节点 benchmark | **AdminUser** |
@@ -64,6 +65,8 @@ PENDING → PREPROCESSING → QUEUED → DISPATCHED → TRANSCRIBING → SUCCEED
 调度器使用 LPT/EFT + 槽位队列预规划 + work stealing。分段任务参与同一 PlanPool，但受单个父任务的段级并发上限约束；若 work stealing 的最佳 segment 候选暂时达到上限，调度器会在本轮跳过它继续寻找其它候选。
 
 批次概况接口 `GET /api/v1/task-groups/{id}` 的 `scheduling.idle_slot_seconds` 按 `wall_clock × ONLINE+enabled 总并发 - busy_processing_seconds` 估算，完全空闲但可用的服务器也计入总 slot；当前无可用服务器时，退回按本批次已分配过的服务器容量估算。
+
+批量任务统计必须使用 `GET /api/v1/task-groups/{id}/tasks?page_size=500` 或 CLI `task-group status`。通用任务列表 `GET /api/v1/tasks` 默认分页大小为 20，不可用默认响应推断完整批次。
 
 ### 服务器状态
 

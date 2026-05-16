@@ -8,7 +8,7 @@ description: >
   normal transcription — missing rtf_baseline should use default RTF.
 ---
 
-> **适配项目版本**：V0.4.24-Build0453-20260514
+> **适配项目版本**：V0.4.25-Build0454-20260516
 
 # 服务器能力校准
 

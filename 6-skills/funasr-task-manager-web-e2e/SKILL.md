@@ -3,7 +3,7 @@ name: funasr-task-manager-web-e2e
 description: Build, run, or maintain browser-based end-to-end tests for the funasr-task-manager project. Use when Codex needs to simulate a real user dragging audio or video files into the web upload page, creating a batch of transcription tasks, waiting for scheduler execution, and validating that the system returns reasonable recognition results with saved test artifacts.
 ---
 
-> **适配项目版本**：V0.4.24-Build0453-20260514
+> **适配项目版本**：V0.4.25-Build0454-20260516
 
 # FunASR Task Manager 浏览器 E2E 测试
 

@@ -6,16 +6,22 @@
 ## 版本要求
 
 <!-- cli_min_version: 0.1.0 -->
-<!-- project_version: V0.4.24-Build0453-20260514 -->
+<!-- project_version: V0.4.25-Build0454-20260516 -->
 
 | 组件 | 当前版本 | 最低版本 | 说明 |
 |------|---------|---------|------|
-| 项目版本 | `V0.4.24-Build0453` | — | 含取消/急停恢复、admin active-slots、调度恢复修复与迁移 007 |
-| CLI (`python -m cli`) | `0.4.24` | `>= 0.1.0` | 需要 `notify` 子命令（含 `send`、`send-file`、`auth-check`）、`admin` 子命令和 `--receive-id-type` 参数 |
+| 项目版本 | `V0.4.25-Build0454` | — | 含 45 文件本地批量转写双轮稳定性验证、取消/急停恢复、admin active-slots、调度恢复修复与迁移 007 |
+| CLI (`python -m cli`) | `0.4.25` | `>= 0.1.0` | 需要 `notify` 子命令（含 `send`、`send-file`、`auth-check`）、`admin` 子命令和 `--receive-id-type` 参数 |
 | Backend API | — | `>= 1.0.0` | 需要 `/health`、`/tasks`、`/task-groups` 端点 |
 | Python | — | `>= 3.11` | CLI 依赖 `match` 语法和 `asyncio` 特性；pyproject.toml 声明 `requires-python = ">=3.11"` |
 | ffprobe / ffmpeg | — | `>= 5.0` | 音视频预检和转码；当前工作流要求预检阶段可用 `ffprobe`，避免未安装时直接转写失败 |
 | Alembic 迁移 | `007` | head | 当前 head 包含 `007_add_run_generation.py`，运行最新后端前需迁移至 head |
+
+### V0.4.25 稳定性验证口径
+
+2026-05-16 使用同一组 45 个本地音视频文件完成连续两轮批量转写验证：第三轮 45/45 成功，426.5 秒，68.47x；第四轮 45/45 成功，424.9 秒，68.73x。两轮均为 0 失败、0 重试、0 错误标记，输出目录各 45 个结果文件且内容哈希一致。
+
+该结论仅覆盖当前三台在线 FunASR 节点下的本地批量转写主路径。服务下线恢复、故障注入、更多超长文件混合批次仍需按专项测试执行。
 
 > **版本检查时机**：`funasr-task-manager-init` Phase 7.5 会自动检查 CLI 版本一致性。若版本不满足，Agent 应提示用户重新执行部署同步。
 
@@ -151,6 +157,8 @@ PENDING → PREPROCESSING → QUEUED → DISPATCHED → TRANSCRIBING → SUCCEED
 | GET | `/api/v1/task-groups/{id}/tasks` | 任务组内任务列表 |
 | GET | `/api/v1/task-groups/{id}/results` | 任务组结果批量下载 |
 | GET | `/api/v1/servers` | 服务器列表（Admin） |
+
+> **分页注意**：`GET /api/v1/tasks` 默认只返回 20 条。批量任务统计必须使用 `GET /api/v1/task-groups/{id}/tasks?page_size=500` 或 CLI `task-group status`，不要用默认任务列表推断完整批次。
 
 ### task-group CLI 短命令
 

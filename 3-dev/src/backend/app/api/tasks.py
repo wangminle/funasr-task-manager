@@ -254,8 +254,17 @@ async def list_tasks(
     search: str | None = Query(None),
     group: str | None = Query(None, description="Filter by task_group_id"),
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(20, ge=1, le=500, description="Items per page; 500 max, auto-raises to group total when group filter is active"),
 ):
+    # When filtering by task_group_id, default to returning all tasks in that group
+    if group and page_size == 20:
+        count_stmt = select(func.count()).select_from(
+            select(Task).where(Task.task_group_id == group, Task.user_id == user_id).subquery()
+        )
+        group_total = (await db.execute(count_stmt)).scalar() or 0
+        if group_total > 20:
+            page_size = min(group_total, 500)
+
     task_repo = TaskRepository(db)
     tasks, total = await task_repo.list_tasks(
         user_id, status=status, search=search, group=group, page=page, page_size=page_size,

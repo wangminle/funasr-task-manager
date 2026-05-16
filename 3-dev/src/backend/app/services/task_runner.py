@@ -391,15 +391,16 @@ class BackgroundTaskRunner:
                 try:
                     await self._create_segments_for_task(task_id, audio_path, seg_level=seg_level)
                 except Exception as e:
-                    logger.warning(
-                        "segmentation_failed_fallback_to_whole_file",
+                    logger.error(
+                        "segmentation_failed_marking_task_failed",
                         task_id=task_id,
                         segment_level=seg_level,
                         duration_sec=duration_sec,
                         error=str(e),
-                        hint="User requested segmentation but it failed; "
-                             "proceeding with unsegmented whole-file transcription",
+                        hint="Long audio requires segmentation; refusing unsafe whole-file fallback",
                     )
+                    await self._handle_segmentation_failure(task_id, str(e))
+                    continue
 
             try:
                 async with async_session_factory() as session:
@@ -413,6 +414,58 @@ class BackgroundTaskRunner:
                 logger.warning("promote_task_failed", task_id=task_id, error=str(e))
 
         self._request_dispatch()
+
+    async def _handle_segmentation_failure(self, task_id: str, error: str) -> None:
+        """Retry long-audio segmentation failures before failing the task."""
+        pending_delivery = None
+        completed_user_id: str | None = None
+        async with async_session_factory() as session:
+            repo = TaskRepository(session)
+            task = await repo.get_task(task_id)
+            if not task:
+                return
+            task.started_at = None
+            task.assigned_server_id = None
+
+            if task.retry_count < settings.max_retry_count:
+                task.retry_count += 1
+                task.error_code = "SEGMENTATION_RETRY_PENDING"
+                task.error_message = (
+                    "Long-audio segmentation failed before dispatch; retrying segmentation "
+                    f"without whole-file fallback: {error}"
+                )
+                logger.info(
+                    "segmentation_retry_queued",
+                    task_id=task_id,
+                    retry=task.retry_count,
+                    max_retries=settings.max_retry_count,
+                )
+            elif task.can_transition_to(TaskStatus.FAILED):
+                error_message = (
+                    "Long-audio segmentation failed before dispatch after retries; "
+                    f"whole-file fallback is disabled to avoid ASR server timeout: {error}"
+                )
+                task.error_code = "SEGMENTATION_FAILED"
+                task.error_message = error_message
+                event = await repo.update_task_status(task, TaskStatus.FAILED)
+                outbox = await self._callback_worker.enqueue(
+                    session,
+                    task,
+                    event.event_id,
+                    TaskStatus.FAILED,
+                    error_message=error_message,
+                )
+                if outbox is not None:
+                    pending_delivery = (outbox.outbox_id, task.callback_secret)
+                completed_user_id = task.user_id
+            await session.commit()
+        if completed_user_id:
+            await rate_limiter.record_task_completed(completed_user_id)
+        if not self._plan_pool:
+            self._clear_plan_pool(reset_server_ids=False)
+        self._request_dispatch()
+        if pending_delivery:
+            await self._callback_worker.try_deliver(*pending_delivery)
 
     async def _create_segments_for_task(
         self, task_id: str, audio_path: str, *, seg_level: str = "10m",

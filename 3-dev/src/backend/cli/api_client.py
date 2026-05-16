@@ -147,9 +147,10 @@ class ASRClient:
     def list_tasks(
         self, status: str | None = None, search: str | None = None,
         group: str | None = None,
-        page: int = 1, page_size: int = 20,
+        page: int = 1, page_size: int | None = None,
     ) -> dict:
-        params: dict[str, Any] = {"page": page, "page_size": page_size}
+        effective_page_size = page_size if page_size is not None else (500 if group else 20)
+        params: dict[str, Any] = {"page": page, "page_size": effective_page_size}
         if status:
             params["status"] = status
         if search:
