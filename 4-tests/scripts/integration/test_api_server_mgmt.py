@@ -3,6 +3,7 @@
 Tests probe, benchmark, update endpoints, and NDJSON streaming contracts.
 """
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -190,6 +191,60 @@ class TestNDJSONStreamingContract:
             final = next(e for e in events if e["type"] == "benchmark_result")
             assert "data" in final
 
+    async def test_single_benchmark_rejects_overlapping_same_server(self, client):
+        """A second benchmark for the same server should fail fast instead of double-loading ASR."""
+        sid = await _register_server(client, "asr-bench-lock-01")
+        bench_result = _make_mock_benchmark_result()
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def mock_benchmark(host, port, *, timeout=900.0, progress_callback=None, use_ssl=True):
+            started.set()
+            if progress_callback:
+                await progress_callback({"type": "benchmark_start", "total_phases": 2, "samples": ["test.mp4"]})
+            await release.wait()
+            return bench_result
+
+        with patch("app.api.servers.benchmark_server_full_with_ssl_fallback", side_effect=mock_benchmark):
+            first = asyncio.create_task(client.post(f"/api/v1/servers/{sid}/benchmark"))
+            try:
+                await asyncio.wait_for(started.wait(), timeout=1.0)
+                second = await client.post(f"/api/v1/servers/{sid}/benchmark")
+                assert second.status_code == 409
+                assert "Benchmark already running" in second.json()["detail"]
+            finally:
+                release.set()
+            first_resp = await first
+            assert first_resp.status_code == 200
+
+    async def test_single_benchmark_rejects_overlapping_same_physical_endpoint(self, client):
+        """Different server IDs sharing host:port should still be protected by one endpoint lock."""
+        sid1 = await _register_server(client, "asr-bench-endpoint-01", port=10095)
+        sid2 = await _register_server(client, "asr-bench-endpoint-02", port=10095)
+        bench_result = _make_mock_benchmark_result()
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def mock_benchmark(host, port, *, timeout=900.0, progress_callback=None, use_ssl=True):
+            started.set()
+            if progress_callback:
+                await progress_callback({"type": "benchmark_start", "total_phases": 2, "samples": ["test.mp4"]})
+            await release.wait()
+            return bench_result
+
+        with patch("app.api.servers.benchmark_server_full_with_ssl_fallback", side_effect=mock_benchmark):
+            first = asyncio.create_task(client.post(f"/api/v1/servers/{sid1}/benchmark"))
+            try:
+                await asyncio.wait_for(started.wait(), timeout=1.0)
+                second = await client.post(f"/api/v1/servers/{sid2}/benchmark")
+                assert second.status_code == 409
+                assert "Benchmark already running" in second.json()["detail"]
+                assert "203.0.113.14:10095" in second.json()["detail"]
+            finally:
+                release.set()
+            first_resp = await first
+            assert first_resp.status_code == 200
+
     async def test_batch_benchmark_returns_ndjson(self, client):
         """POST /servers/benchmark returns NDJSON stream ending with all_complete."""
         probe_caps = _make_mock_probe_caps()
@@ -220,3 +275,29 @@ class TestNDJSONStreamingContract:
             final = next(e for e in events if e["type"] == "all_complete")
             assert "results" in final["data"]
             assert "capacity_comparison" in final["data"]
+
+    async def test_batch_benchmark_skips_duplicate_physical_endpoint(self, client):
+        """Full benchmark should not run twice against the same physical ASR endpoint."""
+        probe_caps = _make_mock_probe_caps()
+
+        async def mock_probe(host, port, *, use_ssl=True, level=None, timeout=8.0):
+            return probe_caps
+
+        with patch("app.api.servers.probe_server", side_effect=mock_probe):
+            await _register_server(client, "asr-batch-dup-01", port=10095)
+            await _register_server(client, "asr-batch-dup-02", port=10095)
+
+        bench_result = _make_mock_benchmark_result()
+
+        async def mock_benchmark(host, port, *, timeout=900.0, progress_callback=None, use_ssl=True):
+            if progress_callback:
+                await progress_callback({"type": "benchmark_start", "total_phases": 2, "samples": ["test.mp4"]})
+            return bench_result
+
+        with patch("app.api.servers.benchmark_server_full_with_ssl_fallback", side_effect=mock_benchmark) as mocked:
+            resp = await client.post("/api/v1/servers/benchmark")
+            assert resp.status_code == 200
+            events = _parse_ndjson(resp.text)
+            start = next(e for e in events if e["type"] == "all_benchmark_start")
+            assert start["server_ids"] == ["asr-batch-dup-01"]
+            assert mocked.call_count == 1

@@ -4,6 +4,7 @@ All server management routes require admin authentication.
 """
 
 import asyncio
+import contextlib
 import json
 from typing import Annotated
 
@@ -33,6 +34,34 @@ logger = get_logger(__name__)
 AdminUser = Annotated[str, Depends(verify_admin)]
 
 router = APIRouter(prefix="/api/v1/servers", tags=["servers"])
+
+_benchmark_registry_lock = asyncio.Lock()
+_active_benchmark_endpoints: set[str] = set()
+
+
+def _benchmark_endpoint_key(host: str, port: int) -> str:
+    """Return the physical ASR endpoint key used for benchmark mutual exclusion."""
+    return f"{host.strip().lower()}:{port}"
+
+
+async def _reserve_benchmark_endpoints(endpoint_keys: list[str]) -> None:
+    """Reserve ASR endpoints so overlapping benchmarks do not double-load a node."""
+    unique_keys = list(dict.fromkeys(endpoint_keys))
+    async with _benchmark_registry_lock:
+        conflicts = sorted(key for key in unique_keys if key in _active_benchmark_endpoints)
+        if conflicts:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Benchmark already running for endpoint(s): {', '.join(conflicts)}",
+            )
+        _active_benchmark_endpoints.update(unique_keys)
+
+
+async def _release_benchmark_endpoints(endpoint_keys: list[str]) -> None:
+    unique_keys = list(dict.fromkeys(endpoint_keys))
+    async with _benchmark_registry_lock:
+        for key in unique_keys:
+            _active_benchmark_endpoints.discard(key)
 
 
 @router.post("", response_model=ServerResponse, status_code=201)
@@ -74,17 +103,14 @@ async def register_server(body: ServerRegisterRequest, db: DbSession, admin: Adm
         await db.commit()
         host, port, sid = server.host, server.port, body.server_id
         server_data = ServerResponse.model_validate(server).model_dump(mode="json")
+        endpoint_key = _benchmark_endpoint_key(host, port)
 
         async def generate():
             from app.storage.database import async_session_factory
 
             progress_queue: asyncio.Queue[dict] = asyncio.Queue()
-
-            yield json.dumps({
-                "type": "server_registered",
-                "server_id": sid,
-                "data": server_data,
-            }, ensure_ascii=False) + "\n"
+            task: asyncio.Task | None = None
+            reserved = False
 
             async def on_progress(event: dict):
                 event["server_id"] = sid
@@ -132,19 +158,45 @@ async def register_server(body: ServerRegisterRequest, db: DbSession, admin: Adm
                     "data": _build_benchmark_item(sid, bench).model_dump(mode="json"),
                 })
 
-            task = asyncio.create_task(run_benchmark())
+            try:
+                yield json.dumps({
+                    "type": "server_registered",
+                    "server_id": sid,
+                    "data": server_data,
+                }, ensure_ascii=False) + "\n"
 
-            while True:
                 try:
-                    event = await asyncio.wait_for(progress_queue.get(), timeout=300)
-                except asyncio.TimeoutError:
-                    yield json.dumps({"type": "keepalive"}, ensure_ascii=False) + "\n"
-                    continue
-                yield json.dumps(event, ensure_ascii=False) + "\n"
-                if event["type"] in ("benchmark_result", "benchmark_error"):
-                    break
+                    await _reserve_benchmark_endpoints([endpoint_key])
+                    reserved = True
+                except HTTPException as exc:
+                    yield json.dumps({
+                        "type": "benchmark_error",
+                        "server_id": sid,
+                        "error": str(exc.detail),
+                    }, ensure_ascii=False) + "\n"
+                    return
 
-            await task
+                task = asyncio.create_task(run_benchmark())
+
+                while True:
+                    try:
+                        event = await asyncio.wait_for(progress_queue.get(), timeout=300)
+                    except asyncio.TimeoutError:
+                        yield json.dumps({"type": "keepalive"}, ensure_ascii=False) + "\n"
+                        continue
+                    yield json.dumps(event, ensure_ascii=False) + "\n"
+                    if event["type"] in ("benchmark_result", "benchmark_error"):
+                        break
+
+                await task
+            finally:
+                if task is not None and not task.done():
+                    logger.warning("server_register_benchmark_client_disconnected", server_id=sid)
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+                if reserved:
+                    await _release_benchmark_endpoints([endpoint_key])
 
         return StreamingResponse(
             generate(),
@@ -178,7 +230,21 @@ async def benchmark_all_servers(db: DbSession, admin: AdminUser):
     if not online_servers:
         raise HTTPException(status_code=422, detail="No online servers to benchmark")
 
-    server_list = [(s.server_id, s.host, s.port) for s in online_servers]
+    server_list = []
+    seen_endpoints: set[str] = set()
+    for server in online_servers:
+        endpoint_key = _benchmark_endpoint_key(server.host, server.port)
+        if endpoint_key in seen_endpoints:
+            logger.warning(
+                "benchmark_duplicate_endpoint_skip",
+                server_id=server.server_id,
+                endpoint=endpoint_key,
+            )
+            continue
+        seen_endpoints.add(endpoint_key)
+        server_list.append((server.server_id, server.host, server.port, endpoint_key))
+
+    await _reserve_benchmark_endpoints([endpoint_key for _, _, _, endpoint_key in server_list])
 
     async def generate():
         from app.storage.database import async_session_factory
@@ -187,104 +253,118 @@ async def benchmark_all_servers(db: DbSession, admin: AdminUser):
         bench_results: dict[str, ServerBenchmarkItem] = {}
         completed: set[str] = set()
         total = len(server_list)
+        tasks: list[asyncio.Task] = []
 
-        yield json.dumps({
-            "type": "all_benchmark_start",
-            "server_ids": [sid for sid, _, _ in server_list],
-            "total_servers": total,
-        }, ensure_ascii=False) + "\n"
+        try:
+            yield json.dumps({
+                "type": "all_benchmark_start",
+                "server_ids": [sid for sid, _, _, _ in server_list],
+                "total_servers": total,
+            }, ensure_ascii=False) + "\n"
 
-        async def bench_one(sid: str, host: str, port: int):
-            async def on_progress(event: dict):
-                event["server_id"] = sid
-                await progress_queue.put(event)
+            async def bench_one(sid: str, host: str, port: int):
+                async def on_progress(event: dict):
+                    event["server_id"] = sid
+                    await progress_queue.put(event)
 
-            try:
-                bench = await benchmark_server_full_with_ssl_fallback(
-                    host, port, timeout=900.0,
-                    progress_callback=on_progress,
-                )
-            except (FileNotFoundError, ValueError) as exc:
+                try:
+                    bench = await benchmark_server_full_with_ssl_fallback(
+                        host, port, timeout=900.0,
+                        progress_callback=on_progress,
+                    )
+                except (FileNotFoundError, ValueError) as exc:
+                    await progress_queue.put({
+                        "type": "server_error",
+                        "server_id": sid,
+                        "error": f"Benchmark 配置错误: {exc}",
+                    })
+                    return
+                except Exception as exc:
+                    await progress_queue.put({
+                        "type": "server_error",
+                        "server_id": sid,
+                        "error": str(exc),
+                    })
+                    return
+
+                async with async_session_factory() as session:
+                    s_repo = ServerRepository(session)
+                    srv = await s_repo.get_server(sid)
+                    if srv:
+                        if not bench.reachable:
+                            srv.status = ServerStatus.OFFLINE
+                            logger.warning("benchmark_server_unreachable",
+                                           server_id=sid, error=bench.error)
+                        else:
+                            _apply_benchmark_result(srv, bench)
+                        await session.commit()
+
+                item = _build_benchmark_item(sid, bench)
+                bench_results[sid] = item
                 await progress_queue.put({
-                    "type": "server_error",
+                    "type": "server_benchmark_done",
                     "server_id": sid,
-                    "error": f"Benchmark 配置错误: {exc}",
+                    "completed": len(bench_results),
+                    "total": total,
+                    "data": item.model_dump(mode="json"),
                 })
-                return
-            except Exception as exc:
-                await progress_queue.put({
-                    "type": "server_error",
-                    "server_id": sid,
-                    "error": str(exc),
-                })
-                return
+
+            tasks = [asyncio.create_task(bench_one(sid, h, p))
+                     for sid, h, p, _ in server_list]
+
+            while len(completed) < total:
+                try:
+                    event = await asyncio.wait_for(progress_queue.get(), timeout=300)
+                except asyncio.TimeoutError:
+                    yield json.dumps({"type": "keepalive"}, ensure_ascii=False) + "\n"
+                    continue
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+                if event["type"] in ("server_benchmark_done", "server_error"):
+                    completed.add(event["server_id"])
+
+            await asyncio.gather(*tasks, return_exceptions=True)
 
             async with async_session_factory() as session:
                 s_repo = ServerRepository(session)
-                srv = await s_repo.get_server(sid)
-                if srv:
-                    if not bench.reachable:
-                        srv.status = ServerStatus.OFFLINE
-                        logger.warning("benchmark_server_unreachable",
-                                       server_id=sid, error=bench.error)
-                    else:
-                        _apply_benchmark_result(srv, bench)
-                    await session.commit()
+                all_srvs = await s_repo.list_all_servers()
+                still_online = [s for s in all_srvs if s.status == ServerStatus.ONLINE]
 
-            item = _build_benchmark_item(sid, bench)
-            bench_results[sid] = item
-            await progress_queue.put({
-                "type": "server_benchmark_done",
-                "server_id": sid,
-                "completed": len(bench_results),
-                "total": total,
-                "data": item.model_dump(mode="json"),
-            })
+            profiles = [
+                ServerProfile(
+                    server_id=s.server_id, host=s.host, port=s.port,
+                    max_concurrency=s.max_concurrency,
+                    rtf_baseline=s.rtf_baseline,
+                    throughput_rtf=s.throughput_rtf,
+                    penalty_factor=s.penalty_factor,
+                )
+                for s in still_online
+            ]
+            comparison = global_scheduler.compare_server_capacity(profiles)
 
-        tasks = [asyncio.create_task(bench_one(sid, h, p))
-                 for sid, h, p in server_list]
+            results_list = [item.model_dump(mode="json") for item in bench_results.values()]
+            logger.info("benchmark_all_complete",
+                        servers=list(bench_results.keys()),
+                        comparison=comparison)
 
-        while len(completed) < total:
-            try:
-                event = await asyncio.wait_for(progress_queue.get(), timeout=300)
-            except asyncio.TimeoutError:
-                yield json.dumps({"type": "keepalive"}, ensure_ascii=False) + "\n"
-                continue
-            yield json.dumps(event, ensure_ascii=False) + "\n"
-            if event["type"] in ("server_benchmark_done", "server_error"):
-                completed.add(event["server_id"])
-
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-        async with async_session_factory() as session:
-            s_repo = ServerRepository(session)
-            all_srvs = await s_repo.list_all_servers()
-            still_online = [s for s in all_srvs if s.status == ServerStatus.ONLINE]
-
-        profiles = [
-            ServerProfile(
-                server_id=s.server_id, host=s.host, port=s.port,
-                max_concurrency=s.max_concurrency,
-                rtf_baseline=s.rtf_baseline,
-                throughput_rtf=s.throughput_rtf,
-                penalty_factor=s.penalty_factor,
-            )
-            for s in still_online
-        ]
-        comparison = global_scheduler.compare_server_capacity(profiles)
-
-        results_list = [item.model_dump(mode="json") for item in bench_results.values()]
-        logger.info("benchmark_all_complete",
-                    servers=list(bench_results.keys()),
-                    comparison=comparison)
-
-        yield json.dumps({
-            "type": "all_complete",
-            "data": {
-                "results": results_list,
-                "capacity_comparison": comparison,
-            },
-        }, ensure_ascii=False) + "\n"
+            yield json.dumps({
+                "type": "all_complete",
+                "data": {
+                    "results": results_list,
+                    "capacity_comparison": comparison,
+                },
+            }, ensure_ascii=False) + "\n"
+        finally:
+            pending = [task for task in tasks if not task.done()]
+            if pending:
+                logger.warning(
+                    "benchmark_all_client_disconnected",
+                    servers=[sid for sid, _, _, _ in server_list],
+                    pending=len(pending),
+                )
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+            await _release_benchmark_endpoints([endpoint_key for _, _, _, endpoint_key in server_list])
 
     return StreamingResponse(
         generate(),
@@ -306,6 +386,8 @@ async def benchmark_server_endpoint(server_id: str, db: DbSession, admin: AdminU
         raise HTTPException(status_code=404, detail="Server not found")
 
     host, port = server.host, server.port
+    endpoint_key = _benchmark_endpoint_key(host, port)
+    await _reserve_benchmark_endpoints([endpoint_key])
 
     async def generate():
         from app.storage.database import async_session_factory
@@ -354,17 +436,25 @@ async def benchmark_server_endpoint(server_id: str, db: DbSession, admin: AdminU
 
         task = asyncio.create_task(run_benchmark())
 
-        while True:
-            try:
-                event = await asyncio.wait_for(progress_queue.get(), timeout=300)
-            except asyncio.TimeoutError:
-                yield json.dumps({"type": "keepalive"}, ensure_ascii=False) + "\n"
-                continue
-            yield json.dumps(event, ensure_ascii=False) + "\n"
-            if event["type"] in ("benchmark_result", "benchmark_error"):
-                break
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(progress_queue.get(), timeout=300)
+                except asyncio.TimeoutError:
+                    yield json.dumps({"type": "keepalive"}, ensure_ascii=False) + "\n"
+                    continue
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+                if event["type"] in ("benchmark_result", "benchmark_error"):
+                    break
 
-        await task
+            await task
+        finally:
+            if not task.done():
+                logger.warning("benchmark_client_disconnected", server_id=server_id)
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            await _release_benchmark_endpoints([endpoint_key])
 
     return StreamingResponse(
         generate(),

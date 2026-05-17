@@ -3,7 +3,7 @@
 > **唯一事实源**：各 skill 的 `references/project-context.md` 应 symlink 或引用此文件。
 > 仅在此处维护，避免多处同步。
 >
-> **适配项目版本**：V0.4.27-Build0475-20260517（Alembic 迁移至 007）
+> **适配项目版本**：V0.4.28-Build0476-20260518（Alembic 迁移至 007）
 
 ## 关键路径
 

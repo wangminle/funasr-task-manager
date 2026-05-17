@@ -10,6 +10,7 @@ BATCH_MONITOR_SKILL = REPO_ROOT / "6-skills" / "funasr-task-manager-batch-monito
 LOCAL_BATCH_SKILL = REPO_ROOT / "6-skills" / "funasr-task-manager-local-batch-transcribe" / "SKILL.md"
 WEB_E2E_SKILL = REPO_ROOT / "6-skills" / "funasr-task-manager-web-e2e" / "SKILL.md"
 EMERGENCY_STOP_SKILL = REPO_ROOT / "6-skills" / "funasr-task-manager-emergency-stop" / "SKILL.md"
+SERVER_BENCHMARK_SKILL = REPO_ROOT / "6-skills" / "funasr-task-manager-server-benchmark" / "SKILL.md"
 LEGACY_CONDITION = "succeeded + failed == total"
 
 
@@ -70,3 +71,13 @@ def test_emergency_stop_skill_requires_dry_run_confirm_and_active_slot_verificat
     assert "dry-run" in content
     assert "total_active_slots == 0" in content
     assert "不直接改数据库" in content
+
+
+@pytest.mark.unit
+def test_server_benchmark_skill_requires_verified_project_cli_entrypoint():
+    content = SERVER_BENCHMARK_SKILL.read_text(encoding="utf-8")
+
+    assert "项目 CLI 入口自检" in content
+    assert "asr-cli 0.4.28" in content
+    assert ".venv" in content
+    assert "不得混用系统 Python" in content

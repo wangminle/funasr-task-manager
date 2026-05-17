@@ -81,17 +81,22 @@ class ASRClient:
 
     def _stream_ndjson(self, method: str, url: str, **kwargs) -> Iterator[dict]:
         """Iterate NDJSON lines from a streaming HTTP response."""
-        with self._client.stream(method, url, **kwargs) as resp:
-            if resp.status_code >= 400:
-                resp.read()
-                self._check(resp)
-            for line in resp.iter_lines():
-                line = line.strip()
-                if line:
-                    try:
-                        yield _json.loads(line)
-                    except _json.JSONDecodeError:
-                        logger.warning("收到无法解析的进度事件, raw_line=%s", line)
+        try:
+            with self._client.stream(method, url, **kwargs) as resp:
+                if resp.status_code >= 400:
+                    resp.read()
+                    self._check(resp)
+                for line in resp.iter_lines():
+                    line = line.strip()
+                    if line:
+                        try:
+                            yield _json.loads(line)
+                        except _json.JSONDecodeError:
+                            logger.warning("收到无法解析的进度事件, raw_line=%s", line)
+        except httpx.TimeoutException as exc:
+            raise APIError(0, f"流式请求 {url} 超时；请检查后端、网络或 ASR 服务器负载") from exc
+        except httpx.HTTPError as exc:
+            raise APIError(0, f"流式请求 {url} 中断: {exc}") from exc
 
     # --- health ---
     def health(self) -> dict:

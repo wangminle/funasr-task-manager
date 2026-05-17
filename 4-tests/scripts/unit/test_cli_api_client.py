@@ -60,6 +60,21 @@ class TestErrorHandling:
         assert exc.value.status_code == 0
         assert "无法连接到服务器" in exc.value.detail
 
+    def test_stream_read_error_is_converted_to_api_error(self, mock_client):
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.iter_lines.side_effect = httpx.ReadError("peer closed")
+        stream_cm = MagicMock()
+        stream_cm.__enter__.return_value = resp
+        mock_client._client.stream.return_value = stream_cm
+
+        with pytest.raises(APIError) as exc:
+            list(mock_client._stream_ndjson("POST", "/api/v1/servers/asr-01/benchmark"))
+
+        assert exc.value.status_code == 0
+        assert "流式请求" in exc.value.detail
+        assert "中断" in exc.value.detail
+
 
 class TestStats:
     def test_stats_ok(self, mock_client):
