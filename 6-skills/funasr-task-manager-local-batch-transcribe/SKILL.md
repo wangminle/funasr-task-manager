@@ -7,7 +7,7 @@ description: >
   mentions scanning directories, inbox, or wants to retry failed items.
 ---
 
-> **适配项目版本**：V0.4.26-Build0469-20260517
+> **适配项目版本**：V0.4.27-Build0475-20260517
 
 # 服务器本地文件批量转写
 
@@ -121,6 +121,53 @@ curl -sf http://127.0.0.1:15797/health
 3. 后端不可达时，先进入 `funasr-task-manager-init` 启动流程。
 4. 确认 `runtime/agent-local-batch/` 目录存在；不存在则幂等创建全部子目录。
 5. 检查是否有未完成的批次（扫描 `manifests/` 目录中 status 为 `INTERRUPTED`/`SUBMITTING`/`MONITORING` 的文件），如有则提示用户是否恢复。
+6. 执行 stale monitor 清理（见 Phase 0c），避免上一轮子 Agent 残留影响本轮。
+
+**0c. stale monitor 清理（强制）**
+
+在每次新批量开始前，主 Agent 必须扫描：
+
+```text
+runtime/agent-local-batch/monitors/*.json
+```
+
+每个 monitor state 至少包含：
+
+```json
+{
+  "batch_id": "round-10",
+  "task_group_ids": ["01..."],
+  "child_session_key": "batch-monitor-round-10",
+  "status": "running",
+  "spawn_time": "2026-05-17T14:30:00+08:00",
+  "last_notice_at": "2026-05-17T14:35:00+08:00",
+  "completed_at": null
+}
+```
+
+清理规则：
+
+1. 对 state 中每个 `task_group_id` 执行 `python -m cli --output json task-group status {group_id}`。
+2. 若所有 group 均为 `is_complete == true`（或 `succeeded + failed + canceled == total`），将 monitor state 更新为 `completed`，写入 `completed_at`，移动到 `runtime/agent-local-batch/archive/monitors/`。
+3. 若平台提供 `sessions_list` / `sessions_close` / `sessions_cancel`，且能找到 `child_session_key` 对应的子 Agent，会话仍在运行时必须关闭它。
+4. 若 group 仍未完成，但子 Agent 不存在或已退出，主 Agent 应接管监控或重新委托 `batch-monitor`。
+5. 若只发现 monitor state、但对应 group 已全部成功，禁止继续沿用旧 monitor；直接归档并开始本轮新批次。
+
+**0d. 批量/压测独占窗口检查（强制）**
+
+本项目只能调度经由 task-manager API 创建的任务；如果其他机器绕过本系统直接请求 FunASR `10095` / `10096` / `10097`，后端无法让这些外部请求排队，只能看到本轮实际 RTF 变慢。为了得到可复现的批量测试结果，执行 round/benchmark 类批量测试前必须：
+
+1. 通过 `python -m cli --output json admin active-slots` 确认 task-manager 内部无其它活跃任务；若有，等待或取消后再提交。
+2. 创建独占窗口 state：
+
+```text
+runtime/agent-local-batch/locks/asr-exclusive-{batch_id}.json
+```
+
+内容包括 `batch_id`、`owner`、`reason`、`server_ids`、`created_at`、`status=active`。
+3. Agent 管理的其它入口（`channel-intake` / 本地批量恢复 / benchmark）发现 active exclusive lock 时，默认等待，不再提交新任务；除非用户明确要求抢占或急停。
+4. 直连 FunASR 的外部服务必须通过运维手段解决：将 10095-10097 仅暴露给 task-manager 或统一网关，其他调用方改走 task-manager API，由本系统排队。单靠本 Skill 不能拦截绕过网关的直连请求。
+5. Phase 6 收尾时必须释放该 lock；异常退出时下一轮 Phase 0 按 `task_group status` 校验，若对应批次已终态则自动释放 stale lock。
 
 ### Phase 1：确定扫描来源
 
@@ -292,7 +339,7 @@ python -m cli --output json task-group submit \
 #### 委托后主 Agent 的行为
 
 1. **发送委托通知**：通过 `send_user_notice()` 告知用户"已启动后台监控"。
-2. **记录监控状态**：`batch_id -> {spawn_time, last_notice_at: null, child_session_key}`。
+2. **记录监控状态**：写入 `runtime/agent-local-batch/monitors/{batch_id}.json`，内容为 `batch_id -> {task_group_ids, spawn_time, last_notice_at: null, child_session_key, status: "spawned"}`。
 3. **等待启动确认（ack）**：使用 `sessions_yield` 等待子 Agent 的启动确认事件，或设 5 秒超时。
 4. **5 秒内收到 ack**：释放控制权，继续接新任务。
 5. **5 秒无 ack**：fallback 到主 Agent 自行轮询（见下方 Fallback）。
@@ -406,6 +453,8 @@ for each batch_id in batch_watchdog:
 | 子 Agent 异常退出 | `send_user_notice("⚠️ 批次 {batch_id} 的后台监控异常中断。当前进度：{status_summary}。你可以说\"重启监控\"来恢复。")` |
 | 全部完成但无汇总 | 补发完成汇总（使用 `progress-templates` 模板） |
 
+补发或确认完成后，必须执行 monitor 收尾：更新 `runtime/agent-local-batch/monitors/{batch_id}.json` 为 `completed`，移动到 `runtime/agent-local-batch/archive/monitors/`；若存在 `asr-exclusive-{batch_id}.json`，也更新为 `released` 并归档。
+
 ### Phase 5.6：用户主动取消/中止批次
 
 当用户明确要求"取消 / 停止 / 中止"正在运行的批次时，Agent 必须走取消流程，不能只终止监控子 Agent，也不能只停止心跳播报。
@@ -475,6 +524,16 @@ runtime/agent-local-batch/outputs/<batch_id>/
 批次汇总文件必须满足项目规范（文件名以 `-YYYYMMDD.md` 结尾）。
 
 **此阶段完成后向用户反馈完成汇总（见 progress-templates §6 或 monitor-templates §5）。**
+
+#### Phase 6b：监控与独占窗口收尾（强制）
+
+无论结果下载由子 Agent 还是主 Agent 完成，最终收尾必须执行：
+
+1. 查询所有 `task_group_id`，确认 `is_complete == true` 或 `succeeded + failed + canceled == total`。
+2. 将 `runtime/agent-local-batch/monitors/{batch_id}.json` 更新为 `completed`，写入 `completed_at` 和最终统计，然后移动到 `runtime/agent-local-batch/archive/monitors/{batch_id}.json`。
+3. 如果平台支持关闭子 Agent，会话仍运行时关闭 `child_session_key`。
+4. 将 `runtime/agent-local-batch/locks/asr-exclusive-{batch_id}.json` 更新为 `released`，写入 `released_at`，移动到 `runtime/agent-local-batch/archive/locks/{batch_id}.json`。
+5. 再次扫描 `monitors/`，若只剩已终态批次的 stale monitor，立即归档，不允许留给下一轮。
 
 ### Phase 7：失败处理与重试
 

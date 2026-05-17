@@ -6,20 +6,20 @@
 ## 版本要求
 
 <!-- cli_min_version: 0.1.0 -->
-<!-- project_version: V0.4.26-Build0469-20260517 -->
+<!-- project_version: V0.4.27-Build0475-20260517 -->
 
 | 组件 | 当前版本 | 最低版本 | 说明 |
 |------|---------|---------|------|
-| 项目版本 | `V0.4.26-Build0469` | — | 含 45 文件本地批量转写双轮稳定性验证、取消/急停恢复、admin active-slots、work-steal 多槽收益修正、虚拟 slot 补位边界修正、零并发服务器防御与迁移 007 |
-| CLI (`python -m cli`) | `0.4.26` | `>= 0.1.0` | 需要 `notify` 子命令（含 `send`、`send-file`、`auth-check`）、`admin` 子命令和 `--receive-id-type` 参数 |
+| 项目版本 | `V0.4.27-Build0475` | — | 含 45 文件本地批量转写双轮稳定性验证、取消/急停恢复、admin active-slots、work-steal 多槽收益修正、虚拟 slot 补位边界修正、零并发服务器防御、批量测试独占窗口、stale monitor 清理与迁移 007 |
+| CLI (`python -m cli`) | `0.4.27` | `>= 0.1.0` | 需要 `notify` 子命令（含 `send`、`send-file`、`auth-check`）、`admin` 子命令和 `--receive-id-type` 参数 |
 | Backend API | — | `>= 1.0.0` | 需要 `/health`、`/tasks`、`/task-groups` 端点 |
 | Python | — | `>= 3.11` | CLI 依赖 `match` 语法和 `asyncio` 特性；pyproject.toml 声明 `requires-python = ">=3.11"` |
 | ffprobe / ffmpeg | — | `>= 5.0` | 音视频预检和转码；当前工作流要求预检阶段可用 `ffprobe`，避免未安装时直接转写失败 |
 | Alembic 迁移 | `007` | head | 当前 head 包含 `007_add_run_generation.py`，运行最新后端前需迁移至 head |
 
-### V0.4.26 稳定性验证口径
+### V0.4.27 稳定性验证口径
 
-2026-05-16 使用同一组 45 个本地音视频文件完成连续两轮批量转写验证：第三轮 45/45 成功，426.5 秒，68.47x；第四轮 45/45 成功，424.9 秒，68.73x。两轮均为 0 失败、0 重试、0 错误标记，输出目录各 45 个结果文件且内容哈希一致。V0.4.26 在该稳定主路径基础上，于 2026-05-17 补充 work-steal 多槽收益计算、虚拟 slot future 任务派发边界和零并发服务器防御修复。
+2026-05-16 使用同一组 45 个本地音视频文件完成连续两轮批量转写验证：第三轮 45/45 成功，426.5 秒，68.47x；第四轮 45/45 成功，424.9 秒，68.73x。两轮均为 0 失败、0 重试、0 错误标记，输出目录各 45 个结果文件且内容哈希一致。V0.4.27 在该稳定主路径基础上，于 2026-05-17 补充 work-steal 多槽收益计算、虚拟 slot future 任务派发边界、零并发服务器防御、批量测试独占窗口和 stale monitor 清理规则。
 
 该结论仅覆盖当前三台在线 FunASR 节点下的本地批量转写主路径。服务下线恢复、故障注入、更多超长文件混合批次仍需按专项测试执行。
 
@@ -209,7 +209,9 @@ init → local-batch-transcribe（主 Agent）
 
 > **为什么拆成两个 Agent**：批量任务可能持续数分钟到数十分钟。如果主 Agent 自己轮询，就会被长任务绑死，无法响应群聊中其他用户的消息。委托子 Agent 监控后，主 Agent 秒级释放，可以同时处理多个用户的请求。
 
-**协作规则**：当两个入口同时有任务时，channel-intake 优先——local-batch-transcribe 暂停新提交、等待 intake 完成后恢复（让步机制）。
+**协作规则**：当两个入口同时有任务时，channel-intake 优先——local-batch-transcribe 暂停新提交、等待 intake 完成后恢复（让步机制）。当本地批量处于 round/benchmark 等独占测试窗口时，Agent 管理的其它入口必须检查 `runtime/agent-local-batch/locks/asr-exclusive-*.json`，发现 active lock 时默认等待，不提交新任务。外部系统若绕过 task-manager 直连 FunASR `10095` / `10096` / `10097`，本系统无法让其排队，必须通过网关、防火墙或调用约定将外部调用统一收敛到 task-manager API。
+
+**monitor 清理规则**：每轮 local-batch 开始前扫描 `runtime/agent-local-batch/monitors/*.json`。若对应 `task_group_id` 已全部终态，主动关闭/归档 stale monitor；每轮完成后将 monitor state 移动到 `runtime/agent-local-batch/archive/monitors/`，不得让已完成批次的 monitor 残留到下一轮。
 
 **触发条件对比**：
 

@@ -8,7 +8,7 @@ description: >
   sub-agent so the main agent can continue accepting new tasks.
 ---
 
-> **适配项目版本**：V0.4.26-Build0469-20260517
+> **适配项目版本**：V0.4.27-Build0475-20260517
 
 # 批量转写进度监控（子 Agent 专用）
 
@@ -202,6 +202,7 @@ python -m cli --output json task-group status {group_id}
 - 使用 Step 0a 确定的 `adapter` 发送。
 - 发送后记录 `notice_log[0]`（type=ack, adapter, delivered, ts）。
 - 若 `notification_policy.reply_to_thread == true` 且 `reply_to_id` 或 `message_id` 存在，优先回复原消息线程。
+- 同步写入 `runtime/agent-local-batch/monitors/{batch_id}.json`，将 `status` 更新为 `acked`，并写入 `last_notice_at`。
 
 主 Agent 依赖此 ack 消息判断子 Agent 是否成功启动。**未能发送 ack 的子 Agent 将被主 Agent 判定为启动失败。**
 
@@ -233,6 +234,13 @@ python -m cli --output json task-group status {group_id}
     result = CLI: task-group status {group_id} --output json
     累加 succeeded, failed, canceled, in_progress, total
     all_complete = all_complete and result.is_complete
+
+  # 2b-2. 刷新 monitor state
+  写入 runtime/agent-local-batch/monitors/{batch_id}.json:
+    status = "running"
+    last_poll_at = now()
+    last_notice_at = last_heartbeat_time
+    totals = {total, succeeded, failed, canceled, in_progress}
 
   # 2c. 判断是否有新进展
   if succeeded != last_succeeded or failed != last_failed or canceled != last_canceled:
@@ -330,6 +338,26 @@ python -m cli --output json task-group download {group_id} \
 2. ✅ 汇总包含通知统计
 3. ✅ 群聊场景下汇总 @ 了触发用户
 4. ✅ 无未处理的下载结果
+5. ✅ monitor state 已标记终态并归档，不能在 `runtime/agent-local-batch/monitors/` 留下已完成批次
+
+#### monitor state 收尾
+
+所有退出路径都必须更新：
+
+```text
+runtime/agent-local-batch/monitors/{batch_id}.json
+```
+
+终态规则：
+
+| 退出场景 | state.status | 后续动作 |
+|---------|--------------|----------|
+| 全部完成 | `completed` | 移动到 `runtime/agent-local-batch/archive/monitors/{batch_id}.json` |
+| 超时 | `timeout` | 保留在 `monitors/`，等待主 Agent 接管或用户恢复 |
+| 后端不可达 / 工具失败 | `failed` | 保留在 `monitors/`，写入 `error` |
+| group 不存在但已确认无需监控 | `completed` | 归档 |
+
+若 `task-group status` 显示全部 group 已终态，子 Agent 不得继续心跳或轮询，必须发送一次完成/异常汇总后退出。
 
 ---
 

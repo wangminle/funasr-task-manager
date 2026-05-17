@@ -40,6 +40,27 @@ def test_local_batch_skill_defines_cancel_flow_for_active_segments():
 
 
 @pytest.mark.unit
+def test_local_batch_skill_cleans_stale_monitors_and_exclusive_locks():
+    content = LOCAL_BATCH_SKILL.read_text(encoding="utf-8")
+
+    assert "stale monitor 清理" in content
+    assert "runtime/agent-local-batch/monitors" in content
+    assert "archive/monitors" in content
+    assert "asr-exclusive" in content
+    assert "10095" in content and "10096" in content and "10097" in content
+
+
+@pytest.mark.unit
+def test_batch_monitor_skill_requires_monitor_state_finalization():
+    content = BATCH_MONITOR_SKILL.read_text(encoding="utf-8")
+
+    assert "runtime/agent-local-batch/monitors/{batch_id}.json" in content
+    assert "monitor state 收尾" in content
+    assert "archive/monitors" in content
+    assert "不得继续心跳或轮询" in content
+
+
+@pytest.mark.unit
 def test_emergency_stop_skill_requires_dry_run_confirm_and_active_slot_verification():
     content = EMERGENCY_STOP_SKILL.read_text(encoding="utf-8")
 
