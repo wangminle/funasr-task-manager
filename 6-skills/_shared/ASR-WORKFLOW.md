@@ -6,20 +6,20 @@
 ## 版本要求
 
 <!-- cli_min_version: 0.1.0 -->
-<!-- project_version: V0.4.25-Build0454-20260516 -->
+<!-- project_version: V0.4.26-Build0469-20260517 -->
 
 | 组件 | 当前版本 | 最低版本 | 说明 |
 |------|---------|---------|------|
-| 项目版本 | `V0.4.25-Build0454` | — | 含 45 文件本地批量转写双轮稳定性验证、取消/急停恢复、admin active-slots、调度恢复修复与迁移 007 |
-| CLI (`python -m cli`) | `0.4.25` | `>= 0.1.0` | 需要 `notify` 子命令（含 `send`、`send-file`、`auth-check`）、`admin` 子命令和 `--receive-id-type` 参数 |
+| 项目版本 | `V0.4.26-Build0469` | — | 含 45 文件本地批量转写双轮稳定性验证、取消/急停恢复、admin active-slots、work-steal 多槽收益修正、虚拟 slot 补位边界修正、零并发服务器防御与迁移 007 |
+| CLI (`python -m cli`) | `0.4.26` | `>= 0.1.0` | 需要 `notify` 子命令（含 `send`、`send-file`、`auth-check`）、`admin` 子命令和 `--receive-id-type` 参数 |
 | Backend API | — | `>= 1.0.0` | 需要 `/health`、`/tasks`、`/task-groups` 端点 |
 | Python | — | `>= 3.11` | CLI 依赖 `match` 语法和 `asyncio` 特性；pyproject.toml 声明 `requires-python = ">=3.11"` |
 | ffprobe / ffmpeg | — | `>= 5.0` | 音视频预检和转码；当前工作流要求预检阶段可用 `ffprobe`，避免未安装时直接转写失败 |
 | Alembic 迁移 | `007` | head | 当前 head 包含 `007_add_run_generation.py`，运行最新后端前需迁移至 head |
 
-### V0.4.25 稳定性验证口径
+### V0.4.26 稳定性验证口径
 
-2026-05-16 使用同一组 45 个本地音视频文件完成连续两轮批量转写验证：第三轮 45/45 成功，426.5 秒，68.47x；第四轮 45/45 成功，424.9 秒，68.73x。两轮均为 0 失败、0 重试、0 错误标记，输出目录各 45 个结果文件且内容哈希一致。
+2026-05-16 使用同一组 45 个本地音视频文件完成连续两轮批量转写验证：第三轮 45/45 成功，426.5 秒，68.47x；第四轮 45/45 成功，424.9 秒，68.73x。两轮均为 0 失败、0 重试、0 错误标记，输出目录各 45 个结果文件且内容哈希一致。V0.4.26 在该稳定主路径基础上，于 2026-05-17 补充 work-steal 多槽收益计算、虚拟 slot future 任务派发边界和零并发服务器防御修复。
 
 该结论仅覆盖当前三台在线 FunASR 节点下的本地批量转写主路径。服务下线恢复、故障注入、更多超长文件混合批次仍需按专项测试执行。
 
@@ -121,10 +121,11 @@
 调度算法（按优先级）：
 1. **LPT（最长处理时间优先）** — 长音频优先分配到快节点
 2. **EFT（最早完成时间）** — 选预计最早空闲的节点
-3. **Work Stealing** — 空闲节点从忙碌节点队列尾部窃取预估收益为正的任务；若候选 segment 已达到父任务段级并发上限，本轮跳过该候选继续寻找其它候选
-4. **运行时 RTF 校准** — 根据实际转写速度动态调整节点权重
+3. **Slot Refill** — 新 plan 只派发 `estimated_start <= IMMEDIATE_START_TOLERANCE` 的 work item；非重规划轮次中，某个 slot 已释放且本队列没有 immediate item 时，才允许从既有 plan 中释放未来槽位任务补位
+4. **Work Stealing** — 空闲节点从忙碌节点队列尾部窃取预估收益为正的任务；收益按候选任务计划完成时间计算，避免多槽源队列被串行相加；若候选 segment 已达到父任务段级并发上限，本轮跳过该候选继续寻找其它候选
+5. **运行时 RTF 校准** — 根据实际转写速度动态调整节点权重
 
-批次调度统计由 `GET /api/v1/task-groups/{group_id}` 的 `scheduling` 字段返回。`idle_slot_seconds` 的口径是 `wall_clock × ONLINE+enabled 总并发 - busy_processing_seconds`，完全空闲但可用的服务器也计入总 slot；当前无可用服务器时，退回按本批次已分配过的服务器容量估算。
+只有 `ONLINE` 且 `max_concurrency > 0` 的服务器参与实际调度。批次调度统计由 `GET /api/v1/task-groups/{group_id}` 的 `scheduling` 字段返回。`idle_slot_seconds` 的口径是 `wall_clock × ONLINE+enabled 总并发 - busy_processing_seconds`，完全空闲但可用的服务器也计入总 slot；当前无可用服务器时，退回按本批次已分配过的服务器容量估算。
 
 ### 任务状态流转
 

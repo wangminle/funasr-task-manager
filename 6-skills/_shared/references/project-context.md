@@ -3,7 +3,7 @@
 > **唯一事实源**：各 skill 的 `references/project-context.md` 应 symlink 或引用此文件。
 > 仅在此处维护，避免多处同步。
 >
-> **适配项目版本**：V0.4.25-Build0454-20260516（Alembic 迁移至 007）
+> **适配项目版本**：V0.4.26-Build0469-20260517（Alembic 迁移至 007）
 
 ## 关键路径
 
@@ -62,7 +62,7 @@ PENDING → PREPROCESSING → QUEUED → DISPATCHED → TRANSCRIBING → SUCCEED
 
 ### 调度统计口径
 
-调度器使用 LPT/EFT + 槽位队列预规划 + work stealing。分段任务参与同一 PlanPool，但受单个父任务的段级并发上限约束；若 work stealing 的最佳 segment 候选暂时达到上限，调度器会在本轮跳过它继续寻找其它候选。
+调度器使用 LPT/EFT + 槽位队列预规划 + slot refill + work stealing。只有 `ONLINE` 且 `max_concurrency > 0` 的服务器参与实际调度。新 plan 刚生成时只派发 `estimated_start <= IMMEDIATE_START_TOLERANCE` 的 work item；非重规划轮次中，某个 slot 释放且本队列没有 immediate item 时，才允许从既有 plan 中释放未来槽位任务补位。分段任务参与同一 PlanPool，但受单个父任务的段级并发上限约束；若 work stealing 的最佳 segment 候选暂时达到上限，调度器会在本轮跳过它继续寻找其它候选。work stealing 收益按候选任务的计划完成时间计算，避免多槽源队列被串行相加。
 
 批次概况接口 `GET /api/v1/task-groups/{id}` 的 `scheduling.idle_slot_seconds` 按 `wall_clock × ONLINE+enabled 总并发 - busy_processing_seconds` 估算，完全空闲但可用的服务器也计入总 slot；当前无可用服务器时，退回按本批次已分配过的服务器容量估算。
 

@@ -88,6 +88,15 @@ class TestSchedulerLPT:
         decisions = sched.schedule_batch(tasks, servers)
         assert decisions == []
 
+    def test_online_server_with_invalid_zero_capacity_is_not_schedulable(self):
+        sched = TaskScheduler()
+        tasks = [{"task_id": "t1", "audio_duration_sec": 600}]
+        servers = [_make_server("s1", concurrency=0)]
+
+        decisions = sched.schedule_batch(tasks, servers)
+
+        assert decisions == []
+
 
 @pytest.mark.unit
 class TestCapacityAwareScheduling:
@@ -887,6 +896,43 @@ class TestPlanPool:
         assert [d.task_id for d in items] == ["immediate-long"]
         assert pool.contains("future-short")
         assert not pool.contains("immediate-long")
+
+    def test_pop_dispatchable_returns_empty_when_all_items_are_future(self):
+        pool = PlanPool()
+        pool.merge([
+            ScheduleDecision(
+                task_id="future-1", server_id="srv-1", slot_index=0,
+                estimated_start=10.0, estimated_duration=5.0,
+                estimated_finish=15.0, queue_position=1,
+                audio_duration_sec=1.0,
+            ),
+            ScheduleDecision(
+                task_id="future-2", server_id="srv-1", slot_index=1,
+                estimated_start=20.0, estimated_duration=5.0,
+                estimated_finish=25.0, queue_position=2,
+                audio_duration_sec=1.0,
+            ),
+        ])
+
+        assert pool.pop_dispatchable("srv-1", 1) == []
+        assert pool.contains("future-1")
+        assert pool.contains("future-2")
+
+    def test_pop_dispatchable_can_release_future_items_after_server_is_idle(self):
+        pool = PlanPool()
+        pool.merge([
+            ScheduleDecision(
+                task_id="future-1", server_id="srv-1", slot_index=0,
+                estimated_start=10.0, estimated_duration=5.0,
+                estimated_finish=15.0, queue_position=1,
+                audio_duration_sec=1.0,
+            ),
+        ])
+
+        items = pool.pop_dispatchable("srv-1", 1, allow_future=True)
+
+        assert [d.task_id for d in items] == ["future-1"]
+        assert not pool.contains("future-1")
 
     def test_pop_dispatchable_zero_budget(self):
         pool = PlanPool()

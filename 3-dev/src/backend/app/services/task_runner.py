@@ -684,6 +684,13 @@ class BackgroundTaskRunner:
 
             available_profiles = []
             for sp in server_profiles:
+                if sp.max_concurrency <= 0:
+                    logger.warning(
+                        "server_skipped_invalid_concurrency",
+                        server_id=sp.server_id,
+                        max_concurrency=sp.max_concurrency,
+                    )
+                    continue
                 cb = breaker_registry.get(sp.server_id)
                 can_request = getattr(cb, "can_request", cb.allow_request)
                 if await can_request():
@@ -777,6 +784,7 @@ class BackgroundTaskRunner:
                 needs_replan = True
                 replan_reason = "queue_imbalance"
 
+            plan_refreshed_this_cycle = False
             if needs_replan:
                 logger.info("global_replan_triggered",
                             reason=replan_reason,
@@ -785,6 +793,7 @@ class BackgroundTaskRunner:
                 if decisions:
                     self._plan_pool.replace(decisions)
                     self._planned_available_server_ids = current_available_ids
+                    plan_refreshed_this_cycle = True
                 elif not self._plan_pool:
                     self._planned_available_server_ids = current_available_ids
                 else:
@@ -806,6 +815,7 @@ class BackgroundTaskRunner:
                                  new_items=len(new_work),
                                  merged=added,
                                  pool_size=len(self._plan_pool))
+                    plan_refreshed_this_cycle = added > 0
 
             if not self._plan_pool:
                 return
@@ -832,7 +842,11 @@ class BackgroundTaskRunner:
             for sp in available_profiles:
                 sid = sp.server_id
                 while free_slots.get(sid, 0) > 0:
-                    batch = self._plan_pool.pop_dispatchable(sid, 1)
+                    batch = self._plan_pool.pop_dispatchable(
+                        sid,
+                        1,
+                        allow_future=not plan_refreshed_this_cycle,
+                    )
                     if not batch:
                         break
                     decision = batch[0]
@@ -1854,7 +1868,7 @@ class BackgroundTaskRunner:
                     sum(d.estimated_duration for d in q[:decision_idx])
                     + decision.estimated_duration
                 )
-                source_remaining = max(duration_based, decision.estimated_finish)
+                source_remaining = decision.estimated_finish or duration_based
                 improvement = source_remaining - est_stolen
                 if decision.kind == "segment":
                     min_gain = max(2.0, decision.estimated_duration * 0.05)

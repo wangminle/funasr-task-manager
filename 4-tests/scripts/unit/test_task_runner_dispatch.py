@@ -268,6 +268,46 @@ class TestPlanPoolDispatch:
         deferred_after = len(runner._plan_pool)
         assert deferred_after == deferred_before - 1
 
+    async def test_partial_slot_completion_pops_future_item_from_existing_plan(
+        self, db_engine, monkeypatch,
+    ):
+        """A multi-slot server should refill one freed slot without waiting
+        for all sibling slots to become idle."""
+        session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+        monkeypatch.setattr("app.services.task_runner.async_session_factory", session_factory)
+        monkeypatch.setattr("app.services.task_runner.breaker_registry", _breaker_mock())
+
+        async with session_factory() as session:
+            session.add(_server("srv-1", 2))
+            for i in range(3):
+                fid = f"f-{i}"
+                session.add(_file(fid, duration_sec=60.0))
+                session.add(_task(f"t-{i}", fid, TaskStatus.QUEUED))
+            await session.commit()
+
+        runner = BackgroundTaskRunner()
+        started: list[str] = []
+        monkeypatch.setattr(runner, "_execute_task", lambda tid: started.append(tid) or asyncio.sleep(0))
+
+        await runner._dispatch_queued_tasks()
+        await asyncio.sleep(0)
+
+        assert len(started) == 2
+        assert len(runner._plan_pool) == 1
+
+        async with session_factory() as session:
+            first_task = (await session.execute(
+                select(Task).where(Task.task_id == started[0])
+            )).scalar_one()
+            first_task.status = TaskStatus.SUCCEEDED
+            await session.commit()
+
+        await runner._dispatch_queued_tasks()
+        await asyncio.sleep(0)
+
+        assert len(started) == 3
+        assert len(runner._plan_pool) == 0
+
 
 @pytest.mark.unit
 class TestWorkStealing:
@@ -739,6 +779,43 @@ class TestStealImprovementCalculation:
         assert expected_improvement > 0
         assert source_remaining_actual == pytest.approx(source_remaining)
         assert estimated_gain == pytest.approx(expected_improvement)
+
+    def test_find_steal_candidate_uses_parallel_finish_over_sequential_sum(self):
+        """A multi-slot source queue should use planned finish, not sequential duration sum."""
+        from app.services.scheduler import ScheduleDecision, ServerProfile
+
+        runner = BackgroundTaskRunner()
+
+        runner._plan_pool.merge([
+            ScheduleDecision("t-ahead", "source", 0, 0.0, 100.0, 30.0, 1, 100.0),
+            ScheduleDecision("t-target", "source", 1, 10.0, 30.0, 40.0, 2, 100.0),
+        ])
+
+        idle_profile = ServerProfile(
+            server_id="idle", host="h", port=1,
+            max_concurrency=1, rtf_baseline=0.1, penalty_factor=0.1,
+        )
+        profile_map = {
+            "idle": idle_profile,
+            "source": ServerProfile(
+                server_id="source", host="h", port=1,
+                max_concurrency=4, rtf_baseline=0.5, penalty_factor=0.1,
+            ),
+        }
+
+        class FakeTask:
+            def __init__(self, tid):
+                self.task_id = tid
+        task_map = {"t-ahead": FakeTask("t-ahead"), "t-target": FakeTask("t-target")}
+
+        result = runner._find_steal_candidate(idle_profile, profile_map, task_map, set())
+
+        assert result is not None
+        decision, _, est_stolen, source_remaining_actual, estimated_gain = result
+        assert decision.task_id == "t-target"
+        assert est_stolen == pytest.approx(15.0)
+        assert source_remaining_actual == pytest.approx(40.0)
+        assert estimated_gain == pytest.approx(25.0)
 
     def test_no_steal_when_source_faster_than_idle(self):
         """Should NOT steal when the source server processes faster than idle server."""

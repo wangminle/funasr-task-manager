@@ -51,7 +51,7 @@
 
 ## VAD 分段与调度
 
-长音频在 PREPROCESSING 阶段根据 `segment_level`（off/10m/20m/30m）自动 VAD 切分，触发阈值为 target × 1.2（10m=720s, 20m=1440s, 30m=2160s）。`off` 关闭切分。切分采用双向交替搜索（后→前→后），步长按档位比例设定（60s/120s/180s）。切分后的 segment 作为内部 work item 参与调度，复用 LPT + EFT + 槽位队列预规划 + work stealing。段级 RTF 校准使用段长而非父任务总时长。
+长音频在 PREPROCESSING 阶段根据 `segment_level`（off/10m/20m/30m）自动 VAD 切分，触发阈值为 target × 1.2（10m=720s, 20m=1440s, 30m=2160s）。`off` 关闭切分。切分采用双向交替搜索（后→前→后），步长按档位比例设定（60s/120s/180s）。切分后的 segment 作为内部 work item 参与调度，复用 LPT + EFT + 槽位队列预规划 + slot refill + work stealing。段级 RTF 校准使用段长而非父任务总时长。
 
 分段任务受单个父任务的段级并发上限约束；若 work stealing 的最佳 segment 候选暂时达到上限，调度器会在本轮跳过该候选继续寻找其它可窃取任务。
 
@@ -59,6 +59,9 @@
 
 - `get_effective_rtf(server)` → 使用生产 P90 RTF，无生产数据时回退到 `rtf_baseline`
 - `get_throughput_speed(server)` → `max_concurrency / base_rtf`，决定配额分配速度
+- `max_concurrency <= 0` 的服务器不参与实际调度；benchmark 写回推荐并发后才会提供可用 slot
 - `throughput_rtf` 当前**不直接参与调度计算**，仅作为 `capacity_comparison` 的对比指标
+- 新 plan 只派发 immediate work item；非重规划轮次中 slot 释放后，才允许从既有 plan 中释放未来槽位任务补位
+- work stealing 收益按候选任务的计划完成时间计算，避免多槽源队列被串行相加
 - `GET /api/v1/task-groups/{id}` 的 `scheduling.idle_slot_seconds` 按 `wall_clock × ONLINE+enabled 总并发 - busy_processing_seconds` 估算，完全空闲但可用的服务器也计入总 slot
 - 调度器源码：`3-dev/src/backend/app/services/scheduler.py`

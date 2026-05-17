@@ -225,7 +225,13 @@ class PlanPool:
         self.clear()
         self.merge(decisions)
 
-    def pop_dispatchable(self, server_id: str, budget: int) -> list[ScheduleDecision]:
+    def pop_dispatchable(
+        self,
+        server_id: str,
+        budget: int,
+        *,
+        allow_future: bool = False,
+    ) -> list[ScheduleDecision]:
         """Pop up to `budget` items that are eligible for immediate dispatch."""
         q = self._queues.get(server_id)
         if not q or budget <= 0:
@@ -239,6 +245,8 @@ class PlanPool:
                     break
 
         if not selected_indices:
+            if not allow_future:
+                return []
             selected_indices = list(range(min(budget, len(q))))
 
         result = [q[idx] for idx in selected_indices]
@@ -538,15 +546,19 @@ class TaskScheduler:
 
         Returns list of ScheduleDecision.
         """
-        online_servers = [s for s in servers if s.status == "ONLINE"]
+        online_servers = [
+            s for s in servers
+            if s.status == "ONLINE" and s.max_concurrency > 0
+        ]
         if not online_servers:
             logger.warning("no_online_servers_for_scheduling")
             return []
 
         slots: list[ServerSlot] = []
         for srv in online_servers:
-            occupied = min(srv.running_tasks, srv.max_concurrency)
-            free = max(srv.max_concurrency - srv.running_tasks, 0)
+            capacity = srv.max_concurrency
+            occupied = min(max(srv.running_tasks, 0), capacity)
+            free = max(capacity - max(srv.running_tasks, 0), 0)
 
             if occupied > 0:
                 base_rtf = self.get_base_rtf(srv)
